@@ -139,7 +139,8 @@ export default {
         return markNotificationRead(env, Number(notifReadMatch[1]));
       }
 
-      return json({ error: "Not found" }, 404);
+      if (pathname.startsWith("/api/")) return json({ error: "Not found" }, 404);
+      return env.ASSETS.fetch(request);
     } catch (err) {
       return json({ error: err instanceof Error ? err.message : "Internal error" }, 500);
     }

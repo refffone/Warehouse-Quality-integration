@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   ATTACHMENTS: R2Bucket;
+  ASSETS: Fetcher;
   EXPIRY_ALERT_LEAD_DAYS: string;
 }
 

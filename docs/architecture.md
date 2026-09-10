@@ -436,8 +436,54 @@ well within free/low-tier limits — the choices are about fit, not capacity.
 
 ---
 
-## 7. Next Step
+## 7. Frontend
 
-Once the items in §6 are answered (or explicitly deferred), the next phase is
-to turn §3–4 into an actual Cloudflare Workers project: D1 schema + migrations,
-a minimal API, and two role-scoped UI views (Warehouse, Quality).
+A working UI now exists at `public/`, served as Cloudflare Workers static
+assets (`[assets]` binding in `wrangler.toml`, with the Worker's `fetch`
+handler falling back to `env.ASSETS.fetch(request)` for any non-`/api/`
+path — one deployment, no separate Pages project). It's vanilla
+HTML/CSS/JS (no framework, no build step), matching the "lightweight
+dedicated tool" scope from §Context: `index.html` shell,
+`styles.css` (design tokens), `api.js` (fetch wrapper injecting the
+`X-Role` header), `app.js` (hash router + views).
+
+Visual direction — "Aurora Lab": paper-white cards with a soft
+violet–teal–peach aurora glow behind them, Fraunces italic for headings,
+IBM Plex Sans/Mono for body and codes. Chosen from three researched
+directions (aurora/mesh-gradient trend, Attio's card style, calm-clinical
+lab UI restraint) presented as a moodboard and picked by the user.
+
+Screens: Warehouse (Receive, Imports, Samples) and Quality (Test
+Incomings with Imports/Samples subtabs, Codes, Specifications), plus a
+shared notification bell. Covers the full loop end-to-end: register →
+notify → decide/associate-code → finalize weight → both roles see the
+result, including the sample-sender asymmetric-edit rule (§1.9) and the
+sample-status redaction it depends on.
+
+Verified in a real browser (Playwright + the sandbox's Chromium) at both
+desktop and phone width, seeded with realistic data through every screen
+and modal. Caught and fixed two real bugs this way: a stray quote turning
+a boolean data-attribute into a bad attribute name (broke two
+"remove row" buttons), and `.field`/`.form-grid` setting `display: flex`
+at the same specificity as the browser's default `[hidden] { display:
+none }` rule, silently defeating every `hidden`-attribute toggle in the
+app — fixed with an explicit `[hidden] { display: none !important; }`
+rule. Google Fonts failed to load only inside this sandbox's restricted
+network egress (confirmed via failed-request capture) — not a real
+deployment issue, since Cloudflare Workers serves to the open internet
+with no such restriction; the font stack's fallback still rendered a
+clean, legible page in the meantime.
+
+**Not yet built**: auth beyond the `X-Role` stand-in, COA/label
+attachment upload (R2 is wired but no UI or endpoint touches it), the
+expiry-alert notification isn't surfaced anywhere beyond the shared bell
+(no dedicated "expiring soon" view), and dark mode is defined in
+`styles.css` tokens but not yet checked against a real dark-mode screenshot.
+
+## 8. Next Step
+
+Stand up the real Cloudflare deployment: create the actual D1 database
+and R2 bucket, replace the placeholder `database_id` in `wrangler.toml`,
+run the migrations against it, and deploy the Worker — turning this from
+a locally-verified build into something Warehouse and Quality can
+actually open.

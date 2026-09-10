@@ -12,6 +12,10 @@ database_id = "REPLACE_WITH_D1_DATABASE_ID"
 binding = "ATTACHMENTS"
 bucket_name = "warehouse-quality-attachments"
 
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
 [triggers]
 crons = ["0 3 * * *"]
 
