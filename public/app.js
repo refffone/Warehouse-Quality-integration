@@ -1,4 +1,5 @@
 import { api, getRole, setRole, getRememberedName, rememberName, uploadFile } from "./api.js";
+import { t, getLang, setLang, applyDocumentDirection } from "./i18n.js";
 
 // ---------------------------------------------------------------- helpers
 
@@ -91,16 +92,16 @@ async function getSubtypes(force = false) {
 
 const ROUTES = {
   warehouse: [
-    { id: "receive", label: "Receive" },
-    { id: "todo", label: "To Do" },
-    { id: "history", label: "History" },
+    { id: "receive", labelKey: "nav.receive" },
+    { id: "todo", labelKey: "nav.todo" },
+    { id: "history", labelKey: "nav.history" },
   ],
   quality: [
-    { id: "todo", label: "To Do" },
-    { id: "history", label: "History" },
-    { id: "codes", label: "Codes" },
-    { id: "specs", label: "Specifications" },
-    { id: "masterdata", label: "Master Data" },
+    { id: "todo", labelKey: "nav.todo" },
+    { id: "history", labelKey: "nav.history" },
+    { id: "codes", labelKey: "nav.codes" },
+    { id: "specs", labelKey: "nav.specs" },
+    { id: "masterdata", labelKey: "nav.masterdata" },
   ],
 };
 
@@ -117,12 +118,23 @@ function goTo(tab) {
 
 // ---------------------------------------------------------------- topbar
 
+function applyStaticTranslations() {
+  document.getElementById("signed-in-as-label").textContent = t("topbar.signedInAs");
+  document.getElementById("role-option-warehouse").textContent = t("topbar.roleWarehouse");
+  document.getElementById("role-option-quality").textContent = t("topbar.roleQuality");
+  document.getElementById("notif-btn").title = t("topbar.notifications");
+  document.getElementById("lang-toggle").textContent = t("lang.toggle");
+  document.querySelector(".brand-name").innerHTML =
+    `${esc(t("topbar.roleWarehouse"))} <em>·</em> ${esc(t("topbar.roleQuality"))}`;
+}
+
 function renderTopbar() {
+  applyStaticTranslations();
   const role = getRole();
   const tabsEl = document.getElementById("tabs");
   const active = currentRoute();
   tabsEl.innerHTML = ROUTES[role]
-    .map((r) => `<button class="tab-btn${r.id === active ? " active" : ""}" data-tab="${r.id}">${r.label}</button>`)
+    .map((r) => `<button class="tab-btn${r.id === active ? " active" : ""}" data-tab="${r.id}">${t(r.labelKey)}</button>`)
     .join("");
   tabsEl.querySelectorAll("[data-tab]").forEach((btn) =>
     btn.addEventListener("click", () => goTo(btn.dataset.tab))
@@ -136,6 +148,11 @@ function renderTopbar() {
     renderTopbar();
     renderView();
     refreshNotifCount();
+  };
+
+  document.getElementById("lang-toggle").onclick = () => {
+    setLang(getLang() === "ar" ? "en" : "ar");
+    location.reload();
   };
 }
 
@@ -171,11 +188,11 @@ async function toggleNotifPanel() {
           (n) => `
       <div class="notif-item${n.read_at ? "" : " unread"}" data-id="${n.id}">
         ${esc(n.message)}
-        <span class="when">${fmtDateTime(n.created_at)} · ${esc(n.kind)}</span>
+        <span class="when">${fmtDateTime(n.created_at)} · ${esc(t(`notif.kind.${n.kind}`))}</span>
       </div>`
         )
         .join("")
-    : `<div class="empty-state">No notifications yet</div>`;
+    : `<div class="empty-state">${esc(t("notif.empty"))}</div>`;
   document.body.appendChild(panel);
   panel.querySelectorAll("[data-id]").forEach((item) =>
     item.addEventListener("click", async () => {
@@ -215,9 +232,9 @@ let receiveWizard = freshReceiveWizard();
 function wizardStepsHtml(current) {
   return `
     <div class="wizard-steps">
-      <span class="wizard-step${current === 1 ? " active" : ""}"><span class="wizard-step-num">1</span> Receipt details</span>
+      <span class="wizard-step${current === 1 ? " active" : ""}"><span class="wizard-step-num">1</span> ${esc(t("receive.step1"))}</span>
       <span class="wizard-step-rule"></span>
-      <span class="wizard-step${current === 2 ? " active" : ""}"><span class="wizard-step-num">2</span> Materials &amp; batches</span>
+      <span class="wizard-step${current === 2 ? " active" : ""}"><span class="wizard-step-num">2</span> ${esc(t("receive.step2"))}</span>
     </div>`;
 }
 
@@ -232,45 +249,41 @@ function renderReceiveStep1(suppliers) {
   const view = document.getElementById("view");
   const w = receiveWizard;
   view.innerHTML = `
-    <div class="view-head"><div><h1>Receive material</h1><p>Log an import or sample the moment it physically arrives.</p></div></div>
+    <div class="view-head"><div><h1>${esc(t("receive.title"))}</h1><p>${esc(t("receive.subtitle"))}</p></div></div>
     ${wizardStepsHtml(1)}
     <form class="card form-grid" id="receive-step1-form">
       <div class="field-row">
         <div class="field">
-          <label>Type</label>
+          <label>${esc(t("receive.type"))}</label>
           <select name="type" id="rf-type">
-            <option value="import" ${w.type === "import" ? "selected" : ""}>Import</option>
-            <option value="sample" ${w.type === "sample" ? "selected" : ""}>Sample</option>
+            <option value="import" ${w.type === "import" ? "selected" : ""}>${esc(t("receive.typeImport"))}</option>
+            <option value="sample" ${w.type === "sample" ? "selected" : ""}>${esc(t("receive.typeSample"))}</option>
           </select>
         </div>
         <div class="field">
-          <label>Received at</label>
+          <label>${esc(t("receive.receivedAt"))}</label>
           <input type="datetime-local" name="received_at" value="${esc(w.received_at)}" required />
         </div>
         <div class="field">
-          <label>Your name</label>
+          <label>${esc(t("receive.yourName"))}</label>
           <input type="text" name="created_by" value="${esc(w.created_by)}" required />
         </div>
       </div>
       <div class="field-row">
         <div class="field" style="flex:2">
-          <label>Supplier</label>
-          <div style="display:flex; gap:8px;">
-            <select name="supplier_code" id="rf-supplier" style="flex:1">
-              ${suppliers
-                .map((s) => `<option value="${esc(s.code)}" ${w.supplier_code === s.code ? "selected" : ""}>${esc(s.name)} (${esc(s.code)})</option>`)
-                .join("")}
-            </select>
-            <button type="button" class="btn ghost sm" id="rf-new-supplier">+ New</button>
+          <label>${esc(t("receive.supplier"))}</label>
+          <div style="display:flex; gap:8px; align-items:flex-start;">
+            <div style="flex:1">${codeSearchHtml("rf-supplier", t("common.searchByCodeOrName"), "supplier_code")}</div>
+            <button type="button" class="btn ghost sm" id="rf-new-supplier">${esc(t("receive.new"))}</button>
           </div>
         </div>
         <div class="field" id="rf-sample-sender-field" ${w.type === "sample" ? "" : "hidden"} style="flex:1">
-          <label>Sample sent by</label>
-          <input type="text" name="sample_sent_by" placeholder="e.g. Jane Doe (supplier rep)" value="${esc(w.sample_sent_by)}" />
+          <label>${esc(t("receive.sampleSentBy"))}</label>
+          <input type="text" name="sample_sent_by" placeholder="${esc(t("receive.sampleSentByPlaceholder"))}" value="${esc(w.sample_sent_by)}" />
         </div>
       </div>
       <div style="display:flex; gap:10px; justify-content:flex-end;">
-        <button type="submit" class="btn primary">Next: Materials &amp; batches →</button>
+        <button type="submit" class="btn primary">${esc(t("receive.nextStep"))}</button>
       </div>
     </form>
   `;
@@ -279,13 +292,16 @@ function renderReceiveStep1(suppliers) {
     document.getElementById("rf-sample-sender-field").hidden = e.target.value !== "sample";
   });
 
+  const supplierInput = wireCodeSearch("rf-supplier", suppliers, () => {});
+  if (w.supplier_code) supplierInput.value = w.supplier_code;
+
   document.getElementById("rf-new-supplier").addEventListener("click", () => {
     openModal(
-      "New supplier",
+      esc(t("receive.newSupplier")),
       `<form class="form-grid" id="new-supplier-form">
-        <div class="field"><label>Code</label><input name="code" required /></div>
-        <div class="field"><label>Name</label><input name="name" required /></div>
-        <button type="submit" class="btn primary">Create</button>
+        <div class="field"><label>${esc(t("common.code"))}</label><input name="code" required /></div>
+        <div class="field"><label>${esc(t("common.name"))}</label><input name="name" required /></div>
+        <button type="submit" class="btn primary">${esc(t("common.create"))}</button>
       </form>`
     );
     document.getElementById("new-supplier-form").addEventListener("submit", async (e) => {
@@ -296,7 +312,7 @@ function renderReceiveStep1(suppliers) {
         await getSuppliers(true);
         closeModal();
         viewReceive();
-        toast("Supplier added");
+        toast(t("receive.supplierAdded"));
       } catch (err) {
         toast(err.message, true);
       }
@@ -321,20 +337,20 @@ function renderReceiveStep2() {
   const view = document.getElementById("view");
   const w = receiveWizard;
   view.innerHTML = `
-    <div class="view-head"><div><h1>Receive material</h1><p>Log an import or sample the moment it physically arrives.</p></div></div>
+    <div class="view-head"><div><h1>${esc(t("receive.title"))}</h1><p>${esc(t("receive.subtitle"))}</p></div></div>
     ${wizardStepsHtml(2)}
     <div class="card small muted" style="display:flex; justify-content:space-between; align-items:center;">
-      <span>${w.type === "sample" ? "Sample" : "Import"} · ${esc(w.supplier_code)} · ${fmtDateTime(new Date(w.received_at).toISOString())} · ${esc(w.created_by)}</span>
-      <button type="button" class="btn ghost sm" id="rf-back">← Edit details</button>
+      <span>${w.type === "sample" ? esc(t("receive.typeSample")) : esc(t("receive.typeImport"))} · ${esc(w.supplier_code)} · ${fmtDateTime(new Date(w.received_at).toISOString())} · ${esc(w.created_by)}</span>
+      <button type="button" class="btn ghost sm" id="rf-back">${esc(t("receive.editDetails"))}</button>
     </div>
     <form class="card form-grid" id="receive-step2-form">
       <div>
-        <label class="small muted">Lines received</label>
+        <label class="small muted">${esc(t("receive.linesReceived"))}</label>
         <div class="repeatable" id="rf-lines"></div>
-        <button type="button" class="btn ghost sm" id="rf-add-line" style="margin-top:8px">+ Add material line</button>
+        <button type="button" class="btn ghost sm" id="rf-add-line" style="margin-top:8px">${esc(t("receive.addMaterialLine"))}</button>
       </div>
       <div style="display:flex; gap:10px; justify-content:flex-end;">
-        <button type="submit" class="btn primary">Register receipt</button>
+        <button type="submit" class="btn primary">${esc(t("receive.registerReceipt"))}</button>
       </div>
     </form>
   `;
@@ -351,16 +367,16 @@ function renderReceiveStep2() {
     item.className = "repeatable-item line-item";
     item.innerHTML = `
       <div class="repeatable-item-head">
-        <b class="small">Material line</b>
-        <button type="button" class="btn ghost sm" data-remove-line>Remove line</button>
+        <b class="small">${esc(t("receive.materialLine"))}</b>
+        <button type="button" class="btn ghost sm" data-remove-line>${esc(t("receive.removeLine"))}</button>
       </div>
       <div class="field-row">
-        <div class="field"><label>Material code (if known)</label><input type="text" data-f="material_code" /></div>
-        <div class="field"><label>Material name (as on paperwork)</label><input type="text" data-f="material_name_text" required /></div>
-        <div class="field" style="max-width:120px"><label>Unit</label><input type="text" data-f="unit" placeholder="KG" required /></div>
+        <div class="field"><label>${esc(t("receive.materialCodeIfKnown"))}</label><input type="text" data-f="material_code" /></div>
+        <div class="field"><label>${esc(t("receive.materialNameAsOnPaperwork"))}</label><input type="text" data-f="material_name_text" required /></div>
+        <div class="field" style="max-width:120px"><label>${esc(t("common.unit"))}</label><input type="text" data-f="unit" placeholder="KG" required /></div>
       </div>
       <div class="batches"></div>
-      <button type="button" class="btn ghost sm" data-add-batch>+ Add supplier batch</button>
+      <button type="button" class="btn ghost sm" data-add-batch>${esc(t("receive.addSupplierBatch"))}</button>
     `;
     item.querySelector("[data-remove-line]").addEventListener("click", () => item.remove());
     const batchesEl = item.querySelector(".batches");
@@ -368,8 +384,8 @@ function renderReceiveStep2() {
       const row = document.createElement("div");
       row.className = "field-row batch-item";
       row.innerHTML = `
-        <div class="field"><label>Supplier batch #</label><input type="text" data-f="supplier_batch_no" required /></div>
-        <div class="field" style="max-width:140px"><label>Qty as received</label><input type="number" step="any" data-f="qty_as_received" required /></div>
+        <div class="field"><label>${esc(t("receive.supplierBatchNo"))}</label><input type="text" data-f="supplier_batch_no" required /></div>
+        <div class="field" style="max-width:140px"><label>${esc(t("receive.qtyAsReceived"))}</label><input type="number" step="any" data-f="qty_as_received" required /></div>
         <div style="align-self:flex-end"><button type="button" class="btn ghost sm" data-remove-batch>✕</button></div>
       `;
       row.querySelector("[data-remove-batch]").addEventListener("click", () => row.remove());
@@ -411,7 +427,7 @@ function renderReceiveStep2() {
 
     try {
       const result = await api.post("/api/receipts", body);
-      toast(`Receipt #${result.id} registered`);
+      toast(t("receive.receiptRegistered", { id: result.id }));
       receiveWizard = freshReceiveWizard();
       goTo("todo");
     } catch (err) {
@@ -423,12 +439,12 @@ function renderReceiveStep2() {
 // ---------------------------------------------------------------- shared receipt list/detail
 
 function statusPill(status) {
-  return `<span class="status-pill ${esc(status)}">${esc(status)}</span>`;
+  return `<span class="status-pill ${esc(status)}">${esc(t(`status.${status}`))}</span>`;
 }
 
 function batchStatusInline(b) {
-  if (b.status === undefined) return `<span class="muted small">with Quality</span>`; // redacted (sample, warehouse view)
-  if (b.status === "pending") return `<span class="muted small">awaiting decision</span>`;
+  if (b.status === undefined) return `<span class="muted small">${esc(t("line.withQuality"))}</span>`; // redacted (sample, warehouse view)
+  if (b.status === "pending") return `<span class="muted small">${esc(t("line.awaitingDecision"))}</span>`;
   if (b.status === "rejected") return statusPill("rejected");
   return `${statusPill(b.status)}${b.internal_batch_no ? ` <span class="mono small">${esc(b.internal_batch_no)}</span>` : ""}`;
 }
@@ -437,8 +453,8 @@ function resultsSummaryBadge(results) {
   if (!results || results.length === 0) return "";
   const failed = results.filter((r) => r.result === "fail").length;
   return failed > 0
-    ? `<span class="badge flag">${failed}/${results.length} failed</span>`
-    : `<span class="badge repeat">${results.length}/${results.length} passed</span>`;
+    ? `<span class="badge flag">${esc(t("results.failedOf", { failed, total: results.length }))}</span>`
+    : `<span class="badge repeat">${esc(t("results.passedOf", { total: results.length }))}</span>`;
 }
 
 function openResultsModal(results) {
@@ -449,15 +465,15 @@ function openResultsModal(results) {
         <td>${esc(r.parameter_name)}</td>
         <td class="small muted">${esc(r.method || "—")}</td>
         <td class="mono small">${esc(r.measured_value || "—")}</td>
-        <td><span class="status-pill ${r.result === "fail" ? "rejected" : "approved"}">${esc(r.result)}</span></td>
+        <td><span class="status-pill ${r.result === "fail" ? "rejected" : "approved"}">${esc(t(`status.${r.result}`))}</span></td>
       </tr>`
     )
     .join("");
   openModal(
-    "Test results",
+    esc(t("results.title")),
     `<div class="table-scroll"><table class="data-table">
-      <thead><tr><th>Parameter</th><th>Method</th><th>Measured</th><th>Result</th></tr></thead>
-      <tbody>${rows || `<tr><td colspan="4" class="muted">No results recorded</td></tr>`}</tbody>
+      <thead><tr><th>${esc(t("results.parameter"))}</th><th>${esc(t("results.method"))}</th><th>${esc(t("results.measured"))}</th><th>${esc(t("results.result"))}</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="4" class="muted">${esc(t("results.none"))}</td></tr>`}</tbody>
     </table></div>`
   );
 }
@@ -471,7 +487,7 @@ async function downloadCoa(batchId, format) {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || `Download failed (${res.status})`);
+      throw new Error(data.error || t("download.failed", { status: res.status }));
     }
     const blob = await res.blob();
     const match = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") || "");
@@ -492,17 +508,18 @@ async function downloadCoa(batchId, format) {
 function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
   const spec = line.spec;
   const specHtml = spec
-    ? `<span class="spec-chip">Spec v${spec.version}: ${spec.parameters
-        .map((p) => `${esc(p.parameter_name)}${p.unit ? " (" + esc(p.unit) + ")" : ""}`)
-        .join(", ") || "no parameters"}</span>`
+    ? `<span class="spec-chip">${esc(t("line.specVersion", {
+        version: spec.version,
+        params: spec.parameters.map((p) => `${p.parameter_name}${p.unit ? " (" + p.unit + ")" : ""}`).join(", ") || t("line.noParameters"),
+      }))}</span>`
     : line.material_code
-      ? `<span class="spec-chip muted">No active spec</span>`
+      ? `<span class="spec-chip muted">${esc(t("line.noActiveSpec"))}</span>`
       : "";
 
   const importBadge =
     line.import_code
       ? `<span class="badge ${line.import_scenario === "repeat" ? "repeat" : "flag"}">${esc(line.import_code)}${
-          role === "quality" && line.import_scenario ? " · " + esc(line.import_scenario.replace("_", " ")) : ""
+          role === "quality" && line.import_scenario ? " · " + esc(t(`status.${line.import_scenario}`)) : ""
         }</span>`
       : "";
 
@@ -511,26 +528,26 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       const decided = b.status && b.status !== "pending";
       const actions = [];
       if (canDecide && b.status === "pending") {
-        actions.push(`<button class="btn sm ghost" data-test="${b.id}">Record test results</button>`);
-        actions.push(`<button class="btn sm primary" data-decide="${b.id}">Decide</button>`);
+        actions.push(`<button class="btn sm ghost" data-test="${b.id}">${esc(t("line.recordTestResults"))}</button>`);
+        actions.push(`<button class="btn sm primary" data-decide="${b.id}">${esc(t("line.decide"))}</button>`);
       }
       if (canFinalize && b.status !== "pending" && b.status !== "rejected" && b.qty_actual_weighed == null) {
-        actions.push(`<button class="btn sm ghost" data-finalize="${b.id}">Finalize weight</button>`);
+        actions.push(`<button class="btn sm ghost" data-finalize="${b.id}">${esc(t("line.finalizeWeight"))}</button>`);
       }
       if (decided) {
-        actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="pdf">COA PDF</button>`);
-        actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="xlsx">COA Excel</button>`);
+        actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="pdf">${esc(t("line.coaPdf"))}</button>`);
+        actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="xlsx">${esc(t("line.coaExcel"))}</button>`);
       }
       const qtyLine =
         b.qty_actual_weighed != null
-          ? `${b.qty_as_received} as received · ${b.qty_actual_weighed} actual`
-          : `${b.qty_as_received} as received`;
+          ? t("line.asReceivedActual", { qty: b.qty_as_received, actual: b.qty_actual_weighed })
+          : t("line.asReceived", { qty: b.qty_as_received });
       const resultsBadge = resultsSummaryBadge(b.test_results);
       return `
         <div class="batch-row">
-          <div><span class="batch-id">${esc(b.supplier_batch_no)}</span> <span class="batch-qty">${qtyLine} ${esc(line.unit)}</span></div>
+          <div><span class="batch-id">${esc(b.supplier_batch_no)}</span> <span class="batch-qty">${esc(qtyLine)} ${esc(line.unit)}</span></div>
           <div class="hstack">
-            ${b.expiry_date ? `<span class="small muted">exp ${fmtDate(b.expiry_date)}</span>` : ""}
+            ${b.expiry_date ? `<span class="small muted">${esc(t("line.exp", { date: fmtDate(b.expiry_date) }))}</span>` : ""}
             ${batchStatusInline(b)}
             ${resultsBadge ? `<button class="btn sm ghost" data-view-results="${b.id}">${resultsBadge}</button>` : ""}
             ${actions.join("")}
@@ -544,12 +561,12 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       <div class="line-head">
         <div class="line-material">
           ${esc(line.material_name_text)}
-          ${line.material_code ? `<span class="code">${esc(line.material_code)}</span>` : `<span class="badge neutral">uncoded</span>`}
+          ${line.material_code ? `<span class="code">${esc(line.material_code)}</span>` : `<span class="badge neutral">${esc(t("line.uncoded"))}</span>`}
         </div>
         <div class="hstack">
           ${importBadge}
           ${specHtml}
-          ${role === "quality" && !line.material_code ? `<button class="btn sm ghost" data-associate="${line.id}">Associate a Code</button>` : ""}
+          ${role === "quality" && !line.material_code ? `<button class="btn sm ghost" data-associate="${line.id}">${esc(t("line.associateACode"))}</button>` : ""}
         </div>
       </div>
       ${batchesHtml}
@@ -610,8 +627,8 @@ function buildReceiptCard(receipt, { role, type }) {
   const senderHtml =
     type === "sample"
       ? `<div class="small muted" data-sender-block>
-          Sent by: <span data-sender-value>${receipt.sample_sent_by ? esc(receipt.sample_sent_by) : "not recorded"}</span>
-          <button class="btn ghost sm" data-edit-sender style="margin-left:6px">Edit</button>
+          ${esc(t("receipt.sentBy"))} <span data-sender-value>${receipt.sample_sent_by ? esc(receipt.sample_sent_by) : esc(t("receipt.notRecorded"))}</span>
+          <button class="btn ghost sm" data-edit-sender style="margin-inline-start:6px">${esc(t("common.edit"))}</button>
         </div>`
       : "";
 
@@ -621,8 +638,8 @@ function buildReceiptCard(receipt, { role, type }) {
   card.innerHTML = `
     <div class="receipt-card-top">
       <div>
-        <div class="receipt-title">Receipt #${receipt.id} · ${supplierName(receipt.supplier_id)}</div>
-        <div class="receipt-meta">${fmtDateTime(receipt.received_at)} · logged by ${esc(receipt.created_by)}</div>
+        <div class="receipt-title">${esc(t("receipt.receiptNumber", { id: receipt.id }))} · ${supplierName(receipt.supplier_id)}</div>
+        <div class="receipt-meta">${fmtDateTime(receipt.received_at)} · ${esc(t("receipt.loggedBy"))} ${esc(receipt.created_by)}</div>
       </div>
       <div class="hstack">
         ${role === "quality" || type !== "sample" ? statusPill(receipt.status) : ""}
@@ -640,13 +657,13 @@ function buildReceiptCard(receipt, { role, type }) {
       const current = receipt.sample_sent_by || "";
       block.innerHTML = `
         <input type="text" value="${esc(current)}" data-sender-input style="max-width:240px" />
-        <button class="btn sm primary" data-save-sender>Save</button>`;
+        <button class="btn sm primary" data-save-sender>${esc(t("common.save"))}</button>`;
       block.querySelector("[data-save-sender]").addEventListener("click", async () => {
         const value = block.querySelector("[data-sender-input]").value.trim();
-        if (!value) return toast("Enter a name first", true);
+        if (!value) return toast(t("receipt.enterNameFirst"), true);
         try {
           await api.patch(`/api/receipts/${receipt.id}/sample-sender`, { sample_sent_by: value });
-          toast("Sample sender updated");
+          toast(t("receipt.sampleSenderUpdated"));
           refreshCurrentView();
         } catch (err) {
           toast(err.message, true);
@@ -709,12 +726,15 @@ async function renderReceiptsInto(container, { role, type, bucket, query }) {
   const matches = all.filter((r) => receiptMatchesQuery(r, query));
 
   if (all.length === 0) {
-    const noun = type === "sample" ? "samples" : "imports";
-    container.innerHTML = `<div class="empty-state">No ${bucket === "history" ? "decided" : "pending"} ${noun}.</div>`;
+    const key =
+      bucket === "history"
+        ? type === "sample" ? "bucket.noDecidedSamples" : "bucket.noDecidedImports"
+        : type === "sample" ? "bucket.noPendingSamples" : "bucket.noPendingImports";
+    container.innerHTML = `<div class="empty-state">${esc(t(key))}</div>`;
     return;
   }
   if (matches.length === 0) {
-    container.innerHTML = `<div class="empty-state">No results for "${esc(query)}".</div>`;
+    container.innerHTML = `<div class="empty-state">${esc(t("bucket.noResultsFor", { query }))}</div>`;
     return;
   }
   container.innerHTML = "";
@@ -729,13 +749,13 @@ function paramSpecHint(p) {
   if (p.param_type === "numeric_range" || p.param_type === "time_range") {
     return `${p.min_value ?? ""}–${p.max_value ?? ""}${p.unit ? ` ${p.unit}` : ""}`;
   }
-  if (p.param_type === "pass_fail") return "Pass/Fail";
+  if (p.param_type === "pass_fail") return t("test.specHint.passFail");
   return p.unit ?? "";
 }
 
 function testResultsRecap(results) {
   if (!results || results.length === 0) {
-    return `<p class="small muted">No test results recorded yet. Use "Record test results" first if this material has a spec.</p>`;
+    return `<p class="small muted">${esc(t("test.recap.none"))}</p>`;
   }
   const rows = results
     .map(
@@ -743,15 +763,15 @@ function testResultsRecap(results) {
       <tr>
         <td>${esc(r.parameter_name)}</td>
         <td class="mono small">${esc(r.measured_value || "—")}</td>
-        <td><span class="status-pill ${r.result === "fail" ? "rejected" : "approved"}">${esc(r.result)}</span></td>
+        <td><span class="status-pill ${r.result === "fail" ? "rejected" : "approved"}">${esc(t(`status.${r.result}`))}</span></td>
       </tr>`
     )
     .join("");
   return `
     <div>
-      <label class="small muted">Recorded test results</label>
+      <label class="small muted">${esc(t("test.recap.title"))}</label>
       <div class="table-scroll" style="margin-top:6px"><table class="data-table">
-        <thead><tr><th>Parameter</th><th>Measured</th><th>Result</th></tr></thead>
+        <thead><tr><th>${esc(t("results.parameter"))}</th><th>${esc(t("results.measured"))}</th><th>${esc(t("results.result"))}</th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
     </div>`;
@@ -764,16 +784,16 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
 
   if (!params.length) {
     openModal(
-      "Record test results",
-      `<p class="small muted">${spec ? "This spec has no parameters yet." : "No active spec on this material — no structured test results to record."}</p>`
+      esc(t("test.title")),
+      `<p class="small muted">${esc(spec ? t("test.noParamsYet") : t("test.noActiveSpec"))}</p>`
     );
     return;
   }
 
   openModal(
-    "Record test results",
+    esc(t("test.title")),
     `<form class="form-grid" id="test-results-form">
-      <label class="small muted">Test results — ${esc(spec.title)} (v${spec.version})</label>
+      <label class="small muted">${esc(t("test.headerForSpec", { title: spec.title, version: spec.version }))}</label>
       <div class="repeatable">
         ${params
           .map((p) => {
@@ -783,14 +803,14 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
             <div class="field-row">
               <div class="field" style="flex:2">
                 <label>${esc(p.parameter_name)}${p.method ? ` <span class="muted">(${esc(p.method)})</span>` : ""}</label>
-                <div class="small muted">Spec: ${esc(paramSpecHint(p))}</div>
+                <div class="small muted">${esc(t("test.spec", { hint: paramSpecHint(p) }))}</div>
               </div>
-              <div class="field"><label>Measured value</label><input type="text" data-f="measured_value" value="${esc(existing?.measured_value || "")}" /></div>
-              <div class="field" style="max-width:120px"><label>Result</label>
+              <div class="field"><label>${esc(t("test.measuredValue"))}</label><input type="text" data-f="measured_value" value="${esc(existing?.measured_value || "")}" /></div>
+              <div class="field" style="max-width:120px"><label>${esc(t("test.result"))}</label>
                 <select data-f="result">
                   <option value="">—</option>
-                  <option value="pass" ${existing?.result === "pass" ? "selected" : ""}>Pass</option>
-                  <option value="fail" ${existing?.result === "fail" ? "selected" : ""}>Fail</option>
+                  <option value="pass" ${existing?.result === "pass" ? "selected" : ""}>${esc(t("test.pass"))}</option>
+                  <option value="fail" ${existing?.result === "fail" ? "selected" : ""}>${esc(t("test.fail"))}</option>
                 </select>
               </div>
             </div>
@@ -798,8 +818,8 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
           })
           .join("")}
       </div>
-      <div class="field"><label>Tested by</label><input type="text" name="tested_by" value="${esc(getRememberedName())}" required /></div>
-      <button type="submit" class="btn primary">Save test results</button>
+      <div class="field"><label>${esc(t("test.testedBy"))}</label><input type="text" name="tested_by" value="${esc(getRememberedName())}" required /></div>
+      <button type="submit" class="btn primary">${esc(t("test.save"))}</button>
     </form>`
   );
 
@@ -815,11 +835,11 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
         result: row.querySelector('[data-f="result"]').value,
       }))
       .filter((r) => r.result === "pass" || r.result === "fail");
-    if (!results.length) return toast("Enter at least one result", true);
+    if (!results.length) return toast(t("test.enterAtLeastOne"), true);
 
     try {
       await api.post(`/api/batches/${batchId}/test-results`, { tested_by: fd.get("tested_by"), results });
-      toast("Test results saved");
+      toast(t("test.saved"));
       closeModal();
       onDone();
     } catch (err) {
@@ -832,32 +852,32 @@ async function openDecideModal(batchId, results, onDone) {
   const resultsHtml = testResultsRecap(results);
 
   openModal(
-    "Decide batch",
+    esc(t("decide.title")),
     `<form class="form-grid" id="decide-form">
       <div class="field">
-        <label>Decision</label>
+        <label>${esc(t("decide.decision"))}</label>
         <select name="decision" id="decide-decision">
-          <option value="approve">Approve (whole batch)</option>
-          <option value="partial">Approve partially</option>
-          <option value="reject">Reject</option>
+          <option value="approve">${esc(t("decide.approveWhole"))}</option>
+          <option value="partial">${esc(t("decide.approvePartial"))}</option>
+          <option value="reject">${esc(t("decide.reject"))}</option>
         </select>
       </div>
       <div class="field-row" id="decide-qty-row" hidden>
-        <div class="field"><label>Qty accepted</label><input type="number" step="any" name="qty_accepted" /></div>
-        <div class="field"><label>Qty rejected</label><input type="number" step="any" name="qty_rejected" /></div>
+        <div class="field"><label>${esc(t("decide.qtyAccepted"))}</label><input type="number" step="any" name="qty_accepted" /></div>
+        <div class="field"><label>${esc(t("decide.qtyRejected"))}</label><input type="number" step="any" name="qty_rejected" /></div>
       </div>
       ${resultsHtml}
       <div class="field-row" id="decide-approve-fields">
-        <div class="field"><label>Expiry date</label><input type="date" name="expiry_date" /></div>
-        <div class="field"><label>Production date</label><input type="date" name="production_date" /></div>
+        <div class="field"><label>${esc(t("decide.expiryDate"))}</label><input type="date" name="expiry_date" /></div>
+        <div class="field"><label>${esc(t("decide.productionDate"))}</label><input type="date" name="production_date" /></div>
       </div>
       <div class="field-row" id="decide-approve-fields2">
-        <div class="field"><label>Internal batch # (leave blank to auto-generate)</label><input type="text" name="internal_batch_no" /></div>
-        <div class="field"><label>Import code override (leave blank to auto-generate)</label><input type="text" name="import_code" /></div>
+        <div class="field"><label>${esc(t("decide.internalBatchNo"))}</label><input type="text" name="internal_batch_no" /></div>
+        <div class="field"><label>${esc(t("decide.importCodeOverride"))}</label><input type="text" name="import_code" /></div>
       </div>
-      <div class="field"><label>Remarks</label><textarea name="coa_remarks"></textarea></div>
-      <div class="field"><label>Decided by</label><input type="text" name="decided_by" value="${esc(getRememberedName())}" required /></div>
-      <button type="submit" class="btn primary">Submit decision</button>
+      <div class="field"><label>${esc(t("decide.remarks"))}</label><textarea name="coa_remarks"></textarea></div>
+      <div class="field"><label>${esc(t("decide.decidedBy"))}</label><input type="text" name="decided_by" value="${esc(getRememberedName())}" required /></div>
+      <button type="submit" class="btn primary">${esc(t("decide.submit"))}</button>
     </form>`
   );
 
@@ -893,7 +913,7 @@ async function openDecideModal(batchId, results, onDone) {
 
     try {
       await api.post(`/api/batches/${batchId}/decision`, body);
-      toast("Decision recorded");
+      toast(t("decide.recorded"));
       closeModal();
       onDone();
     } catch (err) {
@@ -904,10 +924,10 @@ async function openDecideModal(batchId, results, onDone) {
 
 function openFinalizeModal(batchId, onDone) {
   openModal(
-    "Finalize actual weight",
+    esc(t("finalize.title")),
     `<form class="form-grid" id="finalize-form">
-      <div class="field"><label>Actual weighed quantity</label><input type="number" step="any" name="qty_actual_weighed" required /></div>
-      <button type="submit" class="btn primary">Save</button>
+      <div class="field"><label>${esc(t("finalize.actualQty"))}</label><input type="number" step="any" name="qty_actual_weighed" required /></div>
+      <button type="submit" class="btn primary">${esc(t("finalize.save"))}</button>
     </form>`
   );
   document.getElementById("finalize-form").addEventListener("submit", async (e) => {
@@ -915,7 +935,7 @@ function openFinalizeModal(batchId, onDone) {
     const fd = new FormData(e.target);
     try {
       await api.post(`/api/batches/${batchId}/finalize-weight`, { qty_actual_weighed: Number(fd.get("qty_actual_weighed")) });
-      toast("Actual weight recorded");
+      toast(t("finalize.recorded"));
       closeModal();
       onDone();
     } catch (err) {
@@ -929,38 +949,36 @@ async function openAssociateModal(lineId, onDone) {
   const types = await getTypes();
   const subtypes = await getSubtypes();
   openModal(
-    "Associate a Code",
+    esc(t("associate.title")),
     `<div class="form-grid">
       <div class="field">
-        <label>Mode</label>
+        <label>${esc(t("associate.mode"))}</label>
         <select id="assoc-mode">
-          <option value="existing">Link to an existing material</option>
-          <option value="new">Create a new material code</option>
+          <option value="existing">${esc(t("associate.linkExisting"))}</option>
+          <option value="new">${esc(t("associate.createNew"))}</option>
         </select>
       </div>
       <div id="assoc-existing" class="form-grid">
         <div class="field">
-          <label>Existing material</label>
-          <select name="material_code">
-            ${materials.map((m) => `<option value="${esc(m.code)}">${esc(m.code)} — ${esc(m.name)}</option>`).join("")}
-          </select>
+          <label>${esc(t("associate.existingMaterial"))}</label>
+          ${codeSearchHtml("assoc-material", t("common.searchByCodeOrName"), "material_code")}
         </div>
       </div>
       <div id="assoc-new" class="form-grid" hidden>
         <div class="field-row">
-          <div class="field"><label>New code</label><input type="text" name="new_code" /></div>
-          <div class="field"><label>Name</label><input type="text" name="new_name" /></div>
-          <div class="field" style="max-width:100px"><label>Unit</label><input type="text" name="new_unit" /></div>
+          <div class="field"><label>${esc(t("associate.newCode"))}</label><input type="text" name="new_code" /></div>
+          <div class="field"><label>${esc(t("common.name"))}</label><input type="text" name="new_name" /></div>
+          <div class="field" style="max-width:100px"><label>${esc(t("common.unit"))}</label><input type="text" name="new_unit" /></div>
         </div>
         <div class="field-row">
-          <div class="field"><label>Type</label><select name="new_type"><option value="">—</option>${types.map((t) => `<option value="${esc(t.code)}">${esc(t.name)}</option>`).join("")}</select></div>
-          <div class="field"><label>Subtype</label><select name="new_subtype"><option value="">—</option>${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.name)}</option>`).join("")}</select></div>
+          <div class="field"><label>${esc(t("common.type"))}</label><select name="new_type"><option value="">—</option>${types.map((ty) => `<option value="${esc(ty.code)}">${esc(ty.name)}</option>`).join("")}</select></div>
+          <div class="field"><label>${esc(t("common.subtype"))}</label><select name="new_subtype"><option value="">—</option>${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.name)}</option>`).join("")}</select></div>
         </div>
-        <div class="field"><label>Spec title</label><input type="text" name="spec_title" placeholder="e.g. Initial Rev A" /></div>
-        <p class="small muted">Spec parameters can be added afterward from the Specifications tab — this creates the material with an empty or subtype-templated starting spec.</p>
+        <div class="field"><label>${esc(t("associate.specTitle"))}</label><input type="text" name="spec_title" placeholder="${esc(t("associate.specTitlePlaceholder"))}" /></div>
+        <p class="small muted">${esc(t("associate.specHint"))}</p>
       </div>
-      <div class="field"><label>Your name (Quality)</label><input type="text" id="assoc-by" value="${esc(getRememberedName())}" /></div>
-      <button type="button" class="btn primary" id="assoc-submit">Associate</button>
+      <div class="field"><label>${esc(t("associate.yourNameQuality"))}</label><input type="text" id="assoc-by" value="${esc(getRememberedName())}" /></div>
+      <button type="button" class="btn primary" id="assoc-submit">${esc(t("associate.submit"))}</button>
     </div>`
   );
 
@@ -969,6 +987,9 @@ async function openAssociateModal(lineId, onDone) {
     document.getElementById("assoc-existing").hidden = modeSelect.value !== "existing";
     document.getElementById("assoc-new").hidden = modeSelect.value !== "new";
   });
+
+  const assocMaterialInput = wireCodeSearch("assoc-material", materials, () => {});
+  if (materials.length) assocMaterialInput.value = materials[0].code;
 
   document.getElementById("assoc-submit").addEventListener("click", async () => {
     const by = document.getElementById("assoc-by").value || "quality";
@@ -988,12 +1009,12 @@ async function openAssociateModal(lineId, onDone) {
           type_code: get("new_type") || null,
           subtype_code: get("new_subtype") || null,
         },
-        spec: { title: get("spec_title") || "Initial spec", created_by: by },
+        spec: { title: get("spec_title") || t("associate.initialSpecTitle"), created_by: by },
       };
     }
     try {
       await api.post(`/api/receipt-lines/${lineId}/associate-code`, body);
-      toast("Code associated");
+      toast(t("associate.codeAssociated"));
       await getMaterials(true);
       closeModal();
       onDone();
@@ -1015,30 +1036,24 @@ function getListState(role, bucket) {
 }
 
 const BUCKET_COPY = {
-  todo: {
-    warehouse: "Awaiting a Quality decision, or still needing an actual weight.",
-    quality: "Review and decide against spec.",
-  },
-  history: {
-    warehouse: "Decided by Quality, and nothing left for you to do.",
-    quality: "Receipts Quality has finished deciding.",
-  },
+  todo: { warehouse: "bucket.todoCopy.warehouse", quality: "bucket.todoCopy.quality" },
+  history: { warehouse: "bucket.historyCopy.warehouse", quality: "bucket.historyCopy.quality" },
 };
 
 async function viewReceiptBucket({ role, bucket }) {
   const state = getListState(role, bucket);
   const view = document.getElementById("view");
-  const title = bucket === "history" ? "History" : "To Do";
+  const title = bucket === "history" ? t("bucket.historyTitle") : t("bucket.todoTitle");
 
   view.innerHTML = `
-    <div class="view-head"><div><h1>${title}</h1><p>${BUCKET_COPY[bucket][role]}</p></div></div>
+    <div class="view-head"><div><h1>${esc(title)}</h1><p>${esc(t(BUCKET_COPY[bucket][role]))}</p></div></div>
     <div class="list-controls">
       <div class="subtabs">
-        <button class="subtab-btn${state.type === "import" ? " active" : ""}" data-t="import">Imports</button>
-        <button class="subtab-btn${state.type === "sample" ? " active" : ""}" data-t="sample">Samples</button>
+        <button class="subtab-btn${state.type === "import" ? " active" : ""}" data-t="import">${esc(t("bucket.imports"))}</button>
+        <button class="subtab-btn${state.type === "sample" ? " active" : ""}" data-t="sample">${esc(t("bucket.samples"))}</button>
       </div>
       <input type="search" class="search-input" id="receipt-search"
-        placeholder="Search receipt #, material code, batch #, status…" value="${esc(state.query)}" />
+        placeholder="${esc(t("bucket.searchPlaceholder"))}" value="${esc(state.query)}" />
     </div>
     <div id="receipt-list"></div>
   `;
@@ -1065,19 +1080,19 @@ async function viewReceiptBucket({ role, bucket }) {
 // ---------------------------------------------------------------- view: Codes
 
 const CODES_SUBTABS = [
-  { id: "types", label: "Types & Subtypes" },
-  { id: "materials", label: "Materials" },
-  { id: "schemes", label: "Numbering Schemes" },
+  { id: "types", labelKey: "codes.subtab.types" },
+  { id: "materials", labelKey: "codes.subtab.materials" },
+  { id: "schemes", labelKey: "codes.subtab.schemes" },
 ];
 let codesSubtab = "types";
 
 async function viewCodes() {
   const view = document.getElementById("view");
   view.innerHTML = `
-    <div class="view-head"><div><h1>Codes</h1><p>Material master data, classification, and numbering schemes.</p></div></div>
+    <div class="view-head"><div><h1>${esc(t("codes.title"))}</h1><p>${esc(t("codes.subtitle"))}</p></div></div>
     <div class="subtabs">
       ${CODES_SUBTABS.map(
-        (t) => `<button class="subtab-btn${codesSubtab === t.id ? " active" : ""}" data-sub="${t.id}">${t.label}</button>`
+        (sub) => `<button class="subtab-btn${codesSubtab === sub.id ? " active" : ""}" data-sub="${sub.id}">${esc(t(sub.labelKey))}</button>`
       ).join("")}
     </div>
     <div id="codes-section"></div>
@@ -1099,25 +1114,25 @@ async function viewCodes() {
 function renderTypesSubtypesSection(section, { types, subtypes }) {
   section.innerHTML = `
     <div class="card">
-      <h3 style="margin-bottom:12px">Material types &amp; subtypes</h3>
+      <h3 style="margin-bottom:12px">${esc(t("codes.typesHeading"))}</h3>
       <div class="field-row">
-        <div class="table-scroll" style="flex:1"><table class="data-table"><thead><tr><th>Type</th><th>Name</th></tr></thead>
-          <tbody>${types.map((t) => `<tr><td class="mono">${esc(t.code)}</td><td>${esc(t.name)}</td></tr>`).join("") || `<tr><td colspan="2" class="muted">None yet</td></tr>`}</tbody></table></div>
-        <div class="table-scroll" style="flex:1"><table class="data-table"><thead><tr><th>Subtype</th><th>Type</th><th>Name</th></tr></thead>
-          <tbody>${subtypes.map((s) => `<tr><td class="mono">${esc(s.code)}</td><td class="mono">${esc(s.type_code)}</td><td>${esc(s.name)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">None yet</td></tr>`}</tbody></table></div>
+        <div class="table-scroll" style="flex:1"><table class="data-table"><thead><tr><th>${esc(t("common.type"))}</th><th>${esc(t("common.name"))}</th></tr></thead>
+          <tbody>${types.map((ty) => `<tr><td class="mono">${esc(ty.code)}</td><td>${esc(ty.name)}</td></tr>`).join("") || `<tr><td colspan="2" class="muted">${esc(t("common.noneYet"))}</td></tr>`}</tbody></table></div>
+        <div class="table-scroll" style="flex:1"><table class="data-table"><thead><tr><th>${esc(t("common.subtype"))}</th><th>${esc(t("common.type"))}</th><th>${esc(t("common.name"))}</th></tr></thead>
+          <tbody>${subtypes.map((s) => `<tr><td class="mono">${esc(s.code)}</td><td class="mono">${esc(s.type_code)}</td><td>${esc(s.name)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">${esc(t("common.noneYet"))}</td></tr>`}</tbody></table></div>
       </div>
       <div class="field-row" style="margin-top:14px">
         <form class="form-grid" id="new-type-form" style="flex:1">
-          <b class="small">New type</b>
-          <div class="field-row"><input name="code" placeholder="Code (e.g. RM)" required /><input name="name" placeholder="Name" required /><button class="btn ghost sm">Add</button></div>
+          <b class="small">${esc(t("codes.newType"))}</b>
+          <div class="field-row"><input name="code" placeholder="${esc(t("codes.typeCodePlaceholder"))}" required /><input name="name" placeholder="${esc(t("common.name"))}" required /><button class="btn ghost sm">${esc(t("common.add"))}</button></div>
         </form>
         <form class="form-grid" id="new-subtype-form" style="flex:1">
-          <b class="small">New subtype</b>
+          <b class="small">${esc(t("codes.newSubtype"))}</b>
           <div class="field-row">
-            <input name="code" placeholder="Code (e.g. SOLVENT)" required />
-            <select name="type_code" required><option value="">Type…</option>${types.map((t) => `<option value="${esc(t.code)}">${esc(t.code)}</option>`).join("")}</select>
-            <input name="name" placeholder="Name" required />
-            <button class="btn ghost sm">Add</button>
+            <input name="code" placeholder="${esc(t("codes.subtypeCodePlaceholder"))}" required />
+            <select name="type_code" required><option value="">${esc(t("codes.typePlaceholder"))}</option>${types.map((ty) => `<option value="${esc(ty.code)}">${esc(ty.code)}</option>`).join("")}</select>
+            <input name="name" placeholder="${esc(t("common.name"))}" required />
+            <button class="btn ghost sm">${esc(t("common.add"))}</button>
           </div>
         </form>
       </div>
@@ -1129,7 +1144,7 @@ function renderTypesSubtypesSection(section, { types, subtypes }) {
     const fd = new FormData(e.target);
     try {
       await api.put("/api/material-types", { code: fd.get("code"), name: fd.get("name") });
-      toast("Type added");
+      toast(t("codes.typeAdded"));
       viewCodes();
     } catch (err) {
       toast(err.message, true);
@@ -1141,7 +1156,7 @@ function renderTypesSubtypesSection(section, { types, subtypes }) {
     const fd = new FormData(e.target);
     try {
       await api.put("/api/material-subtypes", { code: fd.get("code"), type_code: fd.get("type_code"), name: fd.get("name") });
-      toast("Subtype added");
+      toast(t("codes.subtypeAdded"));
       viewCodes();
     } catch (err) {
       toast(err.message, true);
@@ -1152,25 +1167,25 @@ function renderTypesSubtypesSection(section, { types, subtypes }) {
 function renderMaterialsSection(section, { types, subtypes, materials }) {
   section.innerHTML = `
     <div class="card">
-      <h3 style="margin-bottom:12px">Materials</h3>
-      <div class="table-scroll"><table class="data-table"><thead><tr><th>Code</th><th>Name</th><th>Unit</th><th>Type/Subtype</th><th>Expiry?</th></tr></thead>
+      <h3 style="margin-bottom:12px">${esc(t("codes.materialsHeading"))}</h3>
+      <div class="table-scroll"><table class="data-table"><thead><tr><th>${esc(t("common.code"))}</th><th>${esc(t("common.name"))}</th><th>${esc(t("common.unit"))}</th><th>${esc(t("codes.typeSubtype"))}</th><th>${esc(t("codes.expiry"))}</th></tr></thead>
         <tbody>${
           materials
             .map(
-              (m) => `<tr><td class="mono">${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.unit)}</td><td>${esc(m.type_code || "—")}${m.subtype_code ? " / " + esc(m.subtype_code) : ""}</td><td>${m.requires_expiry ? "Yes" : "No"}</td></tr>`
+              (m) => `<tr><td class="mono">${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.unit)}</td><td>${esc(m.type_code || "—")}${m.subtype_code ? " / " + esc(m.subtype_code) : ""}</td><td>${m.requires_expiry ? esc(t("common.yes")) : esc(t("common.no"))}</td></tr>`
             )
-            .join("") || `<tr><td colspan="5" class="muted">None yet</td></tr>`
+            .join("") || `<tr><td colspan="5" class="muted">${esc(t("common.noneYet"))}</td></tr>`
         }</tbody></table></div>
       <form class="form-grid" id="new-material-form" style="margin-top:14px">
-        <b class="small">New / edit material</b>
+        <b class="small">${esc(t("codes.newEditMaterial"))}</b>
         <div class="field-row">
-          <input name="code" placeholder="Code" required />
-          <input name="name" placeholder="Name" required />
-          <input name="unit" placeholder="Unit (KG)" required style="max-width:100px" />
-          <select name="type_code"><option value="">Type…</option>${types.map((t) => `<option value="${esc(t.code)}">${esc(t.code)}</option>`).join("")}</select>
-          <select name="subtype_code"><option value="">Subtype…</option>${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.code)}</option>`).join("")}</select>
-          <label class="small" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" name="requires_expiry" checked /> requires expiry</label>
-          <button class="btn primary sm">Save</button>
+          <input name="code" placeholder="${esc(t("common.code"))}" required />
+          <input name="name" placeholder="${esc(t("common.name"))}" required />
+          <input name="unit" placeholder="${esc(t("common.unit"))} (KG)" required style="max-width:100px" />
+          <select name="type_code"><option value="">${esc(t("codes.typePlaceholder"))}</option>${types.map((ty) => `<option value="${esc(ty.code)}">${esc(ty.code)}</option>`).join("")}</select>
+          <select name="subtype_code"><option value="">${esc(t("common.subtype"))}…</option>${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.code)}</option>`).join("")}</select>
+          <label class="small" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" name="requires_expiry" checked /> ${esc(t("codes.requiresExpiry"))}</label>
+          <button class="btn primary sm">${esc(t("common.save"))}</button>
         </div>
       </form>
     </div>
@@ -1188,7 +1203,7 @@ function renderMaterialsSection(section, { types, subtypes, materials }) {
         subtype_code: fd.get("subtype_code") || null,
         requires_expiry: fd.get("requires_expiry") === "on",
       });
-      toast("Material saved");
+      toast(t("codes.materialSaved"));
       viewCodes();
     } catch (err) {
       toast(err.message, true);
@@ -1199,22 +1214,22 @@ function renderMaterialsSection(section, { types, subtypes, materials }) {
 function renderSchemesSection(section) {
   section.innerHTML = `
     <div class="card">
-      <h3 style="margin-bottom:12px">Numbering schemes</h3>
+      <h3 style="margin-bottom:12px">${esc(t("codes.schemesHeading"))}</h3>
       <form class="form-grid" id="batch-scheme-form">
-        <b class="small">Internal batch # pattern (optionally per supplier)</b>
+        <b class="small">${esc(t("codes.batchPatternHeading"))}</b>
         <div class="field-row">
-          <input name="supplier_code" placeholder="Supplier code (blank = global default)" />
+          <input name="supplier_code" placeholder="${esc(t("codes.supplierCodeBlankDefault"))}" />
           <input name="pattern_template" placeholder="{supplier_code}{MMYY}{seq:04d}" required style="flex:2" />
-          <button class="btn ghost sm">Save</button>
+          <button class="btn ghost sm">${esc(t("common.save"))}</button>
         </div>
       </form>
       <form class="form-grid" id="rmf-scheme-form" style="margin-top:10px">
-        <b class="small">Import code — RMF pattern (novel combinations)</b>
-        <div class="field-row"><input name="pattern_template" placeholder="RMF{seq:04d}" required style="flex:1" /><button class="btn ghost sm">Save</button></div>
+        <b class="small">${esc(t("codes.rmfHeading"))}</b>
+        <div class="field-row"><input name="pattern_template" placeholder="RMF{seq:04d}" required style="flex:1" /><button class="btn ghost sm">${esc(t("common.save"))}</button></div>
       </form>
       <form class="form-grid" id="rms-scheme-form" style="margin-top:10px">
-        <b class="small">Import code — RMS pattern (regular repeats)</b>
-        <div class="field-row"><input name="pattern_template" placeholder="RMS{seq:04d}" required style="flex:1" /><button class="btn ghost sm">Save</button></div>
+        <b class="small">${esc(t("codes.rmsHeading"))}</b>
+        <div class="field-row"><input name="pattern_template" placeholder="RMS{seq:04d}" required style="flex:1" /><button class="btn ghost sm">${esc(t("common.save"))}</button></div>
       </form>
     </div>
   `;
@@ -1227,7 +1242,7 @@ function renderSchemesSection(section) {
         supplier_code: fd.get("supplier_code") || undefined,
         pattern_template: fd.get("pattern_template"),
       });
-      toast("Batch-number scheme saved");
+      toast(t("codes.batchSchemeSaved"));
     } catch (err) {
       toast(err.message, true);
     }
@@ -1237,7 +1252,7 @@ function renderSchemesSection(section) {
     e.preventDefault();
     try {
       await api.put("/api/import-code-schemes/RMF", { pattern_template: new FormData(e.target).get("pattern_template") });
-      toast("RMF pattern saved");
+      toast(t("codes.rmfSaved"));
     } catch (err) {
       toast(err.message, true);
     }
@@ -1246,7 +1261,7 @@ function renderSchemesSection(section) {
     e.preventDefault();
     try {
       await api.put("/api/import-code-schemes/RMS", { pattern_template: new FormData(e.target).get("pattern_template") });
-      toast("RMS pattern saved");
+      toast(t("codes.rmsSaved"));
     } catch (err) {
       toast(err.message, true);
     }
@@ -1261,17 +1276,17 @@ function paramRowHtml(p = {}) {
   return `
     <div class="repeatable-item param-item">
       <div class="field-row">
-        <div class="field" style="flex:2"><label>Parameter</label><input data-f="parameter_name" value="${esc(p.parameter_name || "")}" required /></div>
-        <div class="field"><label>Type</label>
-          <select data-f="param_type">${PARAM_TYPES.map((t) => `<option value="${t}" ${p.param_type === t ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <div class="field" style="flex:2"><label>${esc(t("results.parameter"))}</label><input data-f="parameter_name" value="${esc(p.parameter_name || "")}" required /></div>
+        <div class="field"><label>${esc(t("common.type"))}</label>
+          <select data-f="param_type">${PARAM_TYPES.map((pt) => `<option value="${pt}" ${p.param_type === pt ? "selected" : ""}>${esc(t("paramType." + pt))}</option>`).join("")}</select>
         </div>
         <div><label>&nbsp;</label><button type="button" class="btn ghost sm" data-remove-param>✕</button></div>
       </div>
       <div class="field-row">
-        <div class="field"><label>Method</label><input data-f="method" value="${esc(p.method || "")}" /></div>
-        <div class="field"><label>Min</label><input type="number" step="any" data-f="min_value" value="${p.min_value ?? ""}" /></div>
-        <div class="field"><label>Max</label><input type="number" step="any" data-f="max_value" value="${p.max_value ?? ""}" /></div>
-        <div class="field"><label>Unit</label><input data-f="unit" value="${esc(p.unit || "")}" /></div>
+        <div class="field"><label>${esc(t("common.method"))}</label><input data-f="method" value="${esc(p.method || "")}" /></div>
+        <div class="field"><label>${esc(t("specs.paramMin"))}</label><input type="number" step="any" data-f="min_value" value="${p.min_value ?? ""}" /></div>
+        <div class="field"><label>${esc(t("specs.paramMax"))}</label><input type="number" step="any" data-f="max_value" value="${p.max_value ?? ""}" /></div>
+        <div class="field"><label>${esc(t("common.unit"))}</label><input data-f="unit" value="${esc(p.unit || "")}" /></div>
       </div>
     </div>`;
 }
@@ -1309,50 +1324,53 @@ async function viewSpecs() {
   const [materials, subtypes] = await Promise.all([getMaterials(true), getSubtypes(true)]);
 
   view.innerHTML = `
-    <div class="view-head"><div><h1>Specifications</h1><p>Structured, versioned test parameters — never a blank page.</p></div></div>
+    <div class="view-head"><div><h1>${esc(t("specs.title"))}</h1><p>${esc(t("specs.subtitle"))}</p></div></div>
 
     <div class="card">
-      <h3 style="margin-bottom:12px">Spec for a material</h3>
-      <div class="field"><label>Material</label>
-        <select id="spec-material">${materials.map((m) => `<option value="${esc(m.code)}">${esc(m.code)} — ${esc(m.name)}</option>`).join("")}</select>
+      <h3 style="margin-bottom:12px">${esc(t("specs.specForMaterial"))}</h3>
+      <div class="field"><label>${esc(t("common.material"))}</label>
+        ${codeSearchHtml("spec-material", t("common.searchByCodeOrName"))}
       </div>
       <div id="spec-history" style="margin-top:14px"></div>
       <form class="form-grid" id="new-spec-form" style="margin-top:16px; border-top:1px solid var(--rule); padding-top:14px;">
-        <b class="small">New spec version</b>
+        <b class="small">${esc(t("specs.newVersion"))}</b>
         <div class="field-row">
-          <div class="field"><label>Title</label><input name="title" required /></div>
-          <div class="field"><label>Created by</label><input name="created_by" value="${esc(getRememberedName())}" required /></div>
+          <div class="field"><label>${esc(t("common.title"))}</label><input name="title" required /></div>
+          <div class="field"><label>${esc(t("specs.createdBy"))}</label><input name="created_by" value="${esc(getRememberedName())}" required /></div>
         </div>
-        <div class="field"><label>Notes</label><textarea name="notes"></textarea></div>
+        <div class="field"><label>${esc(t("common.notes"))}</label><textarea name="notes"></textarea></div>
         <div id="spec-params" class="repeatable"></div>
         <div style="display:flex; gap:8px;">
-          <button type="button" class="btn ghost sm" id="spec-add-param">+ Add parameter</button>
-          <button type="button" class="btn ghost sm" id="spec-prefill">Prefill from subtype template</button>
+          <button type="button" class="btn ghost sm" id="spec-add-param">${esc(t("specs.addParameter"))}</button>
+          <button type="button" class="btn ghost sm" id="spec-prefill">${esc(t("specs.prefillFromTemplate"))}</button>
         </div>
-        <button type="submit" class="btn primary">Create spec version</button>
+        <button type="submit" class="btn primary">${esc(t("specs.createVersion"))}</button>
       </form>
     </div>
 
     <div class="card">
-      <h3 style="margin-bottom:12px">Subtype default spec templates</h3>
-      <div class="field"><label>Subtype</label>
+      <h3 style="margin-bottom:12px">${esc(t("specs.templatesHeading"))}</h3>
+      <div class="field"><label>${esc(t("common.subtype"))}</label>
         <select id="template-subtype">${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.code)} — ${esc(s.name)}</option>`).join("")}</select>
       </div>
       <div id="template-params" class="repeatable" style="margin-top:10px"></div>
       <div style="display:flex; gap:8px; margin-top:10px;">
-        <button type="button" class="btn ghost sm" id="template-add-param">+ Add parameter</button>
-        <button type="button" class="btn primary sm" id="template-save">Save template</button>
+        <button type="button" class="btn ghost sm" id="template-add-param">${esc(t("specs.addParameter"))}</button>
+        <button type="button" class="btn primary sm" id="template-save">${esc(t("specs.saveTemplate"))}</button>
       </div>
     </div>
   `;
 
-  const specMaterialSelect = document.getElementById("spec-material");
   const historyEl = document.getElementById("spec-history");
   const paramsContainer = document.getElementById("spec-params");
   let addParamRow = wireParamList(paramsContainer);
 
   async function loadHistory() {
     const code = specMaterialSelect.value;
+    if (!code) {
+      historyEl.innerHTML = "";
+      return;
+    }
     const specs = await api.get(`/api/materials/${encodeURIComponent(code)}/specs`);
     historyEl.innerHTML = specs.length
       ? specs
@@ -1361,28 +1379,31 @@ async function viewSpecs() {
         <div class="card" style="box-shadow:none; padding:12px 14px; margin-bottom:8px;">
           <div style="display:flex; justify-content:space-between; align-items:center;">
             <b class="small">v${s.version} — ${esc(s.title)}</b>
-            <span class="status-pill ${s.status === "active" ? "approved" : "neutral"}">${esc(s.status)}</span>
+            <span class="status-pill ${s.status === "active" ? "approved" : "neutral"}">${esc(t(`status.${s.status}`))}</span>
           </div>
           <div class="small muted" style="margin-top:4px;">
-            ${s.parameters.map((p) => `${esc(p.parameter_name)}${p.min_value != null ? ` (${p.min_value}–${p.max_value}${p.unit ? " " + esc(p.unit) : ""})` : ""}`).join(" · ") || "No parameters"}
+            ${s.parameters.map((p) => `${esc(p.parameter_name)}${p.min_value != null ? ` (${p.min_value}–${p.max_value}${p.unit ? " " + esc(p.unit) : ""})` : ""}`).join(" · ") || esc(t("specs.noParameters"))}
           </div>
         </div>`
           )
           .join("")
-      : `<div class="empty-state">No specs yet for this material.</div>`;
+      : `<div class="empty-state">${esc(t("specs.noSpecsYet"))}</div>`;
   }
-  specMaterialSelect.addEventListener("change", loadHistory);
-  await loadHistory();
+  const specMaterialSelect = wireCodeSearch("spec-material", materials, loadHistory);
+  if (materials.length) {
+    specMaterialSelect.value = materials[0].code;
+    await loadHistory();
+  }
 
   document.getElementById("spec-add-param").addEventListener("click", () => addParamRow({}));
 
   document.getElementById("spec-prefill").addEventListener("click", async () => {
     const material = materials.find((m) => m.code === specMaterialSelect.value);
-    if (!material?.subtype_code) return toast("This material has no subtype set", true);
+    if (!material?.subtype_code) return toast(t("specs.noSubtypeSet"), true);
     const template = await api.get(`/api/material-subtypes/${encodeURIComponent(material.subtype_code)}/spec-template`);
     paramsContainer.innerHTML = "";
     template.parameters.forEach((p) => addParamRow(p));
-    toast(`Prefilled from ${material.subtype_code} template`);
+    toast(t("specs.prefilledFrom", { code: material.subtype_code }));
   });
 
   document.getElementById("new-spec-form").addEventListener("submit", async (e) => {
@@ -1397,7 +1418,7 @@ async function viewSpecs() {
         created_by: fd.get("created_by"),
         parameters: params.length ? params : undefined,
       });
-      toast("Spec version created");
+      toast(t("specs.versionCreated"));
       e.target.reset();
       paramsContainer.innerHTML = "";
       await loadHistory();
@@ -1413,8 +1434,9 @@ async function viewSpecs() {
 
   async function loadTemplate() {
     templateParams.innerHTML = "";
-    const t = await api.get(`/api/material-subtypes/${encodeURIComponent(templateSubtypeSelect.value)}/spec-template`);
-    t.parameters.forEach((p) => addTemplateRow(p));
+    if (!templateSubtypeSelect.value) return;
+    const template = await api.get(`/api/material-subtypes/${encodeURIComponent(templateSubtypeSelect.value)}/spec-template`);
+    template.parameters.forEach((p) => addTemplateRow(p));
   }
   templateSubtypeSelect.addEventListener("change", loadTemplate);
   await loadTemplate();
@@ -1425,7 +1447,7 @@ async function viewSpecs() {
       await api.put(`/api/material-subtypes/${encodeURIComponent(templateSubtypeSelect.value)}/spec-template`, {
         parameters: collectParams(templateParams),
       });
-      toast("Template saved");
+      toast(t("specs.templateSaved"));
     } catch (err) {
       toast(err.message, true);
     }
@@ -1443,7 +1465,7 @@ async function downloadAttachment(id, filename) {
     const res = await fetch(`/api/attachments/${id}/download`, { headers: { "x-role": getRole() } });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || `Download failed (${res.status})`);
+      throw new Error(data.error || t("download.failed", { status: res.status }));
     }
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
@@ -1461,7 +1483,7 @@ async function downloadAttachment(id, filename) {
 
 function dossierImportEntryHtml(entry) {
   const scenarioBadge = entry.import_scenario
-    ? `<span class="badge ${entry.import_scenario === "repeat" ? "repeat" : "flag"}">${esc(entry.import_scenario.replace("_", " "))}</span>`
+    ? `<span class="badge ${entry.import_scenario === "repeat" ? "repeat" : "flag"}">${esc(t(`status.${entry.import_scenario}`))}</span>`
     : "";
   const batchRows = entry.batches
     .map(
@@ -1471,8 +1493,8 @@ function dossierImportEntryHtml(entry) {
         <div class="hstack">
           ${statusPill(b.status)}
           ${b.internal_batch_no ? `<span class="mono small">${esc(b.internal_batch_no)}</span>` : ""}
-          ${b.status !== "pending" ? `<button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="pdf">COA PDF</button>
-          <button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="xlsx">COA Excel</button>` : ""}
+          ${b.status !== "pending" ? `<button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="pdf">${esc(t("line.coaPdf"))}</button>
+          <button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="xlsx">${esc(t("line.coaExcel"))}</button>` : ""}
         </div>
       </div>`
     )
@@ -1481,10 +1503,10 @@ function dossierImportEntryHtml(entry) {
     .map(
       (a) => `
       <div class="attachment-row">
-        <span><span class="badge neutral">${esc(a.kind.toUpperCase())}</span> ${esc(a.filename)} <span class="muted">by ${esc(a.uploaded_by)}, ${fmtDate(a.uploaded_at)}</span></span>
+        <span><span class="badge neutral">${esc(t(`masterdata.kind${a.kind.charAt(0).toUpperCase()}${a.kind.slice(1)}`))}</span> ${esc(a.filename)} <span class="muted">${esc(t("masterdata.attachmentBy", { name: a.uploaded_by, date: fmtDate(a.uploaded_at) }))}</span></span>
         <span class="hstack">
-          <button class="btn sm ghost" data-attachment-download="${a.id}" data-filename="${esc(a.filename)}">Download</button>
-          <button class="btn sm ghost" data-attachment-delete="${a.id}">Remove</button>
+          <button class="btn sm ghost" data-attachment-download="${a.id}" data-filename="${esc(a.filename)}">${esc(t("common.download"))}</button>
+          <button class="btn sm ghost" data-attachment-delete="${a.id}">${esc(t("common.remove"))}</button>
         </span>
       </div>`
     )
@@ -1495,19 +1517,19 @@ function dossierImportEntryHtml(entry) {
       <div class="line-head">
         <div>
           <b class="mono">${esc(entry.import_code)}</b> ${scenarioBadge}
-          <div class="small muted">${esc(entry.material_name_text)} · ${esc(entry.supplier_name)} (${esc(entry.supplier_code)}) · received ${fmtDate(entry.received_at)}</div>
+          <div class="small muted">${esc(entry.material_name_text)} · ${esc(entry.supplier_name)} (${esc(entry.supplier_code)}) · ${esc(t("masterdata.receivedOn", { date: fmtDate(entry.received_at) }))}</div>
         </div>
       </div>
       <div style="margin-top:6px">${batchRows}</div>
       <div style="margin-top:8px">
-        <div class="small muted" style="margin-bottom:4px">Attachments</div>
-        ${attachmentRows || `<div class="small muted">None yet.</div>`}
+        <div class="small muted" style="margin-bottom:4px">${esc(t("masterdata.attachments"))}</div>
+        ${attachmentRows || `<div class="small muted">${esc(t("masterdata.attachmentsNone"))}</div>`}
         <form class="field-row" data-attachment-form style="margin-top:8px; align-items:flex-end;">
-          <div class="field" style="max-width:120px"><label>Kind</label>
-            <select data-f="kind"><option value="photo">Photo</option><option value="tds">TDS</option><option value="msds">MSDS</option></select>
+          <div class="field" style="max-width:120px"><label>${esc(t("masterdata.kind"))}</label>
+            <select data-f="kind"><option value="photo">${esc(t("masterdata.kindPhoto"))}</option><option value="tds">${esc(t("masterdata.kindTds"))}</option><option value="msds">${esc(t("masterdata.kindMsds"))}</option></select>
           </div>
-          <div class="field" style="flex:2"><label>File</label><input type="file" data-f="file" required /></div>
-          <button type="submit" class="btn sm ghost">Attach</button>
+          <div class="field" style="flex:2"><label>${esc(t("masterdata.file"))}</label><input type="file" data-f="file" required /></div>
+          <button type="submit" class="btn sm ghost">${esc(t("masterdata.attach"))}</button>
         </form>
       </div>
     </div>`;
@@ -1522,10 +1544,10 @@ function wireDossierImportEntries(container, onDone) {
   );
   container.querySelectorAll("[data-attachment-delete]").forEach((btn) =>
     btn.addEventListener("click", async () => {
-      if (!confirm("Remove this attachment?")) return;
+      if (!confirm(t("masterdata.removeAttachmentConfirm"))) return;
       try {
         await api.delete(`/api/attachments/${btn.dataset.attachmentDelete}`);
-        toast("Attachment removed");
+        toast(t("masterdata.attachmentRemoved"));
         onDone();
       } catch (err) {
         toast(err.message, true);
@@ -1539,14 +1561,14 @@ function wireDossierImportEntries(container, onDone) {
       const fileInput = form.querySelector('[data-f="file"]');
       const kind = form.querySelector('[data-f="kind"]').value;
       const file = fileInput.files[0];
-      if (!file) return toast("Choose a file first", true);
+      if (!file) return toast(t("masterdata.chooseFileFirst"), true);
       const fd = new FormData();
       fd.append("file", file);
       fd.append("kind", kind);
-      fd.append("uploaded_by", getRememberedName() || "Quality");
+      fd.append("uploaded_by", getRememberedName() || t("topbar.roleQuality"));
       try {
         await uploadFile(`/api/receipt-lines/${lineId}/attachments`, fd);
-        toast("File attached");
+        toast(t("masterdata.fileAttached"));
         onDone();
       } catch (err) {
         toast(err.message, true);
@@ -1560,10 +1582,10 @@ function wireDossierImportEntries(container, onDone) {
 // custom-rendered panel — no native <select>/<datalist> dropdown.
 // Matches the receipt search box's own conventions (search-input class,
 // 150ms debounce). Selecting a result autofetches immediately.
-function codeSearchHtml(id, placeholder) {
+function codeSearchHtml(id, placeholder, name) {
   return `
     <div class="search-combo">
-      <input type="search" class="search-input" id="${id}" placeholder="${esc(placeholder)}" autocomplete="off" />
+      <input type="search" class="search-input" id="${id}" ${name ? `name="${esc(name)}"` : ""} placeholder="${esc(placeholder)}" autocomplete="off" />
       <div id="${id}-results" class="search-results" hidden></div>
     </div>
   `;
@@ -1597,7 +1619,7 @@ function wireCodeSearch(id, items, onSelect) {
       ? matches
           .map((i) => `<button type="button" class="search-result-item" data-code="${esc(i.code)}"><span class="mono">${esc(i.code)}</span> — ${esc(i.name)}</button>`)
           .join("")
-      : `<div class="search-result-empty">No matches</div>`;
+      : `<div class="search-result-empty">${esc(t("common.noMatches"))}</div>`;
     results.hidden = false;
     results.querySelectorAll("[data-code]").forEach((btn) =>
       btn.addEventListener("click", () => select(btn.dataset.code))
@@ -1630,18 +1652,18 @@ function wireCodeSearch(id, items, onSelect) {
 }
 
 const MASTERDATA_SUBTABS = [
-  { id: "dossier", label: "Material Dossier" },
-  { id: "suppliers", label: "Suppliers" },
+  { id: "dossier", labelKey: "masterdata.subtab.dossier" },
+  { id: "suppliers", labelKey: "masterdata.subtab.suppliers" },
 ];
 let masterDataSubtab = "dossier";
 
 async function viewMasterData() {
   const view = document.getElementById("view");
   view.innerHTML = `
-    <div class="view-head"><div><h1>Master Data</h1><p>Everything Quality knows about a material code or a supplier.</p></div></div>
+    <div class="view-head"><div><h1>${esc(t("masterdata.title"))}</h1><p>${esc(t("masterdata.subtitle"))}</p></div></div>
     <div class="subtabs">
       ${MASTERDATA_SUBTABS.map(
-        (t) => `<button class="subtab-btn${masterDataSubtab === t.id ? " active" : ""}" data-sub="${t.id}">${t.label}</button>`
+        (sub) => `<button class="subtab-btn${masterDataSubtab === sub.id ? " active" : ""}" data-sub="${sub.id}">${esc(t(sub.labelKey))}</button>`
       ).join("")}
     </div>
     <div id="masterdata-section"></div>
@@ -1663,8 +1685,8 @@ async function renderMaterialDossierSection(section) {
 
   section.innerHTML = `
     <div class="card">
-      <div class="field"><label>Material</label>
-        ${codeSearchHtml("dossier-material", materials, "Search by code or name…")}
+      <div class="field"><label>${esc(t("common.material"))}</label>
+        ${codeSearchHtml("dossier-material", t("common.searchByCodeOrName"))}
       </div>
     </div>
     <div id="dossier-body"></div>
@@ -1684,18 +1706,18 @@ async function renderMaterialDossierSection(section) {
 
     const namesHtml = d.names.length
       ? `<div class="table-scroll"><table class="data-table">
-          <thead><tr><th>Name</th><th>Times received</th><th>Last received</th></tr></thead>
+          <thead><tr><th>${esc(t("common.name"))}</th><th>${esc(t("masterdata.timesReceived"))}</th><th>${esc(t("masterdata.lastReceived"))}</th></tr></thead>
           <tbody>${d.names.map((n) => `<tr><td>${esc(n.name)}</td><td>${n.count}</td><td>${fmtDate(n.last_received_at)}</td></tr>`).join("")}</tbody>
         </table></div>`
-      : `<div class="small muted">No receiving history yet.</div>`;
+      : `<div class="small muted">${esc(t("masterdata.noReceivingHistory"))}</div>`;
 
     const specVersionOptions = d.specs
-      .map((s) => `<option value="${s.version}">v${s.version} — ${esc(s.title)} (${s.status})</option>`)
+      .map((s) => `<option value="${s.version}">v${s.version} — ${esc(s.title)} (${esc(t(`status.${s.status}`))})</option>`)
       .join("");
     const specsHtml = d.specs.length
-      ? `<div class="field" style="max-width:320px"><label>Version</label><select id="dossier-spec-version">${specVersionOptions}</select></div>
+      ? `<div class="field" style="max-width:320px"><label>${esc(t("common.version"))}</label><select id="dossier-spec-version">${specVersionOptions}</select></div>
          <div id="dossier-spec-detail" style="margin-top:8px"></div>`
-      : `<div class="small muted">No specs created yet.</div>`;
+      : `<div class="small muted">${esc(t("masterdata.noSpecsCreated"))}</div>`;
 
     const supplierRows = d.metrics.by_supplier
       .map(
@@ -1718,20 +1740,20 @@ async function renderMaterialDossierSection(section) {
       </div>
 
       <div class="card">
-        <h3 style="margin-bottom:10px">Metrics</h3>
+        <h3 style="margin-bottom:10px">${esc(t("masterdata.metrics"))}</h3>
         <div class="stat-grid">
-          <div class="stat-tile"><div class="stat-label">Total imports</div><div class="stat-value">${d.metrics.overall.imports}</div></div>
-          <div class="stat-tile"><div class="stat-label">Approved</div><div class="stat-value good">${d.metrics.overall.approved}</div></div>
-          <div class="stat-tile"><div class="stat-label">Rejected</div><div class="stat-value bad">${d.metrics.overall.rejected}</div></div>
-          <div class="stat-tile"><div class="stat-label">Partial</div><div class="stat-value">${d.metrics.overall.partial}</div></div>
-          <div class="stat-tile"><div class="stat-label">Pending</div><div class="stat-value">${d.metrics.overall.pending}</div></div>
-          <div class="stat-tile"><div class="stat-label">Pass rate</div><div class="stat-value">${fmtPct(d.metrics.overall.pass_rate)}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.totalImports"))}</div><div class="stat-value">${d.metrics.overall.imports}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.approved"))}</div><div class="stat-value good">${d.metrics.overall.approved}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.rejected"))}</div><div class="stat-value bad">${d.metrics.overall.rejected}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.partial"))}</div><div class="stat-value">${d.metrics.overall.partial}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.pending"))}</div><div class="stat-value">${d.metrics.overall.pending}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.passRate"))}</div><div class="stat-value">${fmtPct(d.metrics.overall.pass_rate)}</div></div>
         </div>
-        <div class="small muted" style="margin-top:8px">Pass rate = approved ÷ (approved + rejected) batches; partial approvals are shown separately, not folded into the ratio.</div>
+        <div class="small muted" style="margin-top:8px">${esc(t("masterdata.passRateNote"))}</div>
         ${
           supplierRows
             ? `<div class="table-scroll" style="margin-top:12px"><table class="data-table">
-                <thead><tr><th>Supplier</th><th>Imports</th><th>Approved</th><th>Rejected</th><th>Partial</th><th>Pass rate</th></tr></thead>
+                <thead><tr><th>${esc(t("common.supplier"))}</th><th>${esc(t("masterdata.totalImports"))}</th><th>${esc(t("masterdata.approved"))}</th><th>${esc(t("masterdata.rejected"))}</th><th>${esc(t("masterdata.partial"))}</th><th>${esc(t("masterdata.passRate"))}</th></tr></thead>
                 <tbody>${supplierRows}</tbody>
               </table></div>`
             : ""
@@ -1739,23 +1761,23 @@ async function renderMaterialDossierSection(section) {
       </div>
 
       <div class="card">
-        <h3 style="margin-bottom:10px">Names received under this code</h3>
+        <h3 style="margin-bottom:10px">${esc(t("masterdata.namesHeading"))}</h3>
         ${namesHtml}
       </div>
 
       <div class="card">
-        <h3 style="margin-bottom:10px">Specifications</h3>
+        <h3 style="margin-bottom:10px">${esc(t("specs.title"))}</h3>
         ${specsHtml}
       </div>
 
       <div class="card">
-        <h3 style="margin-bottom:10px">RMF — novel imports</h3>
-        <div id="dossier-rmf">${d.rmf.length ? d.rmf.map(dossierImportEntryHtml).join("") : `<div class="small muted">No novel imports recorded yet.</div>`}</div>
+        <h3 style="margin-bottom:10px">${esc(t("masterdata.rmfHeading"))}</h3>
+        <div id="dossier-rmf">${d.rmf.length ? d.rmf.map(dossierImportEntryHtml).join("") : `<div class="small muted">${esc(t("masterdata.noNovelImports"))}</div>`}</div>
       </div>
 
       <div class="card">
-        <button type="button" class="btn ghost sm" id="dossier-show-rms">${rmsExpanded ? "Hide RMSs" : `Show all RMSs (${d.rms.length})`}</button>
-        <div id="dossier-rms" ${rmsExpanded ? "" : "hidden"} style="margin-top:10px">${d.rms.length ? d.rms.map(dossierImportEntryHtml).join("") : `<div class="small muted">No repeat imports recorded yet.</div>`}</div>
+        <button type="button" class="btn ghost sm" id="dossier-show-rms">${rmsExpanded ? esc(t("masterdata.hideRmss")) : esc(t("masterdata.showAllRmss", { n: d.rms.length }))}</button>
+        <div id="dossier-rms" ${rmsExpanded ? "" : "hidden"} style="margin-top:10px">${d.rms.length ? d.rms.map(dossierImportEntryHtml).join("") : `<div class="small muted">${esc(t("masterdata.noRepeatImports"))}</div>`}</div>
       </div>
     `;
 
@@ -1767,7 +1789,7 @@ async function renderMaterialDossierSection(section) {
       const el = document.getElementById("dossier-rms");
       el.hidden = !el.hidden;
       rmsExpanded = !el.hidden;
-      e.target.textContent = el.hidden ? `Show all RMSs (${d.rms.length})` : `Hide RMSs`;
+      e.target.textContent = el.hidden ? t("masterdata.showAllRmss", { n: d.rms.length }) : t("masterdata.hideRmss");
     });
 
     const versionSelect = document.getElementById("dossier-spec-version");
@@ -1778,7 +1800,7 @@ async function renderMaterialDossierSection(section) {
         detailEl.innerHTML = spec
           ? `<div class="small muted" style="margin-bottom:6px">${esc(spec.notes || "")}</div>
              <div class="table-scroll"><table class="data-table">
-               <thead><tr><th>Parameter</th><th>Method</th><th>Spec</th></tr></thead>
+               <thead><tr><th>${esc(t("results.parameter"))}</th><th>${esc(t("results.method"))}</th><th>${esc(t("masterdata.specColumn"))}</th></tr></thead>
                <tbody>${spec.parameters
                  .map((p) => `<tr><td>${esc(p.parameter_name)}</td><td>${esc(p.method || "—")}</td><td>${esc(paramSpecHint(p))}</td></tr>`)
                  .join("")}</tbody>
@@ -1799,14 +1821,14 @@ async function renderMaterialDossierSection(section) {
     input.value = materials[0].code;
     await loadDossier(materials[0].code);
   } else {
-    body.innerHTML = `<div class="empty-state">No materials yet.</div>`;
+    body.innerHTML = `<div class="empty-state">${esc(t("common.noneYet"))}</div>`;
   }
 }
 
 function ratingStarsHtml(rating) {
   const full = "★".repeat(rating.stars);
   const empty = "☆".repeat(5 - rating.stars);
-  return `<span style="letter-spacing:2px; color:var(--accent)">${full}${empty}</span> <span class="small muted">${esc(rating.label)}${rating.low_volume ? " · limited history" : ""}</span>`;
+  return `<span style="letter-spacing:2px; color:var(--accent)">${full}${empty}</span> <span class="small muted">${esc(t(`suppliers.rating.${rating.label}`))}${rating.low_volume ? " · " + esc(t("suppliers.limitedHistory")) : ""}</span>`;
 }
 
 async function renderSupplierAssessmentSection(section) {
@@ -1814,8 +1836,8 @@ async function renderSupplierAssessmentSection(section) {
 
   section.innerHTML = `
     <div class="card">
-      <div class="field"><label>Supplier</label>
-        ${codeSearchHtml("supplier-search", suppliers, "Search by code or name…")}
+      <div class="field"><label>${esc(t("common.supplier"))}</label>
+        ${codeSearchHtml("supplier-search", t("common.searchByCodeOrName"))}
       </div>
     </div>
     <div id="supplier-body"></div>
@@ -1834,7 +1856,7 @@ async function renderSupplierAssessmentSection(section) {
       .map(
         (c) => `
         <tr${a.best_code && c.material_code === a.best_code.material_code ? ' style="font-weight:600"' : ""}>
-          <td>${esc(c.material_code)}${a.best_code && c.material_code === a.best_code.material_code ? ' <span class="badge repeat">Best</span>' : ""}</td>
+          <td>${esc(c.material_code)}${a.best_code && c.material_code === a.best_code.material_code ? ` <span class="badge repeat">${esc(t("suppliers.best"))}</span>` : ""}</td>
           <td>${esc(c.material_name || "—")}</td>
           <td>${c.imports}</td>
           <td>${c.approved}</td>
@@ -1852,31 +1874,31 @@ async function renderSupplierAssessmentSection(section) {
       </div>
 
       <div class="card">
-        <h3 style="margin-bottom:10px">Overall performance</h3>
+        <h3 style="margin-bottom:10px">${esc(t("suppliers.overallPerformance"))}</h3>
         <div class="stat-grid">
-          <div class="stat-tile"><div class="stat-label">Total imports</div><div class="stat-value">${a.overall.imports}</div></div>
-          <div class="stat-tile"><div class="stat-label">Codes supplied</div><div class="stat-value">${a.overall.distinct_codes}</div></div>
-          <div class="stat-tile"><div class="stat-label">Approved</div><div class="stat-value good">${a.overall.approved}</div></div>
-          <div class="stat-tile"><div class="stat-label">Rejected</div><div class="stat-value bad">${a.overall.rejected}</div></div>
-          <div class="stat-tile"><div class="stat-label">Partial</div><div class="stat-value">${a.overall.partial}</div></div>
-          <div class="stat-tile"><div class="stat-label">Pass rate</div><div class="stat-value">${fmtPct(a.overall.pass_rate)}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.totalImports"))}</div><div class="stat-value">${a.overall.imports}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("suppliers.codesSupplied"))}</div><div class="stat-value">${a.overall.distinct_codes}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.approved"))}</div><div class="stat-value good">${a.overall.approved}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.rejected"))}</div><div class="stat-value bad">${a.overall.rejected}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.partial"))}</div><div class="stat-value">${a.overall.partial}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("masterdata.passRate"))}</div><div class="stat-value">${fmtPct(a.overall.pass_rate)}</div></div>
         </div>
         ${
           a.best_code
-            ? `<div class="small muted" style="margin-top:8px">Best code provided: <b class="mono">${esc(a.best_code.material_code)}</b> (${esc(a.best_code.material_name || "—")}) at ${fmtPct(a.best_code.pass_rate)} pass rate.</div>`
-            : `<div class="small muted" style="margin-top:8px">No decided batches yet — best code not determinable.</div>`
+            ? `<div class="small muted" style="margin-top:8px">${esc(t("suppliers.bestCodeProvided", { code: a.best_code.material_code, name: a.best_code.material_name || "—", rate: fmtPct(a.best_code.pass_rate) }))}</div>`
+            : `<div class="small muted" style="margin-top:8px">${esc(t("suppliers.noDecidedYet"))}</div>`
         }
       </div>
 
       <div class="card">
-        <h3 style="margin-bottom:10px">Codes supplied</h3>
+        <h3 style="margin-bottom:10px">${esc(t("suppliers.codesSuppliedHeading"))}</h3>
         ${
           codeRows
             ? `<div class="table-scroll"><table class="data-table">
-                <thead><tr><th>Code</th><th>Name</th><th>Imports</th><th>Approved</th><th>Rejected</th><th>Partial</th><th>Pass rate</th></tr></thead>
+                <thead><tr><th>${esc(t("common.code"))}</th><th>${esc(t("common.name"))}</th><th>${esc(t("masterdata.totalImports"))}</th><th>${esc(t("masterdata.approved"))}</th><th>${esc(t("masterdata.rejected"))}</th><th>${esc(t("masterdata.partial"))}</th><th>${esc(t("masterdata.passRate"))}</th></tr></thead>
                 <tbody>${codeRows}</tbody>
               </table></div>`
-            : `<div class="small muted">No coded receiving history from this supplier yet.</div>`
+            : `<div class="small muted">${esc(t("suppliers.noCodedHistory"))}</div>`
         }
       </div>
     `;
@@ -1888,7 +1910,7 @@ async function renderSupplierAssessmentSection(section) {
     input.value = suppliers[0].code;
     await loadAssessment(suppliers[0].code);
   } else {
-    body.innerHTML = `<div class="empty-state">No suppliers yet.</div>`;
+    body.innerHTML = `<div class="empty-state">${esc(t("suppliers.noSuppliersYet"))}</div>`;
   }
 }
 
@@ -1920,7 +1942,7 @@ async function renderView() {
       await viewMasterData();
     }
   } catch (err) {
-    document.getElementById("view").innerHTML = `<div class="empty-state">Couldn't load this screen: ${esc(err.message)}</div>`;
+    document.getElementById("view").innerHTML = `<div class="empty-state">${esc(t("error.screenLoadFailed", { message: err.message }))}</div>`;
   }
 }
 
@@ -1936,6 +1958,7 @@ window.addEventListener("hashchange", () => {
 
 document.getElementById("notif-btn").addEventListener("click", toggleNotifPanel);
 
+applyDocumentDirection();
 if (!location.hash) location.hash = `#${getRole()}/${ROUTES[getRole()][0].id}`;
 renderTopbar();
 renderView();

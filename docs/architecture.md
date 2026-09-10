@@ -755,7 +755,103 @@ checked at both desktop and mobile width to confirm the panel doesn't
 overflow its card. No console errors beyond the sandbox's known Google
 Fonts limitation.
 
-## 12. Next Step
+## 12. Live search on the remaining pickers + Arabic/RTL support
+
+Two more requests: extend §11's live-search picker to the Specifications
+tab and two pickers in the receiving workflow, and add a language toggle
+that switches the entire app to Arabic with proper right-to-left layout.
+
+**Remaining pickers** — mechanical reuse of the existing `codeSearchHtml`/
+`wireCodeSearch` component, no changes to the component itself:
+Specifications' material picker (`viewSpecs`), the Receive wizard's
+Supplier field (`renderReceiveStep1` — needed a `name` attribute added to
+`codeSearchHtml` so the search input still participates in the form's
+`FormData` the same way the old `<select>` did), and the "Associate a
+Code" modal's existing-material picker (`openAssociateModal`). Found and
+fixed two real argument-order bugs while doing this pass: the Master Data
+dossier's and Suppliers subtab's own pickers (`renderMaterialDossierSection`,
+`renderSupplierAssessmentSection`) were calling `codeSearchHtml(id, items, placeholder)`
+— the *old* `codeComboboxHtml` signature — instead of the current
+`codeSearchHtml(id, placeholder, name)`, passing the materials/suppliers
+array where a placeholder string was expected. Caught by a systematic
+grep of every `codeSearchHtml(` call site while wiring the new ones, not
+by symptom (the malformed `name` attribute didn't visibly break anything
+in earlier screenshots), and fixed alongside the new work.
+
+**Arabic translation + RTL** — the app had zero i18n scaffolding
+(`app.js` is ~1,950 lines of inline English template strings), so "the
+whole project" meant a systematic pass, not a small addition. Confirmed
+scope with the user first: full coverage (every label/button/table
+header/toast), best-effort standard business/QC Arabic — not a certified
+translation, flagged here for a native-speaker review before this goes
+in front of real staff — and full RTL layout mirroring.
+
+New `public/i18n.js`: a flat `translations.en`/`translations.ar`
+dictionary (274 keys, namespaced by area — `receive.*`, `masterdata.*`,
+`status.*`, etc.), `t(key, vars)` with `{placeholder}` substitution and
+an English fallback if a key is ever missing (never renders a raw key),
+`getLang()`/`setLang()` persisted to `localStorage` under `wq_lang`
+(mirrors the existing `wq_role`/`wq_name` convention in `api.js`), and
+`applyDocumentDirection()` setting `<html lang dir>`. A small inline
+script in `index.html`'s `<head>` applies the stored language's
+`dir`/`lang` synchronously before first paint, avoiding an LTR-then-RTL
+flash on load.
+
+Every view-rendering function in `app.js` — topbar, Receive wizard, the
+receipt list/detail/modals, Codes and its three subtabs, Specifications,
+Master Data and its two subtabs, toasts — had its hardcoded strings
+replaced with `t("...")` calls; status enum values from the API
+(`pending`/`approved`/..., `pass`/`fail`, `new_material`/`repeat`/...,
+`active`/`superseded`) route through `status.<value>` keys rather than
+rendering raw. Scope boundary: only the app's own UI chrome is
+translated — user-entered data (material/supplier names, remarks, typed
+names) and the API itself are untouched, translation is purely a
+client-side display layer. Verified every `t()` call site resolves to a
+real key with a small Node script (301 call sites, one false positive
+from string-concatenation `t()` calls the regex couldn't parse) and that
+the two dictionaries have exact key parity (274/274) — catches exactly
+the failure mode where a key gets missed in one language and silently
+falls back to the wrong-language string instead of erroring.
+
+**Language toggle**: a button in the topbar next to the role switch,
+labeled with the language it switches *to*. Chose "flip the stored
+preference, then full page reload" over making every view function
+reactive to a live language change — this is a vanilla app where every
+view already fully re-renders its own DOM on navigation, so a reload is
+the pragmatic choice for a rare action, not a live-update one.
+
+**RTL CSS**: the layout is almost entirely flexbox/grid, which is
+direction-aware by default, so most of it needed zero changes. Converted
+the handful of physical-property spots found by inspection
+(`margin-left`/`-right`, `text-align: left`, one inline style) to logical
+properties (`margin-inline-start/end`, `text-align: start`) so they
+auto-flip with direction; added `IBM Plex Sans Arabic` (official Arabic
+companion to the existing IBM Plex family, keeps the visual identity
+close) as the body/heading face under `[dir="rtl"]`, since Arabic has no
+equivalent to the Fraunces-italic-display convention.
+
+Verified through the real UI with Playwright, both languages, desktop
+and mobile: full round-trip (English → toggle → Arabic, confirmed
+`dir="rtl"`/`lang="ar"` and every screen's Arabic text — topbar, Receive
+wizard, Specifications, Master Data's both subtabs with their search
+pickers — → toggle back → confirmed `dir="ltr"`/`lang="en"` and English
+intact); confirmed the language choice survives a manual reload. Two
+real bugs caught and fixed during this pass, both pre-existing (not
+introduced by this change, just newly exposed by testing with a fresh,
+minimal dataset): (1) the Specifications page crashed entirely
+("Not found") if zero subtypes existed yet, because its template loader
+called the API unconditionally with an empty subtype value — fixed with
+a guard; (2) a 6-column data table (Master Data's per-supplier breakdown)
+squeezed and wrapped mid-value on narrow mobile widths instead of
+scrolling horizontally (e.g. "100%" rendering as "00%" with the leading
+digit clipped) — `.data-table` had no `white-space: nowrap`, so cells
+wrapped instead of forcing the table wider and letting the existing
+`.table-scroll` container handle the overflow, which is what it was
+built for. Confirmed via direct DOM `textContent` inspection (not just a
+screenshot) that the underlying data was always correct — this was a
+pure rendering bug, not a data bug.
+
+## 13. Next Step
 
 Two things block a real deploy: (1) someone with Cloudflare account
 access needs to enable R2 in the dashboard and run

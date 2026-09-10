@@ -1,3 +1,5 @@
+import { t } from "./i18n.js";
+
 const ROLE_KEY = "wq_role";
 const NAME_KEY = "wq_name";
 
@@ -30,7 +32,7 @@ async function request(path, { method = "GET", body } = {}) {
     // no body
   }
   if (!res.ok) {
-    throw new Error((data && data.error) || `Request failed (${res.status})`);
+    throw new Error((data && data.error) || t("error.requestFailed", { status: res.status }));
   }
   return data;
 }
@@ -53,6 +55,6 @@ export async function uploadFile(path, formData) {
   } catch {
     // no body
   }
-  if (!res.ok) throw new Error((data && data.error) || `Upload failed (${res.status})`);
+  if (!res.ok) throw new Error((data && data.error) || t("error.uploadFailed", { status: res.status }));
   return data;
 }

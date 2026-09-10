@@ -38,6 +38,15 @@
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 }
 
+/* Arabic has no equivalent to Fraunces/IBM Plex Sans's italic-display
+   pairing, so one Arabic face (IBM Plex Sans Arabic — same type family,
+   keeps the visual identity close) covers both display and body roles. */
+:root[dir="rtl"] {
+  --font-display: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
+}
+:root[dir="rtl"] .brand-name { font-style: normal; }
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #17151d;
@@ -105,7 +114,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   flex-wrap: wrap;
 }
 
-.brand { display: flex; align-items: center; gap: 8px; margin-right: 8px; }
+.brand { display: flex; align-items: center; gap: 8px; margin-inline-end: 8px; }
 .brand-mark { color: var(--accent); font-size: 1.2rem; }
 .brand-name { font-family: var(--font-display); font-style: italic; font-weight: 500; font-size: 1.15rem; }
 .brand-name em { color: var(--accent); font-style: normal; }
@@ -152,7 +161,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   border-bottom: 2px solid transparent; margin-bottom: -1px;
 }
 .subtab-btn.active { color: var(--ink); border-bottom-color: var(--accent); }
-.subtab-btn .count { font-family: var(--font-mono); font-size: 0.68rem; color: var(--ink-faint); margin-left: 4px; }
+.subtab-btn .count { font-family: var(--font-mono); font-size: 0.68rem; color: var(--ink-faint); margin-inline-start: 4px; }
 
 .list-controls {
   display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
@@ -173,7 +182,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); max-height: 260px; overflow-y: auto;
 }
 .search-result-item {
-  display: block; width: 100%; text-align: left; padding: 8px 12px; font-size: 0.84rem;
+  display: block; width: 100%; text-align: start; padding: 8px 12px; font-size: 0.84rem;
   background: none; border: none; color: var(--ink); cursor: pointer;
 }
 .search-result-item:hover, .search-result-item:focus { background: var(--accent-soft); }
@@ -286,8 +295,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .table-scroll { overflow-x: auto; }
 table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; font-size: 0.84rem; }
-.data-table th { text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); padding: 6px 8px; border-bottom: 1px solid var(--rule); }
-.data-table td { padding: 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.data-table th { text-align: start; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); padding: 6px 8px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+.data-table td { padding: 8px; border-bottom: 1px solid var(--rule); vertical-align: top; white-space: nowrap; }
 .data-table tr:last-child td { border-bottom: none; }
 
 /* ---------- modal ---------- */
@@ -304,7 +313,7 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
 .modal-head h2 { font-size: 1.1rem; font-style: italic; }
 
 /* ---------- toast ---------- */
-.toast-root { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
+.toast-root { position: fixed; bottom: 20px; inset-inline-end: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
 .toast {
   background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: var(--radius-sm);
   font-size: 0.82rem; box-shadow: var(--shadow-card);
@@ -313,7 +322,7 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
 
 /* ---------- notif dropdown ---------- */
 .notif-panel {
-  position: absolute; top: 60px; right: 20px; width: 320px; max-height: 400px; overflow-y: auto;
+  position: absolute; top: 60px; inset-inline-end: 20px; width: 320px; max-height: 400px; overflow-y: auto;
   background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card); padding: 8px; z-index: 40;
 }
@@ -336,7 +345,7 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
   .tabs { order: 3; width: 100%; gap: 2px; }
   .tab-btn { padding: 7px 11px; font-size: 0.82rem; }
   .brand-name { font-size: 1.05rem; }
-  .top-actions { gap: 10px; margin-left: auto; }
+  .top-actions { gap: 10px; margin-inline-start: auto; }
   .role-switch span { display: none; }
 
   .card { padding: 14px 16px; }
