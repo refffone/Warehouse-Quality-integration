@@ -1,6 +1,7 @@
 import { error, getRole, json } from "./http";
 import {
   createSupplier,
+  getMaterialDossier,
   listImportCodeSchemes,
   listMaterials,
   listMaterialSubtypes,
@@ -12,6 +13,12 @@ import {
   upsertMaterialSubtype,
   upsertMaterialType,
 } from "./routes/masterdata";
+import {
+  deleteAttachment,
+  downloadAttachment,
+  listAttachmentsForLine,
+  uploadAttachment,
+} from "./routes/attachments";
 import { downloadCoa } from "./routes/coa";
 import { listNotifications, markNotificationRead } from "./routes/notifications";
 import {
@@ -87,6 +94,34 @@ export default {
       if (materialSpecsMatch && method === "POST") {
         if (role !== "quality") return error("Only quality can create specifications", 403);
         return createSpec(request, env, decodeURIComponent(materialSpecsMatch[1]));
+      }
+
+      // Master Data dossier — Quality-only aggregate view of a material code.
+      const dossierMatch = pathname.match(/^\/api\/materials\/([^/]+)\/dossier$/);
+      if (dossierMatch && method === "GET") {
+        if (role !== "quality") return error("Master Data is a quality-only view", 403);
+        return getMaterialDossier(env, decodeURIComponent(dossierMatch[1]));
+      }
+
+      // Attachments (photo/TDS/MSDS) per import code — Quality-only, like the dossier.
+      const lineAttachmentsMatch = pathname.match(/^\/api\/receipt-lines\/(\d+)\/attachments$/);
+      if (lineAttachmentsMatch && method === "POST") {
+        if (role !== "quality") return error("Only quality can attach files", 403);
+        return uploadAttachment(request, env, Number(lineAttachmentsMatch[1]));
+      }
+      if (lineAttachmentsMatch && method === "GET") {
+        if (role !== "quality") return error("Only quality can view attachments", 403);
+        return listAttachmentsForLine(env, Number(lineAttachmentsMatch[1]));
+      }
+      const attachmentDownloadMatch = pathname.match(/^\/api\/attachments\/(\d+)\/download$/);
+      if (attachmentDownloadMatch && method === "GET") {
+        if (role !== "quality") return error("Only quality can download attachments", 403);
+        return downloadAttachment(env, Number(attachmentDownloadMatch[1]));
+      }
+      const attachmentMatch = pathname.match(/^\/api\/attachments\/(\d+)$/);
+      if (attachmentMatch && method === "DELETE") {
+        if (role !== "quality") return error("Only quality can remove attachments", 403);
+        return deleteAttachment(env, Number(attachmentMatch[1]));
       }
 
       // Receipts — everything below requires an X-Role header identifying

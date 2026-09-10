@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
+  ATTACHMENTS: R2Bucket;
   EXPIRY_ALERT_LEAD_DAYS: string;
 }
 
@@ -198,6 +199,75 @@ export interface NewSpecInput {
 
 export interface SubtypeSpecTemplateInput {
   parameters: ParameterInput[];
+}
+
+export type AttachmentKind = "photo" | "tds" | "msds";
+
+export interface Attachment {
+  id: number;
+  receipt_line_id: number;
+  kind: AttachmentKind;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  r2_key: string;
+  uploaded_by: string;
+  uploaded_at: string;
+}
+
+export interface DossierName {
+  name: string;
+  count: number;
+  last_received_at: string;
+}
+
+export interface DossierBatchSummary {
+  id: number;
+  supplier_batch_no: string;
+  status: BatchStatus;
+  internal_batch_no: string | null;
+  decided_at: string | null;
+}
+
+export interface DossierImportEntry {
+  receipt_line_id: number;
+  import_code: string;
+  import_scenario: ImportScenario | null;
+  material_name_text: string;
+  receipt_id: number;
+  received_at: string;
+  supplier_id: number;
+  supplier_code: string;
+  supplier_name: string;
+  batches: DossierBatchSummary[];
+  attachments: Attachment[];
+}
+
+export interface DossierStatusCounts {
+  imports: number;
+  approved: number;
+  rejected: number;
+  partial: number;
+  pending: number;
+  pass_rate: number | null;
+}
+
+export interface DossierSupplierMetrics extends DossierStatusCounts {
+  supplier_id: number;
+  supplier_code: string;
+  supplier_name: string;
+}
+
+export interface MaterialDossier {
+  material: Material;
+  names: DossierName[];
+  specs: SpecWithParameters[];
+  rmf: DossierImportEntry[];
+  rms: DossierImportEntry[];
+  metrics: {
+    overall: DossierStatusCounts;
+    by_supplier: DossierSupplierMetrics[];
+  };
 }
 
 /** Quality associates an uncoded receipt line to a material code — either

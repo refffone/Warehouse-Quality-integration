@@ -218,6 +218,22 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .badge.repeat { background: var(--repeat-bg); color: var(--repeat); }
 .badge.neutral { background: var(--rule); color: var(--ink-muted); }
 
+/* ---------- master data dossier ---------- */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.stat-tile {
+  background: var(--surface-2); border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  padding: 12px 14px;
+}
+.stat-tile .stat-label { font-size: 0.72rem; color: var(--ink-muted); }
+.stat-tile .stat-value { font-family: var(--font-mono); font-size: 1.3rem; font-weight: 600; margin-top: 2px; }
+.stat-tile .stat-value.good { color: var(--good); }
+.stat-tile .stat-value.bad { color: var(--bad); }
+
+.dossier-import-entry { border-top: 1px solid var(--rule); padding-block: 12px; }
+.dossier-import-entry:first-of-type { border-top: none; padding-top: 4px; }
+
+.attachment-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; padding-block: 4px; }
+
 .status-pill { font-size: 0.72rem; font-weight: 600; padding: 3px 9px; border-radius: 999px; }
 .status-pill.pending { background: var(--warn-bg); color: var(--warn); }
 .status-pill.approved, .status-pill.decided { background: var(--good-bg); color: var(--good); }

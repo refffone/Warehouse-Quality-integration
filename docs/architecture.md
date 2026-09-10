@@ -595,10 +595,88 @@ read-only recap, reject, then COA buttons present on the rejected batch
 in History) — no console errors beyond the sandbox's known Google Fonts
 `ERR_CONNECTION_RESET`, not a real issue.
 
-## 8. Next Step
+## 8. Production D1 provisioned
 
-Stand up the real Cloudflare deployment: create the actual D1 database,
-replace the placeholder `database_id` in `wrangler.toml`, run the
-migrations against it, and deploy the Worker — turning this from a
-locally-verified build into something Warehouse and Quality can actually
-open.
+Created the real D1 database (`warehouse-quality-db`) on the live
+Cloudflare account and applied all migrations against it directly via the
+D1 HTTP query API (the Cloudflare MCP connector available in this
+environment can manage D1 but has no "deploy a Worker" action, and
+`wrangler` itself isn't authenticated here). `wrangler.toml`'s placeholder
+`database_id` now points at the real database. Deploying the Worker code
+itself still needs `wrangler login && wrangler deploy` run by someone with
+Cloudflare account access — everything else is ready.
+
+## 9. Master Data dossier (Quality-only) + attachments
+
+Requested follow-up: Quality wanted a single per-material-code dossier —
+every name the material's been received under, its full spec history,
+every RMF/RMS import event with COA links, supporting files (photo/TDS/
+MSDS) per import, and pass-rate metrics overall and per supplier.
+
+Most of this was already implicit in the existing data model and just
+needed a new aggregating endpoint: `GET /api/materials/:code/dossier`
+(`getMaterialDossier` in `src/routes/masterdata.ts`, quality-only) returns
+names (`GROUP BY material_name_text`), the material's full spec history
+(factored `listSpecsForMaterial` out of the existing `listSpecs` route so
+both can share it), RMF and RMS import entries (receipt lines whose
+`import_code` starts with each prefix, each with its batches and COA
+readiness and its attachments), and metrics computed two ways — overall
+and `GROUP BY supplier_id` — as approved/rejected/partial/pending counts
+plus a pass rate (`approved ÷ (approved + rejected)`; partial is shown as
+its own count rather than folded into the ratio, per explicit direction).
+
+Attachments were new: no file storage existed (R2 was removed earlier
+when nothing needed it). Re-added the `ATTACHMENTS` R2 binding, a new
+`attachments` table (migration `0009`, one row per file: kind, filename,
+content type, size, R2 key, uploader) keyed to a `receipt_line_id` — i.e.
+scoped to one specific import code, matching "attachments per RMF."
+Upload requires the line to already have an import code (its first batch
+must have been decided), since an attachment is meaningless without the
+import event it documents. `src/routes/attachments.ts` handles upload
+(multipart `POST`, validates `kind` ∈ photo/tds/msds), list, streamed
+download, and delete (removes both the R2 object and the D1 row);
+everything gated to Quality, matching "Master Data — Quality View only."
+D1 stores only metadata — the file bytes live in R2, which is built for
+arbitrary-size blobs and has no egress fees, unlike stuffing binary data
+into D1 rows.
+
+R2 itself needs a one-time opt-in on the Cloudflare dashboard before a
+bucket can be created — the Cloudflare MCP connector's
+`r2_bucket_create` call failed with "Please enable R2 through the
+Cloudflare Dashboard" the first time this was attempted. The application
+code (migration, types, routes, frontend) is complete and typechecked
+regardless; only the actual bucket creation and the eventual `wrangler
+deploy` are blocked on that dashboard step plus Cloudflare account access.
+
+Frontend: a new "Master Data" tab (quality-only route) with a material
+picker, then stat tiles (total imports, approved/rejected/partial/pending,
+pass rate) and a per-supplier breakdown table, a names-received table, a
+spec-version dropdown reusing the same parameter-list rendering as the
+Specifications tab, and two import-history sections — RMF entries shown
+by default, RMS entries behind a "Show all RMSs (N)" toggle (kept
+expanded across in-place reloads after an upload/delete, rather than
+collapsing back each time). Each import entry shows its batch(es) with
+COA buttons (reusing the existing `downloadCoa` helper) and its
+attachments, with an inline upload form (kind + file picker) per entry.
+
+Verified against the local D1 (migration applied, `wrangler dev`):
+built a scripted scenario across two suppliers (one new-material RMF, one
+new-supplier RMF, one repeat RMS; one rejected, two approved) and
+confirmed via direct API calls that names/specs/RMF/RMS/metrics all came
+back correct, including the per-supplier pass-rate split (100% for the
+supplier with two approvals, 0% for the one rejection). Uploaded and
+downloaded an attachment via curl to confirm the R2 round-trip, then
+repeated the same upload through the actual UI with Playwright — screenshot-
+verified the dossier layout, confirmed the file landed on the correct
+import entry (not just "some" line) by checking its `receipt_line_id` via
+the API afterward, and confirmed the "Show all RMSs" section survives a
+post-upload reload instead of collapsing (a bug caught and fixed during
+this same verification pass, before it shipped).
+
+## 10. Next Step
+
+Two things block a real deploy: (1) someone with Cloudflare account
+access needs to enable R2 in the dashboard and run
+`wrangler login && wrangler deploy`; (2) the auth/Admin-panel/push-
+notification/backup work, deliberately held until after the user's
+presentation so today's simple role-switcher stays unchanged for the demo.

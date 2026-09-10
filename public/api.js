@@ -40,4 +40,19 @@ export const api = {
   post: (path, body) => request(path, { method: "POST", body }),
   put: (path, body) => request(path, { method: "PUT", body }),
   patch: (path, body) => request(path, { method: "PATCH", body }),
+  delete: (path) => request(path, { method: "DELETE" }),
 };
+
+/** Multipart upload (for file attachments) — bypasses the JSON encoding
+ *  `request()` always applies, since a file body can't be JSON. */
+export async function uploadFile(path, formData) {
+  const res = await fetch(path, { method: "POST", headers: { "x-role": getRole() }, body: formData });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    // no body
+  }
+  if (!res.ok) throw new Error((data && data.error) || `Upload failed (${res.status})`);
+  return data;
+}

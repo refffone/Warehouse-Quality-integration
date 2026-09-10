@@ -123,6 +123,10 @@ export async function createSpec(request: Request, env: Env, materialCode: strin
 }
 
 export async function listSpecs(env: Env, materialCode: string): Promise<Response> {
+  return json(await listSpecsForMaterial(env, materialCode));
+}
+
+export async function listSpecsForMaterial(env: Env, materialCode: string): Promise<SpecWithParameters[]> {
   const specs = await env.DB.prepare(
     "SELECT * FROM specs WHERE material_code = ? ORDER BY version DESC"
   )
@@ -133,7 +137,7 @@ export async function listSpecs(env: Env, materialCode: string): Promise<Respons
   for (const spec of specs.results ?? []) {
     detailed.push(await getSpecWithParameters(env, spec.id));
   }
-  return json(detailed);
+  return detailed;
 }
 
 async function getSpecWithParameters(env: Env, specId: number): Promise<SpecWithParameters> {

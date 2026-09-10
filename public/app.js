@@ -1,4 +1,4 @@
-import { api, getRole, setRole, getRememberedName, rememberName } from "./api.js";
+import { api, getRole, setRole, getRememberedName, rememberName, uploadFile } from "./api.js";
 
 // ---------------------------------------------------------------- helpers
 
@@ -100,6 +100,7 @@ const ROUTES = {
     { id: "history", label: "History" },
     { id: "codes", label: "Codes" },
     { id: "specs", label: "Specifications" },
+    { id: "masterdata", label: "Master Data" },
   ],
 };
 
@@ -1431,6 +1432,269 @@ async function viewSpecs() {
   });
 }
 
+// ---------------------------------------------------------------- master data dossier
+
+function fmtPct(rate) {
+  return rate == null ? "—" : `${Math.round(rate * 100)}%`;
+}
+
+async function downloadAttachment(id, filename) {
+  try {
+    const res = await fetch(`/api/attachments/${id}/download`, { headers: { "x-role": getRole() } });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Download failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+function dossierImportEntryHtml(entry) {
+  const scenarioBadge = entry.import_scenario
+    ? `<span class="badge ${entry.import_scenario === "repeat" ? "repeat" : "flag"}">${esc(entry.import_scenario.replace("_", " "))}</span>`
+    : "";
+  const batchRows = entry.batches
+    .map(
+      (b) => `
+      <div class="batch-row">
+        <div><span class="batch-id">${esc(b.supplier_batch_no)}</span></div>
+        <div class="hstack">
+          ${statusPill(b.status)}
+          ${b.internal_batch_no ? `<span class="mono small">${esc(b.internal_batch_no)}</span>` : ""}
+          ${b.status !== "pending" ? `<button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="pdf">COA PDF</button>
+          <button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="xlsx">COA Excel</button>` : ""}
+        </div>
+      </div>`
+    )
+    .join("");
+  const attachmentRows = entry.attachments
+    .map(
+      (a) => `
+      <div class="attachment-row">
+        <span><span class="badge neutral">${esc(a.kind.toUpperCase())}</span> ${esc(a.filename)} <span class="muted">by ${esc(a.uploaded_by)}, ${fmtDate(a.uploaded_at)}</span></span>
+        <span class="hstack">
+          <button class="btn sm ghost" data-attachment-download="${a.id}" data-filename="${esc(a.filename)}">Download</button>
+          <button class="btn sm ghost" data-attachment-delete="${a.id}">Remove</button>
+        </span>
+      </div>`
+    )
+    .join("");
+
+  return `
+    <div class="dossier-import-entry" data-line-id="${entry.receipt_line_id}">
+      <div class="line-head">
+        <div>
+          <b class="mono">${esc(entry.import_code)}</b> ${scenarioBadge}
+          <div class="small muted">${esc(entry.material_name_text)} · ${esc(entry.supplier_name)} (${esc(entry.supplier_code)}) · received ${fmtDate(entry.received_at)}</div>
+        </div>
+      </div>
+      <div style="margin-top:6px">${batchRows}</div>
+      <div style="margin-top:8px">
+        <div class="small muted" style="margin-bottom:4px">Attachments</div>
+        ${attachmentRows || `<div class="small muted">None yet.</div>`}
+        <form class="field-row" data-attachment-form style="margin-top:8px; align-items:flex-end;">
+          <div class="field" style="max-width:120px"><label>Kind</label>
+            <select data-f="kind"><option value="photo">Photo</option><option value="tds">TDS</option><option value="msds">MSDS</option></select>
+          </div>
+          <div class="field" style="flex:2"><label>File</label><input type="file" data-f="file" required /></div>
+          <button type="submit" class="btn sm ghost">Attach</button>
+        </form>
+      </div>
+    </div>`;
+}
+
+function wireDossierImportEntries(container, onDone) {
+  container.querySelectorAll("[data-dossier-coa]").forEach((btn) =>
+    btn.addEventListener("click", () => downloadCoa(btn.dataset.dossierCoa, btn.dataset.format))
+  );
+  container.querySelectorAll("[data-attachment-download]").forEach((btn) =>
+    btn.addEventListener("click", () => downloadAttachment(btn.dataset.attachmentDownload, btn.dataset.filename))
+  );
+  container.querySelectorAll("[data-attachment-delete]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      if (!confirm("Remove this attachment?")) return;
+      try {
+        await api.delete(`/api/attachments/${btn.dataset.attachmentDelete}`);
+        toast("Attachment removed");
+        onDone();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    })
+  );
+  container.querySelectorAll("[data-attachment-form]").forEach((form) =>
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const lineId = e.target.closest("[data-line-id]").dataset.lineId;
+      const fileInput = form.querySelector('[data-f="file"]');
+      const kind = form.querySelector('[data-f="kind"]').value;
+      const file = fileInput.files[0];
+      if (!file) return toast("Choose a file first", true);
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("kind", kind);
+      fd.append("uploaded_by", getRememberedName() || "Quality");
+      try {
+        await uploadFile(`/api/receipt-lines/${lineId}/attachments`, fd);
+        toast("File attached");
+        onDone();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    })
+  );
+}
+
+async function viewMasterData() {
+  const view = document.getElementById("view");
+  const materials = await getMaterials(true);
+
+  view.innerHTML = `
+    <div class="view-head"><div><h1>Master Data</h1><p>Everything Quality knows about one material code.</p></div></div>
+    <div class="card">
+      <div class="field"><label>Material</label>
+        <select id="dossier-material">${materials.map((m) => `<option value="${esc(m.code)}">${esc(m.code)} — ${esc(m.name)}</option>`).join("")}</select>
+      </div>
+    </div>
+    <div id="dossier-body"></div>
+  `;
+
+  const select = document.getElementById("dossier-material");
+  const body = document.getElementById("dossier-body");
+  let rmsExpanded = false;
+
+  async function loadDossier() {
+    if (!select.value) {
+      body.innerHTML = `<div class="empty-state">No materials yet.</div>`;
+      return;
+    }
+    body.innerHTML = `<div class="empty-state">Loading…</div>`;
+    const d = await api.get(`/api/materials/${encodeURIComponent(select.value)}/dossier`);
+
+    const namesHtml = d.names.length
+      ? `<div class="table-scroll"><table class="data-table">
+          <thead><tr><th>Name</th><th>Times received</th><th>Last received</th></tr></thead>
+          <tbody>${d.names.map((n) => `<tr><td>${esc(n.name)}</td><td>${n.count}</td><td>${fmtDate(n.last_received_at)}</td></tr>`).join("")}</tbody>
+        </table></div>`
+      : `<div class="small muted">No receiving history yet.</div>`;
+
+    const specVersionOptions = d.specs
+      .map((s) => `<option value="${s.version}">v${s.version} — ${esc(s.title)} (${s.status})</option>`)
+      .join("");
+    const specsHtml = d.specs.length
+      ? `<div class="field" style="max-width:320px"><label>Version</label><select id="dossier-spec-version">${specVersionOptions}</select></div>
+         <div id="dossier-spec-detail" style="margin-top:8px"></div>`
+      : `<div class="small muted">No specs created yet.</div>`;
+
+    const supplierRows = d.metrics.by_supplier
+      .map(
+        (s) => `
+        <tr>
+          <td>${esc(s.supplier_name)} <span class="mono small muted">(${esc(s.supplier_code)})</span></td>
+          <td>${s.imports}</td>
+          <td>${s.approved}</td>
+          <td>${s.rejected}</td>
+          <td>${s.partial}</td>
+          <td>${fmtPct(s.pass_rate)}</td>
+        </tr>`
+      )
+      .join("");
+
+    body.innerHTML = `
+      <div class="card">
+        <h3>${esc(d.material.code)} — ${esc(d.material.name)}</h3>
+        <div class="small muted">${esc(d.material.unit)}${d.material.type_code ? ` · ${esc(d.material.type_code)}${d.material.subtype_code ? "/" + esc(d.material.subtype_code) : ""}` : ""}</div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">Metrics</h3>
+        <div class="stat-grid">
+          <div class="stat-tile"><div class="stat-label">Total imports</div><div class="stat-value">${d.metrics.overall.imports}</div></div>
+          <div class="stat-tile"><div class="stat-label">Approved</div><div class="stat-value good">${d.metrics.overall.approved}</div></div>
+          <div class="stat-tile"><div class="stat-label">Rejected</div><div class="stat-value bad">${d.metrics.overall.rejected}</div></div>
+          <div class="stat-tile"><div class="stat-label">Partial</div><div class="stat-value">${d.metrics.overall.partial}</div></div>
+          <div class="stat-tile"><div class="stat-label">Pending</div><div class="stat-value">${d.metrics.overall.pending}</div></div>
+          <div class="stat-tile"><div class="stat-label">Pass rate</div><div class="stat-value">${fmtPct(d.metrics.overall.pass_rate)}</div></div>
+        </div>
+        <div class="small muted" style="margin-top:8px">Pass rate = approved ÷ (approved + rejected) batches; partial approvals are shown separately, not folded into the ratio.</div>
+        ${
+          supplierRows
+            ? `<div class="table-scroll" style="margin-top:12px"><table class="data-table">
+                <thead><tr><th>Supplier</th><th>Imports</th><th>Approved</th><th>Rejected</th><th>Partial</th><th>Pass rate</th></tr></thead>
+                <tbody>${supplierRows}</tbody>
+              </table></div>`
+            : ""
+        }
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">Names received under this code</h3>
+        ${namesHtml}
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">Specifications</h3>
+        ${specsHtml}
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">RMF — novel imports</h3>
+        <div id="dossier-rmf">${d.rmf.length ? d.rmf.map(dossierImportEntryHtml).join("") : `<div class="small muted">No novel imports recorded yet.</div>`}</div>
+      </div>
+
+      <div class="card">
+        <button type="button" class="btn ghost sm" id="dossier-show-rms">${rmsExpanded ? "Hide RMSs" : `Show all RMSs (${d.rms.length})`}</button>
+        <div id="dossier-rms" ${rmsExpanded ? "" : "hidden"} style="margin-top:10px">${d.rms.length ? d.rms.map(dossierImportEntryHtml).join("") : `<div class="small muted">No repeat imports recorded yet.</div>`}</div>
+      </div>
+    `;
+
+    wireDossierImportEntries(document.getElementById("dossier-rmf"), loadDossier);
+    wireDossierImportEntries(document.getElementById("dossier-rms"), loadDossier);
+
+    document.getElementById("dossier-show-rms")?.addEventListener("click", (e) => {
+      const el = document.getElementById("dossier-rms");
+      el.hidden = !el.hidden;
+      rmsExpanded = !el.hidden;
+      e.target.textContent = el.hidden ? `Show all RMSs (${d.rms.length})` : `Hide RMSs`;
+    });
+
+    const versionSelect = document.getElementById("dossier-spec-version");
+    if (versionSelect) {
+      const detailEl = document.getElementById("dossier-spec-detail");
+      function renderSpecDetail() {
+        const spec = d.specs.find((s) => String(s.version) === versionSelect.value);
+        detailEl.innerHTML = spec
+          ? `<div class="small muted" style="margin-bottom:6px">${esc(spec.notes || "")}</div>
+             <div class="table-scroll"><table class="data-table">
+               <thead><tr><th>Parameter</th><th>Method</th><th>Spec</th></tr></thead>
+               <tbody>${spec.parameters
+                 .map((p) => `<tr><td>${esc(p.parameter_name)}</td><td>${esc(p.method || "—")}</td><td>${esc(paramSpecHint(p))}</td></tr>`)
+                 .join("")}</tbody>
+             </table></div>`
+          : "";
+      }
+      versionSelect.addEventListener("change", renderSpecDetail);
+      renderSpecDetail();
+    }
+  }
+
+  select.addEventListener("change", () => {
+    rmsExpanded = false;
+    loadDossier();
+  });
+  await loadDossier();
+}
+
 // ---------------------------------------------------------------- router
 
 let lastRouteArgs = null;
@@ -1454,6 +1718,9 @@ async function renderView() {
     } else if (role === "quality" && tab === "specs") {
       lastRouteArgs = { fn: viewSpecs };
       await viewSpecs();
+    } else if (role === "quality" && tab === "masterdata") {
+      lastRouteArgs = { fn: viewMasterData };
+      await viewMasterData();
     }
   } catch (err) {
     document.getElementById("view").innerHTML = `<div class="empty-state">Couldn't load this screen: ${esc(err.message)}</div>`;

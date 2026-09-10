@@ -1,6 +1,16 @@
 import { resolveMaterialClassification } from "../db";
 import { error, json } from "../http";
-import type { Env } from "../types";
+import { listSpecsForMaterial } from "./specs";
+import type {
+  Attachment,
+  DossierBatchSummary,
+  DossierImportEntry,
+  DossierName,
+  DossierStatusCounts,
+  DossierSupplierMetrics,
+  Env,
+  Material,
+} from "../types";
 
 export async function listSuppliers(_request: Request, env: Env): Promise<Response> {
   const rows = await env.DB.prepare("SELECT * FROM suppliers ORDER BY name").all();
@@ -179,4 +189,126 @@ export async function setImportCodeScheme(request: Request, env: Env, kind: stri
     .run();
 
   return json({ kind, pattern_template: input.pattern_template });
+}
+
+function passRate(approved: number, rejected: number): number | null {
+  const decided = approved + rejected;
+  return decided === 0 ? null : approved / decided;
+}
+
+/** Everything Quality knows about one material code: every name it's been
+ *  received under, its full spec history, its import history split into
+ *  novel (RMF) vs repeat (RMS) events with each event's batches/attachments,
+ *  and pass-rate metrics overall and per supplier. */
+export async function getMaterialDossier(env: Env, materialCode: string): Promise<Response> {
+  const material = await env.DB.prepare("SELECT * FROM materials WHERE code = ?")
+    .bind(materialCode)
+    .first<Material>();
+  if (!material) return error("Material not found", 404);
+
+  const namesRows = await env.DB.prepare(
+    `SELECT rl.material_name_text as name, COUNT(*) as count, MAX(r.received_at) as last_received_at
+     FROM receipt_lines rl JOIN receipts r ON r.id = rl.receipt_id
+     WHERE rl.material_code = ?
+     GROUP BY rl.material_name_text
+     ORDER BY count DESC`
+  )
+    .bind(materialCode)
+    .all<DossierName>();
+
+  const specs = await listSpecsForMaterial(env, materialCode);
+
+  const [rmf, rms] = await Promise.all([
+    getImportEntries(env, materialCode, "RMF"),
+    getImportEntries(env, materialCode, "RMS"),
+  ]);
+
+  const overallRow = await env.DB.prepare(
+    `SELECT COUNT(DISTINCT rl.id) as imports,
+       SUM(CASE WHEN rb.status = 'approved' THEN 1 ELSE 0 END) as approved,
+       SUM(CASE WHEN rb.status = 'rejected' THEN 1 ELSE 0 END) as rejected,
+       SUM(CASE WHEN rb.status = 'partial' THEN 1 ELSE 0 END) as partial,
+       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending
+     FROM receipt_lines rl
+     LEFT JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
+     WHERE rl.material_code = ?`
+  )
+    .bind(materialCode)
+    .first<Omit<DossierStatusCounts, "pass_rate">>();
+
+  const overall: DossierStatusCounts = {
+    imports: overallRow?.imports ?? 0,
+    approved: overallRow?.approved ?? 0,
+    rejected: overallRow?.rejected ?? 0,
+    partial: overallRow?.partial ?? 0,
+    pending: overallRow?.pending ?? 0,
+    pass_rate: passRate(overallRow?.approved ?? 0, overallRow?.rejected ?? 0),
+  };
+
+  const bySupplierRows = await env.DB.prepare(
+    `SELECT s.id as supplier_id, s.code as supplier_code, s.name as supplier_name,
+       COUNT(DISTINCT rl.id) as imports,
+       SUM(CASE WHEN rb.status = 'approved' THEN 1 ELSE 0 END) as approved,
+       SUM(CASE WHEN rb.status = 'rejected' THEN 1 ELSE 0 END) as rejected,
+       SUM(CASE WHEN rb.status = 'partial' THEN 1 ELSE 0 END) as partial,
+       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending
+     FROM receipt_lines rl
+     JOIN receipts r ON r.id = rl.receipt_id
+     JOIN suppliers s ON s.id = r.supplier_id
+     LEFT JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
+     WHERE rl.material_code = ?
+     GROUP BY s.id
+     ORDER BY imports DESC`
+  )
+    .bind(materialCode)
+    .all<Omit<DossierSupplierMetrics, "pass_rate">>();
+
+  const bySupplier: DossierSupplierMetrics[] = (bySupplierRows.results ?? []).map((row) => ({
+    ...row,
+    pass_rate: passRate(row.approved, row.rejected),
+  }));
+
+  return json({
+    material,
+    names: namesRows.results ?? [],
+    specs,
+    rmf,
+    rms,
+    metrics: { overall, by_supplier: bySupplier },
+  });
+}
+
+async function getImportEntries(
+  env: Env,
+  materialCode: string,
+  prefix: "RMF" | "RMS"
+): Promise<DossierImportEntry[]> {
+  const lines = await env.DB.prepare(
+    `SELECT rl.id as receipt_line_id, rl.import_code, rl.import_scenario, rl.material_name_text,
+            r.id as receipt_id, r.received_at, s.id as supplier_id, s.code as supplier_code, s.name as supplier_name
+     FROM receipt_lines rl
+     JOIN receipts r ON r.id = rl.receipt_id
+     JOIN suppliers s ON s.id = r.supplier_id
+     WHERE rl.material_code = ? AND rl.import_code LIKE ?
+     ORDER BY r.received_at DESC`
+  )
+    .bind(materialCode, `${prefix}%`)
+    .all<Omit<DossierImportEntry, "batches" | "attachments">>();
+
+  const entries: DossierImportEntry[] = [];
+  for (const line of lines.results ?? []) {
+    const batches = await env.DB.prepare(
+      `SELECT id, supplier_batch_no, status, internal_batch_no, decided_at
+       FROM receipt_batches WHERE receipt_line_id = ? ORDER BY id`
+    )
+      .bind(line.receipt_line_id)
+      .all<DossierBatchSummary>();
+    const attachments = await env.DB.prepare(
+      "SELECT * FROM attachments WHERE receipt_line_id = ? ORDER BY uploaded_at DESC"
+    )
+      .bind(line.receipt_line_id)
+      .all<Attachment>();
+    entries.push({ ...line, batches: batches.results ?? [], attachments: attachments.results ?? [] });
+  }
+  return entries;
 }
