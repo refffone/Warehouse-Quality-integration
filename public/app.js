@@ -540,7 +540,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       if (canFinalize && b.status !== "pending" && b.status !== "rejected" && b.qty_actual_weighed == null) {
         actions.push(`<button class="btn sm ghost" data-finalize="${b.id}">${esc(t("line.finalizeWeight"))}</button>`);
       }
-      if (decided) {
+      if (decided && role === "quality") {
         actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="pdf">${esc(t("line.coaPdf"))}</button>`);
         actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="xlsx">${esc(t("line.coaExcel"))}</button>`);
       }

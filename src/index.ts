@@ -51,7 +51,10 @@ export default {
       // else here (codes, types, subtypes, functions, specs, schemes) is
       // Quality's catalog and Warehouse's own screens never call it, so
       // it's read *and* write, Quality-only.
-      if (pathname === "/api/suppliers" && method === "GET") return listSuppliers(request, env);
+      if (pathname === "/api/suppliers" && method === "GET") {
+        if (!role) return error("Missing X-Role header", 401);
+        return listSuppliers(request, env);
+      }
       if (pathname === "/api/suppliers" && method === "POST") {
         if (!role) return error("Missing X-Role header", 401);
         return createSupplier(request, env);
@@ -208,8 +211,8 @@ export default {
 
       const coaMatch = pathname.match(/^\/api\/batches\/(\d+)\/coa$/);
       if (coaMatch && method === "GET") {
-        if (!role) return error("Missing X-Role header", 401);
-        return downloadCoa(env, role, Number(coaMatch[1]), url.searchParams.get("format") ?? "pdf");
+        if (role !== "quality") return error("Only quality can export a COA", 403);
+        return downloadCoa(env, Number(coaMatch[1]), url.searchParams.get("format") ?? "pdf");
       }
 
       // Notifications
