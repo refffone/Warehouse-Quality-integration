@@ -270,6 +270,27 @@ export interface MaterialDossier {
   };
 }
 
+export interface SupplierCodeMetrics extends DossierStatusCounts {
+  material_code: string;
+  material_name: string;
+}
+
+export interface SupplierRating {
+  /** 0-5 stars, rounded from pass_rate. */
+  stars: number;
+  label: "Unrated" | "Very Poor" | "Poor" | "Fair" | "Good" | "Excellent";
+  /** True when fewer than 5 decided batches back the rating — treat with caution. */
+  low_volume: boolean;
+}
+
+export interface SupplierAssessment {
+  supplier: Supplier;
+  overall: DossierStatusCounts & { distinct_codes: number };
+  rating: SupplierRating;
+  codes: SupplierCodeMetrics[];
+  best_code: SupplierCodeMetrics | null;
+}
+
 /** Quality associates an uncoded receipt line to a material code — either
  *  an existing one (whose active spec then applies) or a brand-new one,
  *  which requires creating its first spec version in the same step. */

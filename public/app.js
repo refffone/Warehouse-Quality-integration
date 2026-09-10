@@ -1555,31 +1555,88 @@ function wireDossierImportEntries(container, onDone) {
   );
 }
 
+// A code combobox is a text input backed by a <datalist>: type to filter
+// by code or name (native browser behavior, no custom filtering logic),
+// but selection only fires once the typed value exactly matches a known
+// code — so a partial search never triggers a lookup on a bad code.
+function codeComboboxHtml(id, items, placeholder) {
+  return `
+    <input type="text" id="${id}" list="${id}-list" placeholder="${esc(placeholder)}" autocomplete="off" />
+    <datalist id="${id}-list">
+      ${items.map((i) => `<option value="${esc(i.code)}">${esc(i.code)} — ${esc(i.name)}</option>`).join("")}
+    </datalist>
+  `;
+}
+
+function wireCodeCombobox(id, items, onSelect) {
+  const input = document.getElementById(id);
+  const codes = new Set(items.map((i) => i.code));
+  const tryMatch = () => {
+    if (codes.has(input.value)) onSelect(input.value);
+  };
+  input.addEventListener("input", tryMatch);
+  input.addEventListener("change", tryMatch);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      tryMatch();
+    }
+  });
+  return input;
+}
+
+const MASTERDATA_SUBTABS = [
+  { id: "dossier", label: "Material Dossier" },
+  { id: "suppliers", label: "Suppliers" },
+];
+let masterDataSubtab = "dossier";
+
 async function viewMasterData() {
   const view = document.getElementById("view");
+  view.innerHTML = `
+    <div class="view-head"><div><h1>Master Data</h1><p>Everything Quality knows about a material code or a supplier.</p></div></div>
+    <div class="subtabs">
+      ${MASTERDATA_SUBTABS.map(
+        (t) => `<button class="subtab-btn${masterDataSubtab === t.id ? " active" : ""}" data-sub="${t.id}">${t.label}</button>`
+      ).join("")}
+    </div>
+    <div id="masterdata-section"></div>
+  `;
+  view.querySelectorAll("[data-sub]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      masterDataSubtab = btn.dataset.sub;
+      viewMasterData();
+    })
+  );
+
+  const section = document.getElementById("masterdata-section");
+  if (masterDataSubtab === "suppliers") await renderSupplierAssessmentSection(section);
+  else await renderMaterialDossierSection(section);
+}
+
+async function renderMaterialDossierSection(section) {
   const materials = await getMaterials(true);
 
-  view.innerHTML = `
-    <div class="view-head"><div><h1>Master Data</h1><p>Everything Quality knows about one material code.</p></div></div>
+  section.innerHTML = `
     <div class="card">
       <div class="field"><label>Material</label>
-        <select id="dossier-material">${materials.map((m) => `<option value="${esc(m.code)}">${esc(m.code)} — ${esc(m.name)}</option>`).join("")}</select>
+        ${codeComboboxHtml("dossier-material", materials, "Search by code or name…")}
       </div>
     </div>
     <div id="dossier-body"></div>
   `;
 
-  const select = document.getElementById("dossier-material");
   const body = document.getElementById("dossier-body");
   let rmsExpanded = false;
+  let currentCode = null;
 
-  async function loadDossier() {
-    if (!select.value) {
-      body.innerHTML = `<div class="empty-state">No materials yet.</div>`;
-      return;
-    }
+  async function loadDossier(code) {
+    currentCode = code;
     body.innerHTML = `<div class="empty-state">Loading…</div>`;
-    const d = await api.get(`/api/materials/${encodeURIComponent(select.value)}/dossier`);
+    const d = await api.get(`/api/materials/${encodeURIComponent(code)}/dossier`);
+    // The user may have switched subtabs/materials while this was in flight —
+    // if this section's DOM is gone (or a newer load has since started), bail.
+    if (!body.isConnected || currentCode !== code) return;
 
     const namesHtml = d.names.length
       ? `<div class="table-scroll"><table class="data-table">
@@ -1658,8 +1715,9 @@ async function viewMasterData() {
       </div>
     `;
 
-    wireDossierImportEntries(document.getElementById("dossier-rmf"), loadDossier);
-    wireDossierImportEntries(document.getElementById("dossier-rms"), loadDossier);
+    const reload = () => loadDossier(currentCode);
+    wireDossierImportEntries(document.getElementById("dossier-rmf"), reload);
+    wireDossierImportEntries(document.getElementById("dossier-rms"), reload);
 
     document.getElementById("dossier-show-rms")?.addEventListener("click", (e) => {
       const el = document.getElementById("dossier-rms");
@@ -1688,11 +1746,106 @@ async function viewMasterData() {
     }
   }
 
-  select.addEventListener("change", () => {
+  const input = wireCodeCombobox("dossier-material", materials, (code) => {
     rmsExpanded = false;
-    loadDossier();
+    loadDossier(code);
   });
-  await loadDossier();
+
+  if (materials.length) {
+    input.value = materials[0].code;
+    await loadDossier(materials[0].code);
+  } else {
+    body.innerHTML = `<div class="empty-state">No materials yet.</div>`;
+  }
+}
+
+function ratingStarsHtml(rating) {
+  const full = "★".repeat(rating.stars);
+  const empty = "☆".repeat(5 - rating.stars);
+  return `<span style="letter-spacing:2px; color:var(--accent)">${full}${empty}</span> <span class="small muted">${esc(rating.label)}${rating.low_volume ? " · limited history" : ""}</span>`;
+}
+
+async function renderSupplierAssessmentSection(section) {
+  const suppliers = await getSuppliers(true);
+
+  section.innerHTML = `
+    <div class="card">
+      <div class="field"><label>Supplier</label>
+        ${codeComboboxHtml("supplier-search", suppliers, "Search by code or name…")}
+      </div>
+    </div>
+    <div id="supplier-body"></div>
+  `;
+
+  const body = document.getElementById("supplier-body");
+  let currentSupplierCode = null;
+
+  async function loadAssessment(code) {
+    currentSupplierCode = code;
+    body.innerHTML = `<div class="empty-state">Loading…</div>`;
+    const a = await api.get(`/api/suppliers/${encodeURIComponent(code)}/assessment`);
+    if (!body.isConnected || currentSupplierCode !== code) return;
+
+    const codeRows = a.codes
+      .map(
+        (c) => `
+        <tr${a.best_code && c.material_code === a.best_code.material_code ? ' style="font-weight:600"' : ""}>
+          <td>${esc(c.material_code)}${a.best_code && c.material_code === a.best_code.material_code ? ' <span class="badge repeat">Best</span>' : ""}</td>
+          <td>${esc(c.material_name || "—")}</td>
+          <td>${c.imports}</td>
+          <td>${c.approved}</td>
+          <td>${c.rejected}</td>
+          <td>${c.partial}</td>
+          <td>${fmtPct(c.pass_rate)}</td>
+        </tr>`
+      )
+      .join("");
+
+    body.innerHTML = `
+      <div class="card">
+        <h3>${esc(a.supplier.name)} <span class="mono small muted">(${esc(a.supplier.code)})</span></h3>
+        <div style="margin-top:6px">${ratingStarsHtml(a.rating)}</div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">Overall performance</h3>
+        <div class="stat-grid">
+          <div class="stat-tile"><div class="stat-label">Total imports</div><div class="stat-value">${a.overall.imports}</div></div>
+          <div class="stat-tile"><div class="stat-label">Codes supplied</div><div class="stat-value">${a.overall.distinct_codes}</div></div>
+          <div class="stat-tile"><div class="stat-label">Approved</div><div class="stat-value good">${a.overall.approved}</div></div>
+          <div class="stat-tile"><div class="stat-label">Rejected</div><div class="stat-value bad">${a.overall.rejected}</div></div>
+          <div class="stat-tile"><div class="stat-label">Partial</div><div class="stat-value">${a.overall.partial}</div></div>
+          <div class="stat-tile"><div class="stat-label">Pass rate</div><div class="stat-value">${fmtPct(a.overall.pass_rate)}</div></div>
+        </div>
+        ${
+          a.best_code
+            ? `<div class="small muted" style="margin-top:8px">Best code provided: <b class="mono">${esc(a.best_code.material_code)}</b> (${esc(a.best_code.material_name || "—")}) at ${fmtPct(a.best_code.pass_rate)} pass rate.</div>`
+            : `<div class="small muted" style="margin-top:8px">No decided batches yet — best code not determinable.</div>`
+        }
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">Codes supplied</h3>
+        ${
+          codeRows
+            ? `<div class="table-scroll"><table class="data-table">
+                <thead><tr><th>Code</th><th>Name</th><th>Imports</th><th>Approved</th><th>Rejected</th><th>Partial</th><th>Pass rate</th></tr></thead>
+                <tbody>${codeRows}</tbody>
+              </table></div>`
+            : `<div class="small muted">No coded receiving history from this supplier yet.</div>`
+        }
+      </div>
+    `;
+  }
+
+  const input = wireCodeCombobox("supplier-search", suppliers, loadAssessment);
+
+  if (suppliers.length) {
+    input.value = suppliers[0].code;
+    await loadAssessment(suppliers[0].code);
+  } else {
+    body.innerHTML = `<div class="empty-state">No suppliers yet.</div>`;
+  }
 }
 
 // ---------------------------------------------------------------- router

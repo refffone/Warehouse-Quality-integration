@@ -10,6 +10,9 @@ import type {
   DossierSupplierMetrics,
   Env,
   Material,
+  Supplier,
+  SupplierCodeMetrics,
+  SupplierRating,
 } from "../types";
 
 export async function listSuppliers(_request: Request, env: Env): Promise<Response> {
@@ -311,4 +314,88 @@ async function getImportEntries(
     entries.push({ ...line, batches: batches.results ?? [], attachments: attachments.results ?? [] });
   }
   return entries;
+}
+
+const RATING_LABELS: SupplierRating["label"][] = ["Unrated", "Very Poor", "Poor", "Fair", "Good", "Excellent"];
+
+/** Stars are just the pass rate rounded onto a 0-5 scale — simple and
+ *  transparent, not a hidden weighted score. Flagged low-volume under 5
+ *  decided batches so a single lucky/unlucky batch doesn't read as proven
+ *  performance. */
+function rateSupplier(approved: number, rejected: number): SupplierRating {
+  const decided = approved + rejected;
+  if (decided === 0) return { stars: 0, label: "Unrated", low_volume: true };
+  const stars = Math.round((approved / decided) * 5);
+  return { stars, label: RATING_LABELS[stars], low_volume: decided < 5 };
+}
+
+/** Quality's read on one supplier: overall pass rate, a simple star rating,
+ *  and a per-material-code breakdown so "which code do they supply best"
+ *  is answerable at a glance rather than re-derived from raw receipts. */
+export async function getSupplierAssessment(env: Env, supplierCode: string): Promise<Response> {
+  const supplier = await env.DB.prepare("SELECT * FROM suppliers WHERE code = ?")
+    .bind(supplierCode)
+    .first<Supplier>();
+  if (!supplier) return error("Supplier not found", 404);
+
+  const overallRow = await env.DB.prepare(
+    `SELECT COUNT(DISTINCT rl.id) as imports,
+       COUNT(DISTINCT rl.material_code) as distinct_codes,
+       SUM(CASE WHEN rb.status = 'approved' THEN 1 ELSE 0 END) as approved,
+       SUM(CASE WHEN rb.status = 'rejected' THEN 1 ELSE 0 END) as rejected,
+       SUM(CASE WHEN rb.status = 'partial' THEN 1 ELSE 0 END) as partial,
+       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending
+     FROM receipts r
+     JOIN receipt_lines rl ON rl.receipt_id = r.id
+     LEFT JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
+     WHERE r.supplier_id = ?`
+  )
+    .bind(supplier.id)
+    .first<Omit<DossierStatusCounts, "pass_rate"> & { distinct_codes: number }>();
+
+  const overall = {
+    imports: overallRow?.imports ?? 0,
+    distinct_codes: overallRow?.distinct_codes ?? 0,
+    approved: overallRow?.approved ?? 0,
+    rejected: overallRow?.rejected ?? 0,
+    partial: overallRow?.partial ?? 0,
+    pending: overallRow?.pending ?? 0,
+    pass_rate: passRate(overallRow?.approved ?? 0, overallRow?.rejected ?? 0),
+  };
+
+  const codeRows = await env.DB.prepare(
+    `SELECT rl.material_code, COALESCE(m.name, '') as material_name,
+       COUNT(DISTINCT rl.id) as imports,
+       SUM(CASE WHEN rb.status = 'approved' THEN 1 ELSE 0 END) as approved,
+       SUM(CASE WHEN rb.status = 'rejected' THEN 1 ELSE 0 END) as rejected,
+       SUM(CASE WHEN rb.status = 'partial' THEN 1 ELSE 0 END) as partial,
+       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending
+     FROM receipts r
+     JOIN receipt_lines rl ON rl.receipt_id = r.id
+     LEFT JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
+     LEFT JOIN materials m ON m.code = rl.material_code
+     WHERE r.supplier_id = ? AND rl.material_code IS NOT NULL
+     GROUP BY rl.material_code
+     ORDER BY imports DESC`
+  )
+    .bind(supplier.id)
+    .all<Omit<SupplierCodeMetrics, "pass_rate">>();
+
+  const codes: SupplierCodeMetrics[] = (codeRows.results ?? []).map((row) => ({
+    ...row,
+    pass_rate: passRate(row.approved, row.rejected),
+  }));
+
+  const ranked = [...codes]
+    .filter((c) => c.approved + c.rejected > 0)
+    .sort((a, b) => (b.pass_rate ?? 0) - (a.pass_rate ?? 0) || b.imports - a.imports);
+  const bestCode = ranked[0] ?? null;
+
+  return json({
+    supplier,
+    overall,
+    rating: rateSupplier(overall.approved, overall.rejected),
+    codes,
+    best_code: bestCode,
+  });
 }

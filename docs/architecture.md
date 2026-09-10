@@ -673,7 +673,57 @@ the API afterward, and confirmed the "Show all RMSs" section survives a
 post-upload reload instead of collapsing (a bug caught and fixed during
 this same verification pass, before it shipped).
 
-## 10. Next Step
+## 10. Searchable code lookups + Suppliers subtab (supplier assessment)
+
+Two follow-up requests: material/supplier pickers should be searchable by
+code rather than scrolled through in a plain dropdown, and Master Data
+needed a second view — evaluating a *supplier's* track record rather than
+a material's.
+
+**Searchable combobox**: replaced the material `<select>` with a text
+input backed by a native `<datalist>` (`codeComboboxHtml`/
+`wireCodeCombobox` in `app.js`) — typing filters by code or name using
+the browser's own matching, no custom filter logic to maintain. Selection
+only fires once the typed value exactly matches a known code, so a
+partial search never triggers a lookup on a non-existent one. Reused for
+both the Material Dossier and the new Suppliers picker.
+
+**Master Data restructured into subtabs** (mirroring the Codes tab's
+existing Types/Materials/Schemes pattern): "Material Dossier" (the
+existing view) and "Suppliers" (new), with the active subtab remembered
+across navigation the same way `codesSubtab` already works.
+
+**Supplier assessment** (`GET /api/suppliers/:code/assessment`,
+`getSupplierAssessment` in `src/routes/masterdata.ts`, quality-only):
+overall performance (imports, approved/rejected/partial/pending, pass
+rate, distinct codes supplied), a star rating, and a per-material-code
+breakdown so "which code does this supplier deliver best" is a lookup,
+not a mental exercise. Rating is deliberately simple and transparent
+rather than a hidden weighted formula: stars = pass rate rounded onto a
+0–5 scale, labeled Unrated/Very Poor/Poor/Fair/Good/Excellent, flagged
+`low_volume` under 5 decided batches so a single early result doesn't
+read as proven performance. "Best code provided" is the code with the
+highest pass rate among codes with at least one decided batch (ties
+broken by import volume) — surfaced as its own callout and highlighted
+in the ranked codes table, rather than requiring the user to eyeball a
+sorted column.
+
+Verified against local D1 with a scripted scenario (one supplier
+delivering two material codes at different pass rates, another supplier
+with a single rejection): confirmed via direct API calls that the star
+rating, low-volume flag, and best-code selection all matched hand
+computation, then re-verified through the real UI with Playwright —
+screenshot-confirmed both subtabs, the combobox correctly resolving a
+typed partial code to the right dossier/assessment, and mobile-width
+rendering of the new stat tiles and ranked table. One real bug caught and
+fixed during this pass: switching subtabs (or materials) while a dossier/
+assessment fetch was still in flight could have it resolve against DOM
+that had since been replaced (`document.getElementById(...)` returning
+`null`), throwing on `querySelectorAll`. Fixed with a same-request guard
+(`body.isConnected` plus a "did a newer request start" check) in both
+`loadDossier` and `loadAssessment` before touching the DOM.
+
+## 11. Next Step
 
 Two things block a real deploy: (1) someone with Cloudflare account
 access needs to enable R2 in the dashboard and run

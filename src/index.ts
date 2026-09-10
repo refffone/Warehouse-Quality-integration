@@ -2,6 +2,7 @@ import { error, getRole, json } from "./http";
 import {
   createSupplier,
   getMaterialDossier,
+  getSupplierAssessment,
   listImportCodeSchemes,
   listMaterials,
   listMaterialSubtypes,
@@ -101,6 +102,13 @@ export default {
       if (dossierMatch && method === "GET") {
         if (role !== "quality") return error("Master Data is a quality-only view", 403);
         return getMaterialDossier(env, decodeURIComponent(dossierMatch[1]));
+      }
+
+      // Master Data — Suppliers subtab: performance assessment per supplier.
+      const supplierAssessmentMatch = pathname.match(/^\/api\/suppliers\/([^/]+)\/assessment$/);
+      if (supplierAssessmentMatch && method === "GET") {
+        if (role !== "quality") return error("Master Data is a quality-only view", 403);
+        return getSupplierAssessment(env, decodeURIComponent(supplierAssessmentMatch[1]));
       }
 
       // Attachments (photo/TDS/MSDS) per import code — Quality-only, like the dossier.
