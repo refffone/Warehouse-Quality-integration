@@ -851,7 +851,36 @@ built for. Confirmed via direct DOM `textContent` inspection (not just a
 screenshot) that the underlying data was always correct — this was a
 pure rendering bug, not a data bug.
 
-## 13. Next Step
+## 13. Arabic typeface upgrade
+
+Feedback on §12: "arabic fonts are bad." The initial pass used a single
+face — IBM Plex Sans Arabic — for both display and body roles, chosen
+mainly because it's the official Arabic companion to the Latin IBM Plex
+family already in use, not for its own merits as an Arabic UI face. It's
+a comparatively weak release next to purpose-built options on Google
+Fonts (narrower weight range, less refined letterforms at UI sizes).
+
+Replaced it with a real two-role pairing that mirrors what the Latin
+side already does (Fraunces for character, IBM Plex Sans for neutrality)
+rather than flattening both roles into one face: **Markazi Text** (a
+literary Arabic serif with genuine warmth) for `--font-display` — h1/h2/h3
+and the brand name, same scope Fraunces has — and **Cairo** (one of the
+most widely used, polished Arabic UI faces on Google Fonts, weights
+200–900) for `--font-body`, everything else. `--font-mono` is untouched
+in both directions — material/batch/RMF codes are always Latin/numeric.
+Both loaded from the same Google Fonts `<link>` already in `index.html`.
+
+Verified visually with Playwright (desktop, Arabic mode): re-screenshotted
+the same three screens from §12's verification pass (To Do, Master
+Data's Suppliers subtab, Specifications) and confirmed via
+`getComputedStyle` that `--font-display`/`--font-body` resolve to the
+new families. Headings now read with distinct character instead of just
+a bolder weight of the body face; body text, labels, and tables are
+noticeably cleaner. No layout regressions at the new font's metrics —
+checked the denser cards (stat grids, the per-supplier table) for
+overflow or wrapping, found none.
+
+## 14. Next Step
 
 Two things block a real deploy: (1) someone with Cloudflare account
 access needs to enable R2 in the dashboard and run

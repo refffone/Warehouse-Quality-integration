@@ -38,12 +38,14 @@
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 }
 
-/* Arabic has no equivalent to Fraunces/IBM Plex Sans's italic-display
-   pairing, so one Arabic face (IBM Plex Sans Arabic — same type family,
-   keeps the visual identity close) covers both display and body roles. */
+/* Mirrors the Latin pairing's role (a characterful display face over a
+   clean, neutral body face) rather than its mechanism (Arabic has no
+   italic-display convention): Markazi Text is a literary Arabic serif
+   for headings/brand, Cairo is a polished, widely-used Arabic UI face
+   for everything else. */
 :root[dir="rtl"] {
-  --font-display: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
-  --font-body: 'IBM Plex Sans Arabic', 'IBM Plex Sans', system-ui, sans-serif;
+  --font-display: 'Markazi Text', 'Fraunces', Georgia, serif;
+  --font-body: 'Cairo', 'IBM Plex Sans', system-ui, sans-serif;
 }
 :root[dir="rtl"] .brand-name { font-style: normal; }
 
