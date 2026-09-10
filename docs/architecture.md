@@ -723,7 +723,39 @@ that had since been replaced (`document.getElementById(...)` returning
 (`body.isConnected` plus a "did a newer request start" check) in both
 `loadDossier` and `loadAssessment` before touching the DOM.
 
-## 11. Next Step
+## 11. Live search replaces the datalist combobox
+
+Feedback on §10's combobox: the native `<datalist>` still renders as a
+browser dropdown list, which is exactly what was asked to go away, and
+its exact-match-required selection didn't read as "autofetch."
+
+Replaced `codeComboboxHtml`/`wireCodeCombobox` with `codeSearchHtml`/
+`wireCodeSearch`: a plain `search-input` (same class and 150ms debounce
+convention already used by the receipt search box in `viewReceiptBucket`)
+paired with a custom-rendered, absolutely-positioned results panel —
+filtered client-side against the already-cached materials/suppliers list,
+capped at 8 matches, closed on blur (150ms delay so a click on a result
+registers first) rather than a global document click listener, which
+would otherwise leak across this app's repeated full-section
+`innerHTML` re-renders. Clicking a result (or pressing Enter to jump to
+the top match) sets the input and immediately calls the existing
+`loadDossier`/`loadAssessment`, unchanged — only the picker UI changed,
+not what happens after a selection.
+
+Scoped to Master Data's two pickers only, matching where the request
+came from; the Specifications tab, Codes tab, and Receive wizard still
+use plain `<select>` dropdowns. Same pattern is trivially reusable there
+if wanted later.
+
+Verified through the real UI with Playwright: typing a partial code/name
+shows the custom panel (confirmed it's not a native dropdown), narrows
+live, clicking a result loads the right dossier immediately; Enter
+selects the top match; blur/click-outside closes the panel; screenshot-
+checked at both desktop and mobile width to confirm the panel doesn't
+overflow its card. No console errors beyond the sandbox's known Google
+Fonts limitation.
+
+## 12. Next Step
 
 Two things block a real deploy: (1) someone with Cloudflare account
 access needs to enable R2 in the dashboard and run

@@ -1555,33 +1555,77 @@ function wireDossierImportEntries(container, onDone) {
   );
 }
 
-// A code combobox is a text input backed by a <datalist>: type to filter
-// by code or name (native browser behavior, no custom filtering logic),
-// but selection only fires once the typed value exactly matches a known
-// code — so a partial search never triggers a lookup on a bad code.
-function codeComboboxHtml(id, items, placeholder) {
+// Live search: type to filter a client-side list (already-loaded
+// materials/suppliers, so no server round-trip) and pick a result from a
+// custom-rendered panel — no native <select>/<datalist> dropdown.
+// Matches the receipt search box's own conventions (search-input class,
+// 150ms debounce). Selecting a result autofetches immediately.
+function codeSearchHtml(id, placeholder) {
   return `
-    <input type="text" id="${id}" list="${id}-list" placeholder="${esc(placeholder)}" autocomplete="off" />
-    <datalist id="${id}-list">
-      ${items.map((i) => `<option value="${esc(i.code)}">${esc(i.code)} — ${esc(i.name)}</option>`).join("")}
-    </datalist>
+    <div class="search-combo">
+      <input type="search" class="search-input" id="${id}" placeholder="${esc(placeholder)}" autocomplete="off" />
+      <div id="${id}-results" class="search-results" hidden></div>
+    </div>
   `;
 }
 
-function wireCodeCombobox(id, items, onSelect) {
+function wireCodeSearch(id, items, onSelect) {
   const input = document.getElementById(id);
-  const codes = new Set(items.map((i) => i.code));
-  const tryMatch = () => {
-    if (codes.has(input.value)) onSelect(input.value);
-  };
-  input.addEventListener("input", tryMatch);
-  input.addEventListener("change", tryMatch);
+  const results = document.getElementById(`${id}-results`);
+  let debounceTimer;
+
+  function currentMatches() {
+    const q = input.value.trim().toLowerCase();
+    if (!q) return [];
+    return items.filter((i) => i.code.toLowerCase().includes(q) || i.name.toLowerCase().includes(q)).slice(0, 8);
+  }
+
+  function select(code) {
+    input.value = code;
+    results.hidden = true;
+    onSelect(code);
+  }
+
+  function renderResults() {
+    const matches = currentMatches();
+    if (!input.value.trim()) {
+      results.hidden = true;
+      results.innerHTML = "";
+      return;
+    }
+    results.innerHTML = matches.length
+      ? matches
+          .map((i) => `<button type="button" class="search-result-item" data-code="${esc(i.code)}"><span class="mono">${esc(i.code)}</span> — ${esc(i.name)}</button>`)
+          .join("")
+      : `<div class="search-result-empty">No matches</div>`;
+    results.hidden = false;
+    results.querySelectorAll("[data-code]").forEach((btn) =>
+      btn.addEventListener("click", () => select(btn.dataset.code))
+    );
+  }
+
+  input.addEventListener("input", () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(renderResults, 150);
+  });
+  input.addEventListener("focus", () => {
+    if (input.value.trim()) renderResults();
+  });
+  input.addEventListener("blur", () => {
+    setTimeout(() => {
+      results.hidden = true;
+    }, 150);
+  });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      tryMatch();
+      const top = currentMatches()[0];
+      if (top) select(top.code);
+    } else if (e.key === "Escape") {
+      results.hidden = true;
     }
   });
+
   return input;
 }
 
@@ -1620,7 +1664,7 @@ async function renderMaterialDossierSection(section) {
   section.innerHTML = `
     <div class="card">
       <div class="field"><label>Material</label>
-        ${codeComboboxHtml("dossier-material", materials, "Search by code or name…")}
+        ${codeSearchHtml("dossier-material", materials, "Search by code or name…")}
       </div>
     </div>
     <div id="dossier-body"></div>
@@ -1746,7 +1790,7 @@ async function renderMaterialDossierSection(section) {
     }
   }
 
-  const input = wireCodeCombobox("dossier-material", materials, (code) => {
+  const input = wireCodeSearch("dossier-material", materials, (code) => {
     rmsExpanded = false;
     loadDossier(code);
   });
@@ -1771,7 +1815,7 @@ async function renderSupplierAssessmentSection(section) {
   section.innerHTML = `
     <div class="card">
       <div class="field"><label>Supplier</label>
-        ${codeComboboxHtml("supplier-search", suppliers, "Search by code or name…")}
+        ${codeSearchHtml("supplier-search", suppliers, "Search by code or name…")}
       </div>
     </div>
     <div id="supplier-body"></div>
@@ -1838,7 +1882,7 @@ async function renderSupplierAssessmentSection(section) {
     `;
   }
 
-  const input = wireCodeCombobox("supplier-search", suppliers, loadAssessment);
+  const input = wireCodeSearch("supplier-search", suppliers, loadAssessment);
 
   if (suppliers.length) {
     input.value = suppliers[0].code;
