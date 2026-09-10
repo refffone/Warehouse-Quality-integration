@@ -7,6 +7,43 @@ export async function getSupplierByCode(env: Env, code: string): Promise<Supplie
   return row ?? null;
 }
 
+export type ClassificationResult =
+  | { ok: true; type_code: string | null; subtype_code: string | null }
+  | { ok: false; message: string; status: number };
+
+/** Validates a material's Type/Subtype pair against the Quality-managed
+ *  lookup tables: an unknown code is rejected, and a subtype's own type
+ *  always wins (a mismatched type_code is an error, not silently ignored).
+ *  Shared by material creation (masterdata.ts) and associate-code's
+ *  "new material" path (receipts.ts) so both enforce the same rule. */
+export async function resolveMaterialClassification(
+  env: Env,
+  typeCode: string | null | undefined,
+  subtypeCode: string | null | undefined
+): Promise<ClassificationResult> {
+  if (subtypeCode) {
+    const subtype = await env.DB.prepare("SELECT type_code FROM material_subtypes WHERE code = ?")
+      .bind(subtypeCode)
+      .first<{ type_code: string }>();
+    if (!subtype) return { ok: false, message: `Unknown subtype code: ${subtypeCode}`, status: 404 };
+    if (typeCode && typeCode !== subtype.type_code) {
+      return {
+        ok: false,
+        message: `Subtype ${subtypeCode} belongs to type ${subtype.type_code}, not ${typeCode}`,
+        status: 400,
+      };
+    }
+    return { ok: true, type_code: subtype.type_code, subtype_code: subtypeCode };
+  }
+  if (typeCode) {
+    const type = await env.DB.prepare("SELECT code FROM material_types WHERE code = ?")
+      .bind(typeCode)
+      .first();
+    if (!type) return { ok: false, message: `Unknown type code: ${typeCode}`, status: 404 };
+  }
+  return { ok: true, type_code: typeCode ?? null, subtype_code: null };
+}
+
 export async function notify(
   env: Env,
   targetRole: Role,

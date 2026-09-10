@@ -87,11 +87,42 @@ would produce meaningless data.
 on the Material master (where a code exists) can pre-fill Quality's UI, but
 Quality can always leave it blank.
 
-### 1.5 Spec lookup only works when a code exists
+### 1.5 Spec lookup only works when a code exists — and specs need to be a
+### first-class, easy-to-author object, not free text
 **Today:** none — this is a new capability being requested.
-**Fix:** when a Receipt Line has a material code, the system looks up the
-associated Spec automatically for Quality's review screen. When there's no
-code (see 1.3), Quality gets a manual/ad-hoc entry path instead.
+**Why it matters:** Quality's day-to-day work was clarified as three
+capabilities — **Create Codes**, **Create Specifications**, **Test
+Incomings** — and specs specifically need to be *easy to create*, following
+the pattern already proven in the user's `chemerp-costing` repo: structured
+parameter rows (not a paragraph of free text), a default checklist per
+material Subtype so a new spec never starts blank, and versioning instead
+of destructive edits.
+**Fix:**
+- **Material classification**: materials carry a Type/Subtype pair
+  (e.g. `RM`/`Solvents`, `PKG`/`Pail`), managed by Quality themselves as
+  data (`material_types` / `material_subtypes` tables) rather than a
+  hardcoded enum — consistent with how batch-number schemes are already
+  Quality-configurable.
+- **Structured specs**: a `specs` row (versioned, one active version per
+  material) owns a list of `spec_parameters` rows, each a
+  `parameter_name` + `param_type` (`numeric_range | pass_fail |
+  time_range | text_value`) + `method`/`min_value`/`max_value`/`unit` —
+  the same shape ChemERP uses for its RM/PKG spec parameters.
+- **Default templates**: Quality defines a reusable default parameter
+  checklist per Subtype (`subtype_spec_templates`); creating a spec for a
+  material without an explicit parameter list pre-fills from its
+  subtype's template.
+- **Simple versioning, no approval chain**: unlike ChemERP's two-person
+  R&D+QM sign-off, a new spec version here is active immediately on
+  creation and automatically supersedes the prior one — full history
+  retained, but no multi-step approval (consistent with "informal
+  traceability is enough").
+- When a Receipt Line has a material code, `getReceipt` now resolves and
+  attaches that material's active spec (with parameters) directly onto
+  the line for Quality's review screen. When there's no code (see 1.3),
+  Quality's "Associate a Code" action now accepts a structured
+  `parameters[]` array when creating a brand-new material, instead of a
+  single free-text field.
 
 ### 1.6 No support for partial/selective approval
 **Today:** nothing — the Access system is a manual, flat log.
@@ -192,11 +223,33 @@ Material
   name
   unit
   requires_expiry      boolean
-  spec_id              -> Spec, nullable
+  type_code            -> MaterialType, nullable
+  subtype_code         -> MaterialSubtype, nullable
 
-Spec
-  material_id
-  ...spec fields (test parameters, acceptance criteria)
+MaterialType
+  code                 e.g. "RM", "PKG" — Quality-managed, not an enum
+  name
+
+MaterialSubtype
+  code                 e.g. "SOLVENT", "PAIL"
+  type_code            -> MaterialType
+  name
+
+SubtypeSpecTemplate    -- default parameter checklist per subtype
+  subtype_code         -> MaterialSubtype
+  parameter_name, param_type, method, min_value, max_value, unit, sort_order
+
+Spec                   -- versioned; one active version per material
+  material_code        -> Material
+  version
+  status                active | superseded
+  title, notes, created_by
+
+SpecParameter
+  spec_id               -> Spec
+  parameter_name
+  param_type             numeric_range | pass_fail | time_range | text_value
+  method, min_value, max_value, unit, sort_order
 
 Supplier
   code

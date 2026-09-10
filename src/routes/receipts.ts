@@ -1,5 +1,6 @@
-import { generateInternalBatchNo, getSupplierByCode, notify } from "../db";
+import { generateInternalBatchNo, getSupplierByCode, notify, resolveMaterialClassification } from "../db";
 import { error, json } from "../http";
+import { createSpecVersion, getActiveSpec } from "./specs";
 import type {
   AssociateCodeInput,
   BatchDecisionInput,
@@ -9,7 +10,7 @@ import type {
   ReceiptBatch,
   ReceiptLine,
   Role,
-  Spec,
+  SpecWithParameters,
 } from "../types";
 
 /** Full receipt payload assembled from the three tables for API responses. */
@@ -21,7 +22,7 @@ interface ReceiptWithDetail {
   created_by: string;
   status: string;
   created_at: string;
-  lines: Array<ReceiptLine & { batches: Partial<ReceiptBatch>[] }>;
+  lines: Array<ReceiptLine & { batches: Partial<ReceiptBatch>[]; spec: SpecWithParameters | null }>;
 }
 
 export async function createReceipt(request: Request, env: Env): Promise<Response> {
@@ -102,8 +103,10 @@ export async function getReceipt(env: Env, role: Role, id: number): Promise<Resp
     const batches = await env.DB.prepare("SELECT * FROM receipt_batches WHERE receipt_line_id = ?")
       .bind(line.id)
       .all<ReceiptBatch>();
+    const spec = line.material_code ? await getActiveSpec(env, line.material_code) : null;
     detail.lines.push({
       ...line,
+      spec,
       batches: (batches.results ?? []).map((b) => redactBatchForRole(b, role, receipt.type as string)),
     });
   }
@@ -227,6 +230,7 @@ export async function associateCode(request: Request, env: Env, lineId: number):
   }
 
   let materialCode: string;
+  let spec: SpecWithParameters | null;
 
   if (input.mode === "existing") {
     if (!input.material_code) return error("material_code is required");
@@ -235,30 +239,44 @@ export async function associateCode(request: Request, env: Env, lineId: number):
       .first<{ code: string }>();
     if (!material) return error(`Unknown material code: ${input.material_code}`, 404);
     materialCode = material.code;
+    spec = await getActiveSpec(env, materialCode);
   } else if (input.mode === "new") {
-    const { new_material, spec } = input;
+    const { new_material, spec: specInput } = input;
     if (!new_material?.code || !new_material.name || !new_material.unit) {
       return error("new_material requires code, name and unit");
     }
-    if (!spec?.title || !spec.criteria) {
-      return error("spec (title, criteria) is required when creating a new code");
+    if (!specInput?.title || !specInput.created_by) {
+      return error("spec (title, created_by) is required when creating a new code");
     }
     const existing = await env.DB.prepare("SELECT code FROM materials WHERE code = ?")
       .bind(new_material.code)
       .first();
     if (existing) return error(`Material code ${new_material.code} already exists`, 409);
 
+    const classification = await resolveMaterialClassification(
+      env,
+      new_material.type_code,
+      new_material.subtype_code
+    );
+    if (!classification.ok) return error(classification.message, classification.status);
+
     await env.DB.prepare(
-      "INSERT INTO materials (code, name, unit, requires_expiry) VALUES (?, ?, ?, ?)"
+      "INSERT INTO materials (code, name, unit, requires_expiry, type_code, subtype_code) VALUES (?, ?, ?, ?, ?, ?)"
     )
-      .bind(new_material.code, new_material.name, new_material.unit, new_material.requires_expiry === false ? 0 : 1)
-      .run();
-    await env.DB.prepare(
-      "INSERT INTO specs (material_code, title, criteria) VALUES (?, ?, ?)"
-    )
-      .bind(new_material.code, spec.title, spec.criteria)
+      .bind(
+        new_material.code,
+        new_material.name,
+        new_material.unit,
+        new_material.requires_expiry === false ? 0 : 1,
+        classification.type_code,
+        classification.subtype_code
+      )
       .run();
     materialCode = new_material.code;
+
+    const specResult = await createSpecVersion(env, materialCode, specInput);
+    if (!specResult.ok) return error(specResult.message, specResult.status);
+    spec = specResult.spec;
   } else {
     return error("mode must be 'existing' or 'new'");
   }
@@ -267,13 +285,7 @@ export async function associateCode(request: Request, env: Env, lineId: number):
     .bind(materialCode, lineId)
     .run();
 
-  const activeSpec = await env.DB.prepare(
-    "SELECT * FROM specs WHERE material_code = ? ORDER BY created_at DESC LIMIT 1"
-  )
-    .bind(materialCode)
-    .first<Spec>();
-
-  return json({ receipt_line_id: lineId, material_code: materialCode, spec: activeSpec ?? null });
+  return json({ receipt_line_id: lineId, material_code: materialCode, spec });
 }
 
 /** Samples never show Quality's in-progress/final test status to warehouse. */

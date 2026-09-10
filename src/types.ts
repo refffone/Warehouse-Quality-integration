@@ -21,7 +21,32 @@ export interface Material {
   name: string;
   unit: string;
   requires_expiry: 0 | 1;
+  type_code: string | null;
+  subtype_code: string | null;
   created_at: string;
+}
+
+export interface MaterialType {
+  code: string;
+  name: string;
+}
+
+export interface MaterialSubtype {
+  code: string;
+  type_code: string;
+  name: string;
+}
+
+export type ParamType = "numeric_range" | "pass_fail" | "time_range" | "text_value";
+
+export interface ParameterInput {
+  parameter_name: string;
+  param_type: ParamType;
+  method?: string | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  unit?: string | null;
+  sort_order?: number;
 }
 
 export interface Receipt {
@@ -93,21 +118,61 @@ export interface FinalizeWeightInput {
   qty_actual_weighed: number;
 }
 
+export type SpecStatus = "active" | "superseded";
+
 export interface Spec {
   id: number;
   material_code: string;
+  version: number;
+  status: SpecStatus;
   title: string;
-  criteria: string;
+  notes: string | null;
+  created_by: string;
   created_at: string;
 }
 
+export interface SpecParameter {
+  id: number;
+  spec_id: number;
+  parameter_name: string;
+  param_type: ParamType;
+  method: string | null;
+  min_value: number | null;
+  max_value: number | null;
+  unit: string | null;
+  sort_order: number;
+}
+
+export interface SpecWithParameters extends Spec {
+  parameters: SpecParameter[];
+}
+
+export interface NewSpecInput {
+  title: string;
+  notes?: string | null;
+  created_by: string;
+  /** Omit to auto-prefill from the material's subtype template, if any. */
+  parameters?: ParameterInput[];
+}
+
+export interface SubtypeSpecTemplateInput {
+  parameters: ParameterInput[];
+}
+
 /** Quality associates an uncoded receipt line to a material code — either
- *  an existing one (whose spec then applies) or a brand-new one, which
- *  requires creating its spec in the same step. */
+ *  an existing one (whose active spec then applies) or a brand-new one,
+ *  which requires creating its first spec version in the same step. */
 export type AssociateCodeInput =
   | { mode: "existing"; material_code: string }
   | {
       mode: "new";
-      new_material: { code: string; name: string; unit: string; requires_expiry?: boolean };
-      spec: { title: string; criteria: string };
+      new_material: {
+        code: string;
+        name: string;
+        unit: string;
+        requires_expiry?: boolean;
+        type_code?: string | null;
+        subtype_code?: string | null;
+      };
+      spec: { title: string; notes?: string | null; created_by: string; parameters?: ParameterInput[] };
     };
