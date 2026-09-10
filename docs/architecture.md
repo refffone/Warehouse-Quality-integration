@@ -455,8 +455,12 @@ lab UI restraint) presented as a moodboard and picked by the user.
 
 Screens: Warehouse (Receive, To Do, History) and Quality (To Do, History,
 Codes, Specifications), each To Do/History screen with an Imports/Samples
-toggle and a live search box, plus a shared notification bell. Covers the
-full loop end-to-end: register → notify → decide/associate-code →
+toggle and a live search box, plus a shared notification bell. Codes
+itself splits into three subtabs (Types & Subtypes, Materials, Numbering
+Schemes) — it was one long stacked page of three cards at first, which
+read as cluttered even though each card was independently fine, so each
+now gets the screen to itself, remembering the last one visited across
+navigation. Covers the full loop end-to-end: register → notify → decide/associate-code →
 finalize weight → both roles see the result, including the sample-sender
 asymmetric-edit rule (§1.9) and the sample-status redaction it depends on.
 

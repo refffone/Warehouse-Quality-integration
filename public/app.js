@@ -802,13 +802,40 @@ async function viewReceiptBucket({ role, bucket }) {
 
 // ---------------------------------------------------------------- view: Codes
 
+const CODES_SUBTABS = [
+  { id: "types", label: "Types & Subtypes" },
+  { id: "materials", label: "Materials" },
+  { id: "schemes", label: "Numbering Schemes" },
+];
+let codesSubtab = "types";
+
 async function viewCodes() {
   const view = document.getElementById("view");
-  const [types, subtypes, materials] = await Promise.all([getTypes(true), getSubtypes(true), getMaterials(true)]);
-
   view.innerHTML = `
     <div class="view-head"><div><h1>Codes</h1><p>Material master data, classification, and numbering schemes.</p></div></div>
+    <div class="subtabs">
+      ${CODES_SUBTABS.map(
+        (t) => `<button class="subtab-btn${codesSubtab === t.id ? " active" : ""}" data-sub="${t.id}">${t.label}</button>`
+      ).join("")}
+    </div>
+    <div id="codes-section"></div>
+  `;
+  view.querySelectorAll("[data-sub]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      codesSubtab = btn.dataset.sub;
+      viewCodes();
+    })
+  );
 
+  const [types, subtypes, materials] = await Promise.all([getTypes(true), getSubtypes(true), getMaterials(true)]);
+  const section = document.getElementById("codes-section");
+  if (codesSubtab === "types") renderTypesSubtypesSection(section, { types, subtypes });
+  else if (codesSubtab === "materials") renderMaterialsSection(section, { types, subtypes, materials });
+  else renderSchemesSection(section);
+}
+
+function renderTypesSubtypesSection(section, { types, subtypes }) {
+  section.innerHTML = `
     <div class="card">
       <h3 style="margin-bottom:12px">Material types &amp; subtypes</h3>
       <div class="field-row">
@@ -832,50 +859,6 @@ async function viewCodes() {
           </div>
         </form>
       </div>
-    </div>
-
-    <div class="card">
-      <h3 style="margin-bottom:12px">Materials</h3>
-      <div class="table-scroll"><table class="data-table"><thead><tr><th>Code</th><th>Name</th><th>Unit</th><th>Type/Subtype</th><th>Expiry?</th></tr></thead>
-        <tbody>${
-          materials
-            .map(
-              (m) => `<tr><td class="mono">${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.unit)}</td><td>${esc(m.type_code || "—")}${m.subtype_code ? " / " + esc(m.subtype_code) : ""}</td><td>${m.requires_expiry ? "Yes" : "No"}</td></tr>`
-            )
-            .join("") || `<tr><td colspan="5" class="muted">None yet</td></tr>`
-        }</tbody></table></div>
-      <form class="form-grid" id="new-material-form" style="margin-top:14px">
-        <b class="small">New / edit material</b>
-        <div class="field-row">
-          <input name="code" placeholder="Code" required />
-          <input name="name" placeholder="Name" required />
-          <input name="unit" placeholder="Unit (KG)" required style="max-width:100px" />
-          <select name="type_code"><option value="">Type…</option>${types.map((t) => `<option value="${esc(t.code)}">${esc(t.code)}</option>`).join("")}</select>
-          <select name="subtype_code"><option value="">Subtype…</option>${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.code)}</option>`).join("")}</select>
-          <label class="small" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" name="requires_expiry" checked /> requires expiry</label>
-          <button class="btn primary sm">Save</button>
-        </div>
-      </form>
-    </div>
-
-    <div class="card">
-      <h3 style="margin-bottom:12px">Numbering schemes</h3>
-      <form class="form-grid" id="batch-scheme-form">
-        <b class="small">Internal batch # pattern (optionally per supplier)</b>
-        <div class="field-row">
-          <input name="supplier_code" placeholder="Supplier code (blank = global default)" />
-          <input name="pattern_template" placeholder="{supplier_code}{MMYY}{seq:04d}" required style="flex:2" />
-          <button class="btn ghost sm">Save</button>
-        </div>
-      </form>
-      <form class="form-grid" id="rmf-scheme-form" style="margin-top:10px">
-        <b class="small">Import code — RMF pattern (novel combinations)</b>
-        <div class="field-row"><input name="pattern_template" placeholder="RMF{seq:04d}" required style="flex:1" /><button class="btn ghost sm">Save</button></div>
-      </form>
-      <form class="form-grid" id="rms-scheme-form" style="margin-top:10px">
-        <b class="small">Import code — RMS pattern (regular repeats)</b>
-        <div class="field-row"><input name="pattern_template" placeholder="RMS{seq:04d}" required style="flex:1" /><button class="btn ghost sm">Save</button></div>
-      </form>
     </div>
   `;
 
@@ -902,6 +885,34 @@ async function viewCodes() {
       toast(err.message, true);
     }
   });
+}
+
+function renderMaterialsSection(section, { types, subtypes, materials }) {
+  section.innerHTML = `
+    <div class="card">
+      <h3 style="margin-bottom:12px">Materials</h3>
+      <div class="table-scroll"><table class="data-table"><thead><tr><th>Code</th><th>Name</th><th>Unit</th><th>Type/Subtype</th><th>Expiry?</th></tr></thead>
+        <tbody>${
+          materials
+            .map(
+              (m) => `<tr><td class="mono">${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.unit)}</td><td>${esc(m.type_code || "—")}${m.subtype_code ? " / " + esc(m.subtype_code) : ""}</td><td>${m.requires_expiry ? "Yes" : "No"}</td></tr>`
+            )
+            .join("") || `<tr><td colspan="5" class="muted">None yet</td></tr>`
+        }</tbody></table></div>
+      <form class="form-grid" id="new-material-form" style="margin-top:14px">
+        <b class="small">New / edit material</b>
+        <div class="field-row">
+          <input name="code" placeholder="Code" required />
+          <input name="name" placeholder="Name" required />
+          <input name="unit" placeholder="Unit (KG)" required style="max-width:100px" />
+          <select name="type_code"><option value="">Type…</option>${types.map((t) => `<option value="${esc(t.code)}">${esc(t.code)}</option>`).join("")}</select>
+          <select name="subtype_code"><option value="">Subtype…</option>${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.code)}</option>`).join("")}</select>
+          <label class="small" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" name="requires_expiry" checked /> requires expiry</label>
+          <button class="btn primary sm">Save</button>
+        </div>
+      </form>
+    </div>
+  `;
 
   document.getElementById("new-material-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -921,6 +932,30 @@ async function viewCodes() {
       toast(err.message, true);
     }
   });
+}
+
+function renderSchemesSection(section) {
+  section.innerHTML = `
+    <div class="card">
+      <h3 style="margin-bottom:12px">Numbering schemes</h3>
+      <form class="form-grid" id="batch-scheme-form">
+        <b class="small">Internal batch # pattern (optionally per supplier)</b>
+        <div class="field-row">
+          <input name="supplier_code" placeholder="Supplier code (blank = global default)" />
+          <input name="pattern_template" placeholder="{supplier_code}{MMYY}{seq:04d}" required style="flex:2" />
+          <button class="btn ghost sm">Save</button>
+        </div>
+      </form>
+      <form class="form-grid" id="rmf-scheme-form" style="margin-top:10px">
+        <b class="small">Import code — RMF pattern (novel combinations)</b>
+        <div class="field-row"><input name="pattern_template" placeholder="RMF{seq:04d}" required style="flex:1" /><button class="btn ghost sm">Save</button></div>
+      </form>
+      <form class="form-grid" id="rms-scheme-form" style="margin-top:10px">
+        <b class="small">Import code — RMS pattern (regular repeats)</b>
+        <div class="field-row"><input name="pattern_template" placeholder="RMS{seq:04d}" required style="flex:1" /><button class="btn ghost sm">Save</button></div>
+      </form>
+    </div>
+  `;
 
   document.getElementById("batch-scheme-form").addEventListener("submit", async (e) => {
     e.preventDefault();
