@@ -49,7 +49,10 @@ export default {
       // Master data — read is open to both roles; Quality owns writes
       // ("Create Codes" is one of Quality's three core functions).
       if (pathname === "/api/suppliers" && method === "GET") return listSuppliers(request, env);
-      if (pathname === "/api/suppliers" && method === "POST") return createSupplier(request, env);
+      if (pathname === "/api/suppliers" && method === "POST") {
+        if (!role) return error("Missing X-Role header", 401);
+        return createSupplier(request, env);
+      }
       if (pathname === "/api/materials" && method === "GET") return listMaterials(request, env);
       if (pathname === "/api/materials" && method === "PUT") {
         if (role !== "quality") return error("Only quality can create/edit material codes", 403);
@@ -192,7 +195,7 @@ export default {
       const coaMatch = pathname.match(/^\/api\/batches\/(\d+)\/coa$/);
       if (coaMatch && method === "GET") {
         if (!role) return error("Missing X-Role header", 401);
-        return downloadCoa(env, Number(coaMatch[1]), url.searchParams.get("format") ?? "pdf");
+        return downloadCoa(env, role, Number(coaMatch[1]), url.searchParams.get("format") ?? "pdf");
       }
 
       // Notifications
@@ -202,7 +205,8 @@ export default {
       }
       const notifReadMatch = pathname.match(/^\/api\/notifications\/(\d+)\/read$/);
       if (notifReadMatch && method === "POST") {
-        return markNotificationRead(env, Number(notifReadMatch[1]));
+        if (!role) return error("Missing X-Role header", 401);
+        return markNotificationRead(env, role, Number(notifReadMatch[1]));
       }
 
       if (pathname.startsWith("/api/")) return json({ error: "Not found" }, 404);

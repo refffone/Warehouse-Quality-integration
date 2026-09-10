@@ -1,4 +1,4 @@
-import { json } from "../http";
+import { error, json } from "../http";
 import type { Env, Role } from "../types";
 
 export async function listNotifications(request: Request, env: Env, role: Role): Promise<Response> {
@@ -17,7 +17,15 @@ export async function listNotifications(request: Request, env: Env, role: Role):
   return json(rows.results ?? []);
 }
 
-export async function markNotificationRead(env: Env, id: number): Promise<Response> {
+export async function markNotificationRead(env: Env, role: Role, id: number): Promise<Response> {
+  const notification = await env.DB.prepare("SELECT target_role FROM notification_events WHERE id = ?")
+    .bind(id)
+    .first<{ target_role: string }>();
+  if (!notification) return error("Notification not found", 404);
+  if (notification.target_role !== role) {
+    return error("You can only mark your own notifications as read", 403);
+  }
+
   await env.DB.prepare("UPDATE notification_events SET read_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(id)
     .run();

@@ -2,10 +2,11 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import * as XLSX from "xlsx";
 import { error } from "../http";
 import { getBatchTestResults, type TestResultWithParameter } from "./receipts";
-import type { Env } from "../types";
+import type { Env, Role } from "../types";
 
 interface CoaData {
   receiptId: number;
+  receiptType: string;
   supplierName: string;
   supplierBatchNo: string;
   internalBatchNo: string | null;
@@ -30,7 +31,7 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
     `SELECT rb.supplier_batch_no, rb.internal_batch_no, rb.status, rb.qty_as_received, rb.qty_accepted,
             rb.qty_actual_weighed, rb.expiry_date, rb.production_date, rb.decided_by, rb.decided_at,
             rb.tested_by, rb.tested_at,
-            rl.unit, rl.material_code, r.id as receipt_id, s.name as supplier_name,
+            rl.unit, rl.material_code, r.id as receipt_id, r.type as receipt_type, s.name as supplier_name,
             COALESCE(m.name, rl.material_name_text) as material_name
      FROM receipt_batches rb
      JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
@@ -56,6 +57,7 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
       unit: string;
       material_code: string | null;
       receipt_id: number;
+      receipt_type: string;
       supplier_name: string;
       material_name: string;
     }>();
@@ -65,6 +67,7 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
 
   return {
     receiptId: row.receipt_id,
+    receiptType: row.receipt_type,
     supplierName: row.supplier_name,
     supplierBatchNo: row.supplier_batch_no,
     internalBatchNo: row.internal_batch_no,
@@ -193,9 +196,15 @@ function buildCoaXlsx(data: CoaData): Uint8Array {
   return XLSX.write(wb, { type: "array", bookType: "xlsx" }) as Uint8Array;
 }
 
-export async function downloadCoa(env: Env, batchId: number, format: string): Promise<Response> {
+/** Samples never show Quality's test/decision status to warehouse — same rule
+ *  `redactBatchForRole` applies to the receipt-detail view, enforced here too
+ *  so a warehouse caller can't bypass it by guessing a batch ID directly. */
+export async function downloadCoa(env: Env, role: Role, batchId: number, format: string): Promise<Response> {
   const data = await getCoaData(env, batchId);
   if (!data) return error("Batch not found, or its line has no material code associated", 404);
+  if (role !== "quality" && data.receiptType === "sample") {
+    return error("Only quality can export a sample's COA", 403);
+  }
   if (data.status === "pending") return error("This batch hasn't been decided yet — nothing to export", 400);
 
   const filename = `COA-${data.internalBatchNo ?? data.supplierBatchNo}`;
