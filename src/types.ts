@@ -24,6 +24,7 @@ export interface Material {
   requires_expiry: 0 | 1;
   type_code: string | null;
   subtype_code: string | null;
+  function_code: string | null;
   created_at: string;
 }
 
@@ -35,6 +36,13 @@ export interface MaterialType {
 export interface MaterialSubtype {
   code: string;
   type_code: string;
+  name: string;
+}
+
+/** Independent classification axis from Type/Subtype: what the material
+ *  is used for (e.g. Solvent, Binder, Packaging), not hierarchical. */
+export interface MaterialFunction {
+  code: string;
   name: string;
 }
 

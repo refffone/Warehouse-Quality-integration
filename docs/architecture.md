@@ -880,7 +880,51 @@ noticeably cleaner. No layout regressions at the new font's metrics —
 checked the denser cards (stat grids, the per-supplier table) for
 overflow or wrapping, found none.
 
-## 14. Next Step
+## 14. Material Function + a sortable/filterable codes List
+
+Two additions to the Codes tab: a "Function" field on materials
+(what the material is *used for* — Solvent, Binder, Packaging — an
+independent axis from Type/Subtype, not hierarchical), and a new "List"
+subtab giving a single flat, sortable, filterable view across every
+material code. Confirmed with the user that Function should be a
+controlled list they manage (like Types/Subtypes), not free text.
+
+**Backend** (migration `0010`): `material_functions` (code, name — same
+flat shape as `material_types`) plus a nullable `function_code` column
+on `materials`. `upsertMaterial` (`src/routes/masterdata.ts`) validates
+an unknown `function_code` the same way it already validates type/subtype
+(404 rather than silently accepting a typo), and the new
+`listMaterialFunctions`/`upsertMaterialFunction` mirror the existing
+Type CRUD exactly — no new pattern introduced. Applied directly to the
+production D1 database via the Cloudflare MCP connector's query tool, as
+established for prior migrations in this session (no `wrangler` CLI
+auth here, only the D1-management MCP tools).
+
+**Frontend**: the "Types & Subtypes" subtab gained a third card
+("Material functions") with its own table + add form, reusing the exact
+markup pattern the Type/Subtype blocks already use. The Materials
+subtab's table and create/edit form both gained a Function column/select.
+The new "List" subtab (`renderCodesListSection`) is a from-scratch view:
+three filter `<select>`s (Type/Subtype/Function) plus a debounced search
+box (matching the app's established 150ms convention) filter the
+already-loaded materials client-side, and clicking any of the Code/
+Function/Type/Subtype column headers sorts by that field (▲/▼ indicator,
+click again to reverse) — all in one small piece of state
+(`codesListState`) rather than a server round-trip, consistent with how
+every other list/search view in this app works.
+
+Verified via curl (valid function saves and round-trips; an unknown
+`function_code` 404s with `"Unknown function code: ..."`, matching the
+existing type/subtype error shape) and then through the real UI with
+Playwright in both languages: created two functions and two materials
+spanning them, confirmed sort-by-Function actually reorders rows,
+confirmed the Function filter narrows to just the matching material,
+and confirmed full Arabic/RTL rendering of the new subtab and card (new
+`i18n.js` keys added with the same en/ar parity check used throughout
+this project — 283/283 keys in both dictionaries, zero missing either
+direction).
+
+## 15. Next Step
 
 Two things block a real deploy: (1) someone with Cloudflare account
 access needs to enable R2 in the dashboard and run

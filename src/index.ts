@@ -4,6 +4,7 @@ import {
   getMaterialDossier,
   getSupplierAssessment,
   listImportCodeSchemes,
+  listMaterialFunctions,
   listMaterials,
   listMaterialSubtypes,
   listMaterialTypes,
@@ -11,6 +12,7 @@ import {
   setBatchNumberScheme,
   setImportCodeScheme,
   upsertMaterial,
+  upsertMaterialFunction,
   upsertMaterialSubtype,
   upsertMaterialType,
 } from "./routes/masterdata";
@@ -60,6 +62,13 @@ export default {
       }
       if (pathname === "/api/material-subtypes" && method === "GET") {
         return listMaterialSubtypes(request, env);
+      }
+      if (pathname === "/api/material-functions" && method === "GET") {
+        return listMaterialFunctions(request, env);
+      }
+      if (pathname === "/api/material-functions" && method === "PUT") {
+        if (role !== "quality") return error("Only quality can manage material functions", 403);
+        return upsertMaterialFunction(request, env);
       }
       if (pathname === "/api/material-subtypes" && method === "PUT") {
         if (role !== "quality") return error("Only quality can manage material subtypes", 403);

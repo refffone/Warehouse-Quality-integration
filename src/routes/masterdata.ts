@@ -45,6 +45,7 @@ export async function upsertMaterial(request: Request, env: Env): Promise<Respon
     requires_expiry?: boolean;
     type_code?: string | null;
     subtype_code?: string | null;
+    function_code?: string | null;
   }>();
   if (!input.code || !input.name || !input.unit) {
     return error("code, name and unit are required");
@@ -55,12 +56,19 @@ export async function upsertMaterial(request: Request, env: Env): Promise<Respon
   input.type_code = classification.type_code;
   input.subtype_code = classification.subtype_code;
 
+  if (input.function_code) {
+    const fn = await env.DB.prepare("SELECT code FROM material_functions WHERE code = ?")
+      .bind(input.function_code)
+      .first();
+    if (!fn) return error(`Unknown function code: ${input.function_code}`, 404);
+  }
+
   await env.DB.prepare(
-    `INSERT INTO materials (code, name, unit, requires_expiry, type_code, subtype_code)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO materials (code, name, unit, requires_expiry, type_code, subtype_code, function_code)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(code) DO UPDATE SET name = excluded.name, unit = excluded.unit,
        requires_expiry = excluded.requires_expiry, type_code = excluded.type_code,
-       subtype_code = excluded.subtype_code`
+       subtype_code = excluded.subtype_code, function_code = excluded.function_code`
   )
     .bind(
       input.code,
@@ -68,8 +76,28 @@ export async function upsertMaterial(request: Request, env: Env): Promise<Respon
       input.unit,
       input.requires_expiry === false ? 0 : 1,
       input.type_code ?? null,
-      input.subtype_code ?? null
+      input.subtype_code ?? null,
+      input.function_code ?? null
     )
+    .run();
+
+  return json({ code: input.code }, 200);
+}
+
+export async function listMaterialFunctions(_request: Request, env: Env): Promise<Response> {
+  const rows = await env.DB.prepare("SELECT * FROM material_functions ORDER BY name").all();
+  return json(rows.results ?? []);
+}
+
+export async function upsertMaterialFunction(request: Request, env: Env): Promise<Response> {
+  const input = await request.json<{ code: string; name: string }>();
+  if (!input.code || !input.name) return error("code and name are required");
+
+  await env.DB.prepare(
+    `INSERT INTO material_functions (code, name) VALUES (?, ?)
+     ON CONFLICT(code) DO UPDATE SET name = excluded.name`
+  )
+    .bind(input.code, input.name)
     .run();
 
   return json({ code: input.code }, 200);

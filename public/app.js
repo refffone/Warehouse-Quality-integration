@@ -88,6 +88,12 @@ async function getSubtypes(force = false) {
   return subtypesCache;
 }
 
+let functionsCache = null;
+async function getFunctions(force = false) {
+  if (!functionsCache || force) functionsCache = await api.get("/api/material-functions");
+  return functionsCache;
+}
+
 // ---------------------------------------------------------------- routes
 
 const ROUTES = {
@@ -1082,6 +1088,7 @@ async function viewReceiptBucket({ role, bucket }) {
 const CODES_SUBTABS = [
   { id: "types", labelKey: "codes.subtab.types" },
   { id: "materials", labelKey: "codes.subtab.materials" },
+  { id: "list", labelKey: "codes.subtab.list" },
   { id: "schemes", labelKey: "codes.subtab.schemes" },
 ];
 let codesSubtab = "types";
@@ -1104,14 +1111,20 @@ async function viewCodes() {
     })
   );
 
-  const [types, subtypes, materials] = await Promise.all([getTypes(true), getSubtypes(true), getMaterials(true)]);
+  const [types, subtypes, functions, materials] = await Promise.all([
+    getTypes(true),
+    getSubtypes(true),
+    getFunctions(true),
+    getMaterials(true),
+  ]);
   const section = document.getElementById("codes-section");
-  if (codesSubtab === "types") renderTypesSubtypesSection(section, { types, subtypes });
-  else if (codesSubtab === "materials") renderMaterialsSection(section, { types, subtypes, materials });
+  if (codesSubtab === "types") renderTypesSubtypesSection(section, { types, subtypes, functions });
+  else if (codesSubtab === "materials") renderMaterialsSection(section, { types, subtypes, functions, materials });
+  else if (codesSubtab === "list") renderCodesListSection(section, { types, subtypes, functions, materials });
   else renderSchemesSection(section);
 }
 
-function renderTypesSubtypesSection(section, { types, subtypes }) {
+function renderTypesSubtypesSection(section, { types, subtypes, functions }) {
   section.innerHTML = `
     <div class="card">
       <h3 style="margin-bottom:12px">${esc(t("codes.typesHeading"))}</h3>
@@ -1136,6 +1149,16 @@ function renderTypesSubtypesSection(section, { types, subtypes }) {
           </div>
         </form>
       </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:12px">${esc(t("codes.functionsHeading"))}</h3>
+      <div class="table-scroll"><table class="data-table"><thead><tr><th>${esc(t("common.function"))}</th><th>${esc(t("common.name"))}</th></tr></thead>
+        <tbody>${functions.map((f) => `<tr><td class="mono">${esc(f.code)}</td><td>${esc(f.name)}</td></tr>`).join("") || `<tr><td colspan="2" class="muted">${esc(t("common.noneYet"))}</td></tr>`}</tbody></table></div>
+      <form class="form-grid" id="new-function-form" style="margin-top:14px">
+        <b class="small">${esc(t("codes.newFunction"))}</b>
+        <div class="field-row"><input name="code" placeholder="${esc(t("codes.functionCodePlaceholder"))}" required /><input name="name" placeholder="${esc(t("common.name"))}" required /><button class="btn ghost sm">${esc(t("common.add"))}</button></div>
+      </form>
     </div>
   `;
 
@@ -1162,19 +1185,31 @@ function renderTypesSubtypesSection(section, { types, subtypes }) {
       toast(err.message, true);
     }
   });
+
+  document.getElementById("new-function-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await api.put("/api/material-functions", { code: fd.get("code"), name: fd.get("name") });
+      toast(t("codes.functionAdded"));
+      viewCodes();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
 }
 
-function renderMaterialsSection(section, { types, subtypes, materials }) {
+function renderMaterialsSection(section, { types, subtypes, functions, materials }) {
   section.innerHTML = `
     <div class="card">
       <h3 style="margin-bottom:12px">${esc(t("codes.materialsHeading"))}</h3>
-      <div class="table-scroll"><table class="data-table"><thead><tr><th>${esc(t("common.code"))}</th><th>${esc(t("common.name"))}</th><th>${esc(t("common.unit"))}</th><th>${esc(t("codes.typeSubtype"))}</th><th>${esc(t("codes.expiry"))}</th></tr></thead>
+      <div class="table-scroll"><table class="data-table"><thead><tr><th>${esc(t("common.code"))}</th><th>${esc(t("common.name"))}</th><th>${esc(t("common.unit"))}</th><th>${esc(t("common.function"))}</th><th>${esc(t("codes.typeSubtype"))}</th><th>${esc(t("codes.expiry"))}</th></tr></thead>
         <tbody>${
           materials
             .map(
-              (m) => `<tr><td class="mono">${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.unit)}</td><td>${esc(m.type_code || "—")}${m.subtype_code ? " / " + esc(m.subtype_code) : ""}</td><td>${m.requires_expiry ? esc(t("common.yes")) : esc(t("common.no"))}</td></tr>`
+              (m) => `<tr><td class="mono">${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.unit)}</td><td class="mono">${esc(m.function_code || "—")}</td><td>${esc(m.type_code || "—")}${m.subtype_code ? " / " + esc(m.subtype_code) : ""}</td><td>${m.requires_expiry ? esc(t("common.yes")) : esc(t("common.no"))}</td></tr>`
             )
-            .join("") || `<tr><td colspan="5" class="muted">${esc(t("common.noneYet"))}</td></tr>`
+            .join("") || `<tr><td colspan="6" class="muted">${esc(t("common.noneYet"))}</td></tr>`
         }</tbody></table></div>
       <form class="form-grid" id="new-material-form" style="margin-top:14px">
         <b class="small">${esc(t("codes.newEditMaterial"))}</b>
@@ -1184,6 +1219,7 @@ function renderMaterialsSection(section, { types, subtypes, materials }) {
           <input name="unit" placeholder="${esc(t("common.unit"))} (KG)" required style="max-width:100px" />
           <select name="type_code"><option value="">${esc(t("codes.typePlaceholder"))}</option>${types.map((ty) => `<option value="${esc(ty.code)}">${esc(ty.code)}</option>`).join("")}</select>
           <select name="subtype_code"><option value="">${esc(t("common.subtype"))}…</option>${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.code)}</option>`).join("")}</select>
+          <select name="function_code"><option value="">${esc(t("codes.functionPlaceholder"))}</option>${functions.map((f) => `<option value="${esc(f.code)}">${esc(f.code)} — ${esc(f.name)}</option>`).join("")}</select>
           <label class="small" style="display:flex;align-items:center;gap:4px;"><input type="checkbox" name="requires_expiry" checked /> ${esc(t("codes.requiresExpiry"))}</label>
           <button class="btn primary sm">${esc(t("common.save"))}</button>
         </div>
@@ -1201,6 +1237,7 @@ function renderMaterialsSection(section, { types, subtypes, materials }) {
         unit: fd.get("unit"),
         type_code: fd.get("type_code") || null,
         subtype_code: fd.get("subtype_code") || null,
+        function_code: fd.get("function_code") || null,
         requires_expiry: fd.get("requires_expiry") === "on",
       });
       toast(t("codes.materialSaved"));
@@ -1209,6 +1246,118 @@ function renderMaterialsSection(section, { types, subtypes, materials }) {
       toast(err.message, true);
     }
   });
+}
+
+const codesListState = { sortKey: "code", sortDir: "asc", query: "", filterType: "", filterSubtype: "", filterFunction: "" };
+
+function renderCodesListSection(section, { types, subtypes, functions, materials }) {
+  const columns = [
+    { key: "code", labelKey: "common.code" },
+    { key: "function_code", labelKey: "common.function" },
+    { key: "type_code", labelKey: "common.type" },
+    { key: "subtype_code", labelKey: "common.subtype" },
+  ];
+
+  section.innerHTML = `
+    <div class="card">
+      <h3 style="margin-bottom:12px">${esc(t("codes.listHeading"))}</h3>
+      <div class="list-controls" style="border-bottom:none; padding-bottom:0;">
+        <div class="hstack">
+          <select id="codes-list-type"><option value="">${esc(t("codes.typePlaceholder"))}</option>${types.map((ty) => `<option value="${esc(ty.code)}">${esc(ty.code)} — ${esc(ty.name)}</option>`).join("")}</select>
+          <select id="codes-list-subtype"><option value="">${esc(t("common.subtype"))}…</option>${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.code)} — ${esc(s.name)}</option>`).join("")}</select>
+          <select id="codes-list-function"><option value="">${esc(t("codes.functionPlaceholder"))}</option>${functions.map((f) => `<option value="${esc(f.code)}">${esc(f.code)} — ${esc(f.name)}</option>`).join("")}</select>
+        </div>
+        <input type="search" class="search-input" id="codes-list-search" placeholder="${esc(t("codes.listSearchPlaceholder"))}" value="${esc(codesListState.query)}" />
+      </div>
+      <div class="table-scroll" style="margin-top:12px"><table class="data-table" id="codes-list-table"></table></div>
+    </div>
+  `;
+
+  const tableEl = document.getElementById("codes-list-table");
+
+  function render() {
+    const q = codesListState.query.trim().toLowerCase();
+    let rows = materials.filter((m) => {
+      if (q && !m.code.toLowerCase().includes(q) && !m.name.toLowerCase().includes(q)) return false;
+      if (codesListState.filterType && m.type_code !== codesListState.filterType) return false;
+      if (codesListState.filterSubtype && m.subtype_code !== codesListState.filterSubtype) return false;
+      if (codesListState.filterFunction && m.function_code !== codesListState.filterFunction) return false;
+      return true;
+    });
+
+    const { sortKey, sortDir } = codesListState;
+    rows = rows.slice().sort((a, b) => {
+      const cmp = String(a[sortKey] || "").localeCompare(String(b[sortKey] || ""));
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+
+    const theadHtml = `<tr>
+      ${columns
+        .map((c) => {
+          const active = codesListState.sortKey === c.key;
+          const arrow = active ? (codesListState.sortDir === "asc" ? " ▲" : " ▼") : "";
+          return `<th data-sort-key="${c.key}" style="cursor:pointer; user-select:none;">${esc(t(c.labelKey))}${arrow}</th>`;
+        })
+        .join("")}
+      <th>${esc(t("common.name"))}</th>
+      <th>${esc(t("common.unit"))}</th>
+    </tr>`;
+
+    const tbodyHtml =
+      rows
+        .map(
+          (m) => `<tr>
+        <td class="mono">${esc(m.code)}</td>
+        <td class="mono">${esc(m.function_code || "—")}</td>
+        <td class="mono">${esc(m.type_code || "—")}</td>
+        <td class="mono">${esc(m.subtype_code || "—")}</td>
+        <td>${esc(m.name)}</td>
+        <td>${esc(m.unit)}</td>
+      </tr>`
+        )
+        .join("") || `<tr><td colspan="6" class="muted">${esc(t("common.noMatches"))}</td></tr>`;
+
+    tableEl.innerHTML = `<thead>${theadHtml}</thead><tbody>${tbodyHtml}</tbody>`;
+
+    tableEl.querySelectorAll("[data-sort-key]").forEach((th) =>
+      th.addEventListener("click", () => {
+        const key = th.dataset.sortKey;
+        if (codesListState.sortKey === key) {
+          codesListState.sortDir = codesListState.sortDir === "asc" ? "desc" : "asc";
+        } else {
+          codesListState.sortKey = key;
+          codesListState.sortDir = "asc";
+        }
+        render();
+      })
+    );
+  }
+
+  document.getElementById("codes-list-type").value = codesListState.filterType;
+  document.getElementById("codes-list-subtype").value = codesListState.filterSubtype;
+  document.getElementById("codes-list-function").value = codesListState.filterFunction;
+
+  document.getElementById("codes-list-type").addEventListener("change", (e) => {
+    codesListState.filterType = e.target.value;
+    render();
+  });
+  document.getElementById("codes-list-subtype").addEventListener("change", (e) => {
+    codesListState.filterSubtype = e.target.value;
+    render();
+  });
+  document.getElementById("codes-list-function").addEventListener("change", (e) => {
+    codesListState.filterFunction = e.target.value;
+    render();
+  });
+
+  let debounceTimer;
+  document.getElementById("codes-list-search").addEventListener("input", (e) => {
+    codesListState.query = e.target.value;
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(render, 150);
+  });
+
+  render();
 }
 
 function renderSchemesSection(section) {
