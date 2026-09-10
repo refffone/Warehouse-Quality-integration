@@ -5,8 +5,8 @@ compatibility_flags = ["nodejs_compat"]
 
 [[d1_databases]]
 binding = "DB"
-database_name = "warehouse_quality_db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_name = "warehouse-quality-db"
+database_id = "d34bab08-b4a0-432e-bf83-889a649b8e62"
 
 [assets]
 directory = "./public"
