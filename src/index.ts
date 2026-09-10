@@ -46,27 +46,38 @@ export default {
     const role = getRole(request);
 
     try {
-      // Master data — read is open to both roles; Quality owns writes
-      // ("Create Codes" is one of Quality's three core functions).
+      // Master data — Warehouse's only legitimate reason to touch this
+      // section is picking/adding a supplier while receiving; everything
+      // else here (codes, types, subtypes, functions, specs, schemes) is
+      // Quality's catalog and Warehouse's own screens never call it, so
+      // it's read *and* write, Quality-only.
       if (pathname === "/api/suppliers" && method === "GET") return listSuppliers(request, env);
       if (pathname === "/api/suppliers" && method === "POST") {
         if (!role) return error("Missing X-Role header", 401);
         return createSupplier(request, env);
       }
-      if (pathname === "/api/materials" && method === "GET") return listMaterials(request, env);
+      if (pathname === "/api/materials" && method === "GET") {
+        if (role !== "quality") return error("Material codes are a quality-only view", 403);
+        return listMaterials(request, env);
+      }
       if (pathname === "/api/materials" && method === "PUT") {
         if (role !== "quality") return error("Only quality can create/edit material codes", 403);
         return upsertMaterial(request, env);
       }
-      if (pathname === "/api/material-types" && method === "GET") return listMaterialTypes(request, env);
+      if (pathname === "/api/material-types" && method === "GET") {
+        if (role !== "quality") return error("Material types are a quality-only view", 403);
+        return listMaterialTypes(request, env);
+      }
       if (pathname === "/api/material-types" && method === "PUT") {
         if (role !== "quality") return error("Only quality can manage material types", 403);
         return upsertMaterialType(request, env);
       }
       if (pathname === "/api/material-subtypes" && method === "GET") {
+        if (role !== "quality") return error("Material subtypes are a quality-only view", 403);
         return listMaterialSubtypes(request, env);
       }
       if (pathname === "/api/material-functions" && method === "GET") {
+        if (role !== "quality") return error("Material functions are a quality-only view", 403);
         return listMaterialFunctions(request, env);
       }
       if (pathname === "/api/material-functions" && method === "PUT") {
@@ -82,6 +93,7 @@ export default {
         return setBatchNumberScheme(request, env);
       }
       if (pathname === "/api/import-code-schemes" && method === "GET") {
+        if (role !== "quality") return error("Import-code schemes are a quality-only view", 403);
         return listImportCodeSchemes(request, env);
       }
       const importSchemeMatch = pathname.match(/^\/api\/import-code-schemes\/(RMF|RMS)$/);
@@ -93,6 +105,7 @@ export default {
       // Specifications — Quality's second core function.
       const subtypeTemplateMatch = pathname.match(/^\/api\/material-subtypes\/([^/]+)\/spec-template$/);
       if (subtypeTemplateMatch && method === "GET") {
+        if (role !== "quality") return error("Spec templates are a quality-only view", 403);
         return getSubtypeSpecTemplate(env, decodeURIComponent(subtypeTemplateMatch[1]));
       }
       if (subtypeTemplateMatch && method === "PUT") {
@@ -102,6 +115,7 @@ export default {
 
       const materialSpecsMatch = pathname.match(/^\/api\/materials\/([^/]+)\/specs$/);
       if (materialSpecsMatch && method === "GET") {
+        if (role !== "quality") return error("Specifications are a quality-only view", 403);
         return listSpecs(env, decodeURIComponent(materialSpecsMatch[1]));
       }
       if (materialSpecsMatch && method === "POST") {
