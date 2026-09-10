@@ -1,4 +1,4 @@
-import type { Env, NotificationKind, Role, Supplier } from "./types";
+import type { Env, ImportScenario, NotificationKind, Role, Supplier } from "./types";
 
 export async function getSupplierByCode(env: Env, code: string): Promise<Supplier | null> {
   const row = await env.DB.prepare("SELECT * FROM suppliers WHERE code = ?")
@@ -106,24 +106,109 @@ export async function generateInternalBatchNo(
 
   const sequence = counterRow?.current_sequence ?? 1;
 
-  return renderBatchNoPattern(pattern, {
+  return renderPattern(pattern, {
     supplier_code: supplier.code,
     MMYY: periodKey,
     seq: sequence,
   });
 }
 
-function renderBatchNoPattern(
-  pattern: string,
-  values: { supplier_code: string; MMYY: string; seq: number }
-): string {
+/** Shared placeholder renderer for both the batch-number and import-code
+ *  patterns: `{key}` substitutes a value verbatim, `{key:04d}` zero-pads a
+ *  numeric value to that width. */
+function renderPattern(pattern: string, values: Record<string, string | number>): string {
   return pattern.replace(/\{(\w+)(?::(\d+)d)?\}/g, (_match, key: string, padLenRaw?: string) => {
-    if (key === "supplier_code") return values.supplier_code;
-    if (key === "MMYY") return values.MMYY;
-    if (key === "seq") {
-      const padLen = padLenRaw ? parseInt(padLenRaw, 10) : 1;
-      return String(values.seq).padStart(padLen, "0");
+    const value = values[key];
+    if (value === undefined) return "";
+    if (typeof value === "number" && padLenRaw) {
+      return String(value).padStart(parseInt(padLenRaw, 10), "0");
     }
-    return "";
+    return String(value);
   });
+}
+
+function normalizeName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export interface ImportCodeResult {
+  code: string;
+  scenario: ImportScenario;
+}
+
+/**
+ * Detects which of the three novelty scenarios applies to a
+ * (material_code, material_name_text, supplier) combination based on
+ * already-reviewed receipt lines (import_code IS NOT NULL), then
+ * atomically bumps that exact combination's counter and renders the
+ * configured import-code pattern — mirroring generateInternalBatchNo.
+ */
+export async function generateImportCode(
+  env: Env,
+  materialCode: string,
+  materialNameText: string,
+  supplier: Supplier
+): Promise<ImportCodeResult> {
+  const nameKey = normalizeName(materialNameText);
+
+  const seenMaterial = await env.DB.prepare(
+    "SELECT 1 FROM receipt_lines WHERE material_code = ? AND import_code IS NOT NULL LIMIT 1"
+  )
+    .bind(materialCode)
+    .first();
+
+  const seenSupplier = seenMaterial
+    ? await env.DB.prepare(
+        `SELECT 1 FROM receipt_lines rl
+         JOIN receipts r ON r.id = rl.receipt_id
+         WHERE rl.material_code = ? AND r.supplier_id = ? AND rl.import_code IS NOT NULL
+         LIMIT 1`
+      )
+        .bind(materialCode, supplier.id)
+        .first()
+    : null;
+
+  const seenNameVariant = seenSupplier
+    ? await env.DB.prepare(
+        `SELECT 1 FROM receipt_lines rl
+         JOIN receipts r ON r.id = rl.receipt_id
+         WHERE rl.material_code = ? AND r.supplier_id = ? AND rl.import_code IS NOT NULL
+           AND LOWER(TRIM(rl.material_name_text)) = ?
+         LIMIT 1`
+      )
+        .bind(materialCode, supplier.id, nameKey)
+        .first()
+    : null;
+
+  const scenario: ImportScenario = !seenMaterial
+    ? "new_material"
+    : !seenSupplier
+      ? "new_supplier"
+      : !seenNameVariant
+        ? "new_name_variant"
+        : "repeat";
+
+  const schemeRow = await env.DB.prepare("SELECT pattern_template FROM import_code_scheme WHERE id = 1").first<{
+    pattern_template: string;
+  }>();
+  const pattern = schemeRow?.pattern_template ?? "{material_code}-{supplier_code}-{seq:03d}";
+
+  const counterRow = await env.DB.prepare(
+    `INSERT INTO import_code_sequences (material_code, supplier_id, current_sequence)
+     VALUES (?, ?, 1)
+     ON CONFLICT(material_code, supplier_id)
+     DO UPDATE SET current_sequence = current_sequence + 1
+     RETURNING current_sequence`
+  )
+    .bind(materialCode, supplier.id)
+    .first<{ current_sequence: number }>();
+  const sequence = counterRow?.current_sequence ?? 1;
+
+  const code = renderPattern(pattern, {
+    material_code: materialCode,
+    supplier_code: supplier.code,
+    seq: sequence,
+  });
+
+  return { code, scenario };
 }

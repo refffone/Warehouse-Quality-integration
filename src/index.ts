@@ -1,11 +1,13 @@
 import { error, getRole, json } from "./http";
 import {
   createSupplier,
+  getImportCodeScheme,
   listMaterials,
   listMaterialSubtypes,
   listMaterialTypes,
   listSuppliers,
   setBatchNumberScheme,
+  setImportCodeScheme,
   upsertMaterial,
   upsertMaterialSubtype,
   upsertMaterialType,
@@ -55,6 +57,13 @@ export default {
       if (pathname === "/api/batch-number-schemes" && method === "PUT") {
         if (role !== "quality") return error("Only quality can configure batch-number schemes", 403);
         return setBatchNumberScheme(request, env);
+      }
+      if (pathname === "/api/import-code-scheme" && method === "GET") {
+        return getImportCodeScheme(request, env);
+      }
+      if (pathname === "/api/import-code-scheme" && method === "PUT") {
+        if (role !== "quality") return error("Only quality can configure the import-code scheme", 403);
+        return setImportCodeScheme(request, env);
       }
 
       // Specifications — Quality's second core function.

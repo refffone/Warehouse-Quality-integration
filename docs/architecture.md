@@ -198,6 +198,46 @@ directly, with warehouse relaying data informally.
 notably the sample-status visibility rule in 1.9 — rather than one shared
 view of everything.
 
+### 1.15 Combination novelty is tracked with a second, hand-typed code
+**Today:** in the Access system, Quality manually enters not one but two
+codes per record — a general material code, and a second "import code"
+Quality derives themselves by checking whether this exact (material code,
+material name, supplier) combination has been received before. That
+lookup-and-type step is exactly the kind of manual, error-prone work this
+project exists to remove — and it also revealed that a material code can
+legitimately map to more than one material name ("depending on several
+technical factors"), which the original one-name-per-code model didn't
+account for.
+**Why it matters:** the import code's real value is flagging, at a glance,
+which of three situations applies to an incoming receipt: the material
+code has never been received before; the material code is known but this
+supplier is new; or the material code and supplier are both known but this
+delivery arrived under a material name not seen from that supplier before.
+**Fix:** `decideBatch` now auto-generates an **import code** per Receipt
+Line (not per batch — it's defined by *material + name + supplier*, the
+shape of a line) the first time Quality reviews it, regardless of the
+decision outcome (a brand-new material can still be rejected). It's
+computed from three sequential existence checks against already-reviewed
+lines, classifying the line as `new_material` / `new_supplier` /
+`new_name_variant` / `repeat`, and paired with a code rendered from a
+Quality-editable pattern (`GET/PUT /api/import-code-scheme`, default
+`{material_code}-{supplier_code}-{seq:03d}`) — the sequence counts "how
+many times this material has been received from this supplier," continuing
+across name variants rather than restarting per name (restarting per name
+would let two variants both claim sequence 1 and collide on the same
+code). Quality can freely override the generated value, same as the
+internal batch number. This is a separate, coexisting code from the
+internal batch number (§1.8) — import code flags novelty at review time
+for any decision; internal batch number identifies a specific *accepted*
+lot, assigned only on approve/partial.
+
+### 1.16 No production date captured
+**Today:** only an expiry date is captured at decision time; the
+material's production/manufacture date isn't recorded anywhere.
+**Fix:** `decideBatch` accepts an optional `production_date`, stored
+alongside `expiry_date` on the batch and visible to both roles once set —
+same treatment as expiry date.
+
 ---
 
 ## 2. Non-Goals
@@ -274,6 +314,16 @@ ReceiptLine
   material_code         nullable
   material_name_text    fallback when no code
   unit
+  import_code            nullable until Quality's first review of the line
+  import_scenario         new_material | new_supplier | new_name_variant | repeat
+
+ImportCodeSequence      -- atomic counter, keyed by (material_code, supplier_id);
+  material_code            NOT by name — see §1.15 for why
+  supplier_id
+  current_sequence
+
+ImportCodeScheme        -- single global, Quality-editable pattern
+  pattern_template        e.g. "{material_code}-{supplier_code}-{seq:03d}"
 
 ReceiptBatch
   id
@@ -286,6 +336,7 @@ ReceiptBatch
   status                pending | approved | rejected | partial
   internal_batch_no     nullable until approved
   expiry_date           nullable
+  production_date       nullable
   coa_remarks
   coa_file_ref           -> R2 object key, nullable
 

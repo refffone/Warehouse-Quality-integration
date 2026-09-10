@@ -1,4 +1,10 @@
-import { generateInternalBatchNo, getSupplierByCode, notify, resolveMaterialClassification } from "../db";
+import {
+  generateImportCode,
+  generateInternalBatchNo,
+  getSupplierByCode,
+  notify,
+  resolveMaterialClassification,
+} from "../db";
 import { error, json } from "../http";
 import { createSpecVersion, getActiveSpec } from "./specs";
 import type {
@@ -122,15 +128,52 @@ export async function decideBatch(
   const input = await request.json<BatchDecisionInput>();
 
   const batch = await env.DB.prepare(
-    `SELECT rb.*, rl.receipt_id, r.supplier_id, r.type as receipt_type
+    `SELECT rb.*, rl.id as line_id, rl.material_code, rl.material_name_text,
+            rl.import_code, rl.import_scenario, rl.receipt_id, r.supplier_id, r.type as receipt_type
      FROM receipt_batches rb
      JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
      JOIN receipts r ON r.id = rl.receipt_id
      WHERE rb.id = ?`
   )
     .bind(batchId)
-    .first<ReceiptBatch & { receipt_id: number; supplier_id: number; receipt_type: string }>();
+    .first<
+      ReceiptBatch & {
+        line_id: number;
+        material_code: string | null;
+        material_name_text: string;
+        import_code: string | null;
+        import_scenario: string | null;
+        receipt_id: number;
+        supplier_id: number;
+        receipt_type: string;
+      }
+    >();
   if (!batch) return error("Batch not found", 404);
+  if (!batch.material_code) {
+    return error("Associate a material code on this line before testing it", 400);
+  }
+
+  const supplier = await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?")
+    .bind(batch.supplier_id)
+    .first<{ id: number; code: string; name: string }>();
+
+  // Import code flags novelty of (material, name, supplier) and is assigned
+  // once per line, on its first review, regardless of the decision outcome.
+  let importCode = batch.import_code;
+  let importScenario = batch.import_scenario;
+  if (!importCode) {
+    if (input.import_code) {
+      importCode = input.import_code;
+      importScenario = null;
+    } else {
+      const generated = await generateImportCode(env, batch.material_code, batch.material_name_text, supplier!);
+      importCode = generated.code;
+      importScenario = generated.scenario;
+    }
+    await env.DB.prepare("UPDATE receipt_lines SET import_code = ?, import_scenario = ? WHERE id = ?")
+      .bind(importCode, importScenario, batch.line_id)
+      .run();
+  }
 
   let status: "approved" | "rejected" | "partial";
   let qtyAccepted: number | null = null;
@@ -145,9 +188,6 @@ export async function decideBatch(
     qtyAccepted = input.qty_accepted ?? batch.qty_as_received;
     qtyRejected = input.qty_rejected ?? Math.max(0, batch.qty_as_received - qtyAccepted);
 
-    const supplier = await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?")
-      .bind(batch.supplier_id)
-      .first<{ id: number; code: string; name: string }>();
     internalBatchNo =
       input.internal_batch_no ?? (await generateInternalBatchNo(env, supplier!, new Date()));
   }
@@ -155,7 +195,7 @@ export async function decideBatch(
   await env.DB.prepare(
     `UPDATE receipt_batches
      SET status = ?, qty_accepted = ?, qty_rejected = ?, internal_batch_no = ?,
-         expiry_date = ?, coa_remarks = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
+         expiry_date = ?, production_date = ?, coa_remarks = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
      WHERE id = ?`
   )
     .bind(
@@ -164,6 +204,7 @@ export async function decideBatch(
       qtyRejected,
       internalBatchNo,
       input.expiry_date ?? null,
+      input.production_date ?? null,
       input.coa_remarks ?? null,
       input.decided_by,
       batchId
@@ -189,7 +230,13 @@ export async function decideBatch(
     batchId,
   });
 
-  return json({ id: batchId, status, internal_batch_no: internalBatchNo });
+  return json({
+    id: batchId,
+    status,
+    internal_batch_no: internalBatchNo,
+    import_code: importCode,
+    import_scenario: importScenario,
+  });
 }
 
 export async function finalizeWeight(request: Request, env: Env, batchId: number): Promise<Response> {

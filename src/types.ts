@@ -59,12 +59,16 @@ export interface Receipt {
   created_at: string;
 }
 
+export type ImportScenario = "new_material" | "new_supplier" | "new_name_variant" | "repeat";
+
 export interface ReceiptLine {
   id: number;
   receipt_id: number;
   material_code: string | null;
   material_name_text: string;
   unit: string;
+  import_code: string | null;
+  import_scenario: ImportScenario | null;
 }
 
 export interface ReceiptBatch {
@@ -78,6 +82,7 @@ export interface ReceiptBatch {
   status: BatchStatus;
   internal_batch_no: string | null;
   expiry_date: string | null;
+  production_date: string | null;
   coa_remarks: string | null;
   coa_file_ref: string | null;
   decided_by: string | null;
@@ -110,7 +115,9 @@ export interface BatchDecisionInput {
   qty_accepted?: number;
   qty_rejected?: number;
   expiry_date?: string | null;
+  production_date?: string | null;
   internal_batch_no?: string; // override; auto-generated when omitted on approve/partial
+  import_code?: string; // override; auto-generated when omitted, only on the line's first decision
   coa_remarks?: string | null;
 }
 
