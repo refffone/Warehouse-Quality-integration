@@ -550,18 +550,55 @@ PDF viewer (Chromium's built-in one, via Playwright) to confirm the
 certificate reads correctly end to end, not just that `file` calls it a
 valid PDF.
 
-## 9. Next Step
+### 7.3 Testing split from deciding; COA for rejected batches
 
-Stand up the real Cloudflare deployment: create the actual D1 database
-and R2 bucket, replace the placeholder `database_id` in `wrangler.toml`,
-run the migrations against it, and deploy the Worker — turning this from
-a locally-verified build into something Warehouse and Quality can
-actually open.
+Requested follow-up: recording test results and making the approve/
+reject/partial call were one action, forcing Quality to have already
+decided before they could even record what they measured. They're now
+two independent steps against the same batch:
+
+- `POST /api/batches/:id/test-results` (new, quality-only) validates and
+  persists `results[]` against the material's active spec — the same
+  validation `decideBatch` used to do inline — and stamps `tested_by`/
+  `tested_at` (new columns on `receipt_batches`, migration `0008`).
+  Callable any time the batch is still `pending`, independent of whether
+  a decision has been made yet, and re-callable to correct a recorded
+  result before deciding (replaces prior rows for that batch).
+- `POST /api/batches/:id/decision` no longer accepts `test_results` —
+  `BatchDecisionInput` had the field removed — and only sets `decided_by`/
+  `decided_at`/status/quantities. It works whether or not results were
+  recorded first (an empty results table is a valid, if incomplete, COA).
+
+On the frontend, "Record test results" is now its own button/modal next
+to "Decide" on a pending batch, with the same per-parameter checklist UI
+that used to live inside the Decide modal. The Decide modal instead shows
+a read-only recap table of whatever's been recorded so far, so Quality
+can see it while deciding without being able to edit it there.
+
+COA export (`GET /api/batches/:id/coa`) already only blocked `pending`
+batches, not rejected ones — the "allow COA of rejected imports" half of
+the ask needed no code change to the guard, just content worth exporting,
+which the split now provides (results can be recorded on a batch that
+Quality then rejects). Both PDF and Excel output gained a "Tested by"
+line alongside "Decided by".
+
+Verified end to end against the local D1 (`wrangler d1 migrations apply
+--local`, then `wrangler dev`): recorded a failing result on a pending
+batch via `POST .../test-results`, confirmed via `GET /api/receipts/:id`
+that the batch was still `pending` with `tested_by` set and the result
+attached, rejected the batch, then downloaded both COA formats and
+inspected their actual content (PDF via Chromium's viewer, xlsx cell
+contents directly) — both show `status: rejected`, "Tested by", "Decided
+by", and the FAIL row together. Repeated the flow through the real UI via
+Playwright (role switch, "Record test results" modal, Decide modal's
+read-only recap, reject, then COA buttons present on the rejected batch
+in History) — no console errors beyond the sandbox's known Google Fonts
+`ERR_CONNECTION_RESET`, not a real issue.
 
 ## 8. Next Step
 
-Stand up the real Cloudflare deployment: create the actual D1 database
-and R2 bucket, replace the placeholder `database_id` in `wrangler.toml`,
-run the migrations against it, and deploy the Worker — turning this from
-a locally-verified build into something Warehouse and Quality can
-actually open.
+Stand up the real Cloudflare deployment: create the actual D1 database,
+replace the placeholder `database_id` in `wrangler.toml`, run the
+migrations against it, and deploy the Worker — turning this from a
+locally-verified build into something Warehouse and Quality can actually
+open.

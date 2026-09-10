@@ -510,6 +510,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       const decided = b.status && b.status !== "pending";
       const actions = [];
       if (canDecide && b.status === "pending") {
+        actions.push(`<button class="btn sm ghost" data-test="${b.id}">Record test results</button>`);
         actions.push(`<button class="btn sm primary" data-decide="${b.id}">Decide</button>`);
       }
       if (canFinalize && b.status !== "pending" && b.status !== "rejected" && b.qty_actual_weighed == null) {
@@ -663,10 +664,21 @@ function buildReceiptCard(receipt, { role, type }) {
     }
   }
 
+  // record test results
+  card.querySelectorAll("[data-test]").forEach((btn) =>
+    btn.addEventListener("click", () =>
+      openTestResultsModal(
+        btn.dataset.test,
+        specByBatch[btn.dataset.test],
+        resultsByBatch[btn.dataset.test],
+        () => refreshCurrentView()
+      )
+    )
+  );
   // decide
   card.querySelectorAll("[data-decide]").forEach((btn) =>
     btn.addEventListener("click", () =>
-      openDecideModal(btn.dataset.decide, specByBatch[btn.dataset.decide], () => refreshCurrentView())
+      openDecideModal(btn.dataset.decide, resultsByBatch[btn.dataset.decide], () => refreshCurrentView())
     )
   );
   // finalize
@@ -720,33 +732,103 @@ function paramSpecHint(p) {
   return p.unit ?? "";
 }
 
-async function openDecideModal(batchId, spec, onDone) {
-  const params = spec?.parameters ?? [];
-  const resultsHtml = params.length
-    ? `
+function testResultsRecap(results) {
+  if (!results || results.length === 0) {
+    return `<p class="small muted">No test results recorded yet. Use "Record test results" first if this material has a spec.</p>`;
+  }
+  const rows = results
+    .map(
+      (r) => `
+      <tr>
+        <td>${esc(r.parameter_name)}</td>
+        <td class="mono small">${esc(r.measured_value || "—")}</td>
+        <td><span class="status-pill ${r.result === "fail" ? "rejected" : "approved"}">${esc(r.result)}</span></td>
+      </tr>`
+    )
+    .join("");
+  return `
     <div>
+      <label class="small muted">Recorded test results</label>
+      <div class="table-scroll" style="margin-top:6px"><table class="data-table">
+        <thead><tr><th>Parameter</th><th>Measured</th><th>Result</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>`;
+}
+
+async function openTestResultsModal(batchId, spec, existingResults, onDone) {
+  const params = spec?.parameters ?? [];
+  const existingByParam = {};
+  for (const r of existingResults ?? []) existingByParam[r.spec_parameter_id] = r;
+
+  if (!params.length) {
+    openModal(
+      "Record test results",
+      `<p class="small muted">${spec ? "This spec has no parameters yet." : "No active spec on this material — no structured test results to record."}</p>`
+    );
+    return;
+  }
+
+  openModal(
+    "Record test results",
+    `<form class="form-grid" id="test-results-form">
       <label class="small muted">Test results — ${esc(spec.title)} (v${spec.version})</label>
-      <div class="repeatable" style="margin-top:6px">
+      <div class="repeatable">
         ${params
-          .map(
-            (p) => `
+          .map((p) => {
+            const existing = existingByParam[p.id];
+            return `
           <div class="repeatable-item" data-result-row data-param-id="${p.id}">
             <div class="field-row">
               <div class="field" style="flex:2">
                 <label>${esc(p.parameter_name)}${p.method ? ` <span class="muted">(${esc(p.method)})</span>` : ""}</label>
                 <div class="small muted">Spec: ${esc(paramSpecHint(p))}</div>
               </div>
-              <div class="field"><label>Measured value</label><input type="text" data-f="measured_value" /></div>
+              <div class="field"><label>Measured value</label><input type="text" data-f="measured_value" value="${esc(existing?.measured_value || "")}" /></div>
               <div class="field" style="max-width:120px"><label>Result</label>
-                <select data-f="result"><option value="">—</option><option value="pass">Pass</option><option value="fail">Fail</option></select>
+                <select data-f="result">
+                  <option value="">—</option>
+                  <option value="pass" ${existing?.result === "pass" ? "selected" : ""}>Pass</option>
+                  <option value="fail" ${existing?.result === "fail" ? "selected" : ""}>Fail</option>
+                </select>
               </div>
             </div>
-          </div>`
-          )
+          </div>`;
+          })
           .join("")}
       </div>
-    </div>`
-    : `<p class="small muted">${spec ? "This spec has no parameters yet." : "No active spec on this material — no structured test results."}</p>`;
+      <div class="field"><label>Tested by</label><input type="text" name="tested_by" value="${esc(getRememberedName())}" required /></div>
+      <button type="submit" class="btn primary">Save test results</button>
+    </form>`
+  );
+
+  document.getElementById("test-results-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    rememberName(fd.get("tested_by"));
+
+    const results = [...document.querySelectorAll("[data-result-row]")]
+      .map((row) => ({
+        spec_parameter_id: Number(row.dataset.paramId),
+        measured_value: row.querySelector('[data-f="measured_value"]').value || null,
+        result: row.querySelector('[data-f="result"]').value,
+      }))
+      .filter((r) => r.result === "pass" || r.result === "fail");
+    if (!results.length) return toast("Enter at least one result", true);
+
+    try {
+      await api.post(`/api/batches/${batchId}/test-results`, { tested_by: fd.get("tested_by"), results });
+      toast("Test results saved");
+      closeModal();
+      onDone();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+}
+
+async function openDecideModal(batchId, results, onDone) {
+  const resultsHtml = testResultsRecap(results);
 
   openModal(
     "Decide batch",
@@ -807,15 +889,6 @@ async function openDecideModal(batchId, spec, onDone) {
     }
     if (fd.get("import_code")) body.import_code = fd.get("import_code");
     if (fd.get("coa_remarks")) body.coa_remarks = fd.get("coa_remarks");
-
-    const testResults = [...document.querySelectorAll("[data-result-row]")]
-      .map((row) => ({
-        spec_parameter_id: Number(row.dataset.paramId),
-        measured_value: row.querySelector('[data-f="measured_value"]').value || null,
-        result: row.querySelector('[data-f="result"]').value,
-      }))
-      .filter((r) => r.result === "pass" || r.result === "fail");
-    if (testResults.length) body.test_results = testResults;
 
     try {
       await api.post(`/api/batches/${batchId}/decision`, body);

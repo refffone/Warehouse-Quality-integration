@@ -88,6 +88,8 @@ export interface ReceiptBatch {
   coa_remarks: string | null;
   decided_by: string | null;
   decided_at: string | null;
+  tested_by: string | null;
+  tested_at: string | null;
 }
 
 export interface NewReceiptBatchInput {
@@ -144,9 +146,13 @@ export interface BatchDecisionInput {
   internal_batch_no?: string; // override; auto-generated when omitted on approve/partial
   import_code?: string; // override; auto-generated when omitted, only on the line's first decision
   coa_remarks?: string | null;
+}
+
+export interface RecordTestResultsInput {
+  tested_by: string;
   /** Measured value + pass/fail per spec parameter — the content of the
    *  batch's COA. Replaces any previously recorded results for this batch. */
-  test_results?: TestResultInput[];
+  results: TestResultInput[];
 }
 
 export interface FinalizeWeightInput {

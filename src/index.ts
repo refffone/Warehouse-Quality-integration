@@ -21,6 +21,7 @@ import {
   finalizeWeight,
   getReceipt,
   listReceipts,
+  recordTestResults,
   setSampleSender,
 } from "./routes/receipts";
 import { createSpec, getSubtypeSpecTemplate, listSpecs, setSubtypeSpecTemplate } from "./routes/specs";
@@ -112,6 +113,12 @@ export default {
       }
 
       // Test Incomings — Quality's third core function.
+      const testResultsMatch = pathname.match(/^\/api\/batches\/(\d+)\/test-results$/);
+      if (testResultsMatch && method === "POST") {
+        if (role !== "quality") return error("Only quality can record test results", 403);
+        return recordTestResults(request, env, Number(testResultsMatch[1]));
+      }
+
       const decisionMatch = pathname.match(/^\/api\/batches\/(\d+)\/decision$/);
       if (decisionMatch && method === "POST") {
         if (role !== "quality") return error("Only quality can decide on a batch", 403);

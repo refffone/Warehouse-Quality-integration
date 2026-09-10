@@ -16,6 +16,7 @@ import type {
   NewReceiptInput,
   ReceiptBatch,
   ReceiptLine,
+  RecordTestResultsInput,
   Role,
   SetSampleSenderInput,
   SpecWithParameters,
@@ -241,19 +242,6 @@ export async function decideBatch(
       input.internal_batch_no ?? (await generateInternalBatchNo(env, supplier!, new Date()));
   }
 
-  if (input.test_results?.length) {
-    const spec = await getActiveSpec(env, batch.material_code);
-    const validIds = new Set((spec?.parameters ?? []).map((p) => p.id));
-    for (const r of input.test_results) {
-      if (!validIds.has(r.spec_parameter_id)) {
-        return error(`spec_parameter_id ${r.spec_parameter_id} is not on this material's active spec`, 400);
-      }
-      if (r.result !== "pass" && r.result !== "fail") {
-        return error("Each test result needs result: 'pass' or 'fail'", 400);
-      }
-    }
-  }
-
   await env.DB.prepare(
     `UPDATE receipt_batches
      SET status = ?, qty_accepted = ?, qty_rejected = ?, internal_batch_no = ?,
@@ -272,18 +260,6 @@ export async function decideBatch(
       batchId
     )
     .run();
-
-  if (input.test_results?.length) {
-    await env.DB.prepare("DELETE FROM batch_test_results WHERE batch_id = ?").bind(batchId).run();
-    await env.DB.batch(
-      input.test_results.map((r) =>
-        env.DB.prepare(
-          `INSERT INTO batch_test_results (batch_id, spec_parameter_id, measured_value, result)
-           VALUES (?, ?, ?, ?)`
-        ).bind(batchId, r.spec_parameter_id, r.measured_value ?? null, r.result)
-      )
-    );
-  }
 
   await env.DB.prepare(
     `UPDATE receipts SET status = 'decided' WHERE id = ? AND NOT EXISTS (
@@ -311,6 +287,57 @@ export async function decideBatch(
     import_code: importCode,
     import_scenario: importScenario,
   });
+}
+
+export async function recordTestResults(
+  request: Request,
+  env: Env,
+  batchId: number
+): Promise<Response> {
+  const input = await request.json<RecordTestResultsInput>();
+
+  const batch = await env.DB.prepare(
+    `SELECT rb.*, rl.material_code
+     FROM receipt_batches rb
+     JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
+     WHERE rb.id = ?`
+  )
+    .bind(batchId)
+    .first<ReceiptBatch & { material_code: string | null }>();
+  if (!batch) return error("Batch not found", 404);
+  if (!batch.material_code) {
+    return error("Associate a material code on this line before testing it", 400);
+  }
+  if (!input.results?.length) {
+    return error("Provide at least one test result", 400);
+  }
+
+  const spec = await getActiveSpec(env, batch.material_code);
+  const validIds = new Set((spec?.parameters ?? []).map((p) => p.id));
+  for (const r of input.results) {
+    if (!validIds.has(r.spec_parameter_id)) {
+      return error(`spec_parameter_id ${r.spec_parameter_id} is not on this material's active spec`, 400);
+    }
+    if (r.result !== "pass" && r.result !== "fail") {
+      return error("Each test result needs result: 'pass' or 'fail'", 400);
+    }
+  }
+
+  await env.DB.prepare("DELETE FROM batch_test_results WHERE batch_id = ?").bind(batchId).run();
+  await env.DB.batch(
+    input.results.map((r) =>
+      env.DB.prepare(
+        `INSERT INTO batch_test_results (batch_id, spec_parameter_id, measured_value, result)
+         VALUES (?, ?, ?, ?)`
+      ).bind(batchId, r.spec_parameter_id, r.measured_value ?? null, r.result)
+    )
+  );
+
+  await env.DB.prepare("UPDATE receipt_batches SET tested_by = ?, tested_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .bind(input.tested_by, batchId)
+    .run();
+
+  return json({ id: batchId, tested_by: input.tested_by });
 }
 
 export async function finalizeWeight(request: Request, env: Env, batchId: number): Promise<Response> {

@@ -20,6 +20,8 @@ interface CoaData {
   productionDate: string | null;
   decidedBy: string | null;
   decidedAt: string | null;
+  testedBy: string | null;
+  testedAt: string | null;
   results: TestResultWithParameter[];
 }
 
@@ -27,6 +29,7 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
   const row = await env.DB.prepare(
     `SELECT rb.supplier_batch_no, rb.internal_batch_no, rb.status, rb.qty_as_received, rb.qty_accepted,
             rb.qty_actual_weighed, rb.expiry_date, rb.production_date, rb.decided_by, rb.decided_at,
+            rb.tested_by, rb.tested_at,
             rl.unit, rl.material_code, r.id as receipt_id, s.name as supplier_name,
             COALESCE(m.name, rl.material_name_text) as material_name
      FROM receipt_batches rb
@@ -48,6 +51,8 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
       production_date: string | null;
       decided_by: string | null;
       decided_at: string | null;
+      tested_by: string | null;
+      tested_at: string | null;
       unit: string;
       material_code: string | null;
       receipt_id: number;
@@ -74,6 +79,8 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
     productionDate: row.production_date,
     decidedBy: row.decided_by,
     decidedAt: row.decided_at,
+    testedBy: row.tested_by,
+    testedAt: row.tested_at,
     results,
   };
 }
@@ -123,6 +130,7 @@ async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
   if (data.productionDate) line(`Production Date: ${data.productionDate}`);
   if (data.expiryDate) line(`Expiry Date: ${data.expiryDate}`);
   line(`Quantity: ${quantityLine(data)}`);
+  line(`Tested by: ${data.testedBy ?? "—"} on ${data.testedAt ?? "—"}`);
   line(`Decided by: ${data.decidedBy ?? "—"} on ${data.decidedAt ?? "—"}`);
   y -= 10;
   line("Test Results", { size: 14, f: bold });
@@ -171,6 +179,7 @@ function buildCoaXlsx(data: CoaData): Uint8Array {
     ["Production Date", data.productionDate ?? ""],
     ["Expiry Date", data.expiryDate ?? ""],
     ["Quantity", quantityLine(data)],
+    ["Tested by", `${data.testedBy ?? ""} on ${data.testedAt ?? ""}`],
     ["Decided by", `${data.decidedBy ?? ""} on ${data.decidedAt ?? ""}`],
     [],
     ["Parameter", "Method", "Spec", "Measured Value", "Result"],
