@@ -160,27 +160,23 @@ export async function setBatchNumberScheme(request: Request, env: Env): Promise<
   return json({ supplier_id: supplierId, pattern_template: input.pattern_template });
 }
 
-/** The import-code pattern is a single global, Quality-editable row
- *  (unlike batch-number schemes, import codes aren't scoped per supplier —
- *  the supplier is already part of the combination the code encodes).
- *  Placeholders: {material_code}, {supplier_code}, {seq:03d}. */
-export async function getImportCodeScheme(_request: Request, env: Env): Promise<Response> {
-  const row = await env.DB.prepare("SELECT pattern_template FROM import_code_scheme WHERE id = 1").first<{
-    pattern_template: string;
-  }>();
-  return json({ pattern_template: row?.pattern_template ?? null });
+/** Two simple, system-wide ledger pools (mirroring Quality's current RMF/RMS
+ *  labeling): RMF for any novel scenario, RMS for a regular repeat. Each is
+ *  a plain prefix + running number, not scoped to a material or supplier.
+ *  Placeholder: {seq:04d}. */
+export async function listImportCodeSchemes(_request: Request, env: Env): Promise<Response> {
+  const rows = await env.DB.prepare("SELECT * FROM import_code_schemes ORDER BY kind").all();
+  return json(rows.results ?? []);
 }
 
-export async function setImportCodeScheme(request: Request, env: Env): Promise<Response> {
+export async function setImportCodeScheme(request: Request, env: Env, kind: string): Promise<Response> {
+  if (kind !== "RMF" && kind !== "RMS") return error("kind must be RMF or RMS", 404);
   const input = await request.json<{ pattern_template: string }>();
   if (!input.pattern_template) return error("pattern_template is required");
 
-  await env.DB.prepare(
-    `INSERT INTO import_code_scheme (id, pattern_template) VALUES (1, ?)
-     ON CONFLICT(id) DO UPDATE SET pattern_template = excluded.pattern_template`
-  )
-    .bind(input.pattern_template)
+  await env.DB.prepare("UPDATE import_code_schemes SET pattern_template = ? WHERE kind = ?")
+    .bind(input.pattern_template, kind)
     .run();
 
-  return json({ pattern_template: input.pattern_template });
+  return json({ kind, pattern_template: input.pattern_template });
 }

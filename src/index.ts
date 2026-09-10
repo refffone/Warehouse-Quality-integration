@@ -1,7 +1,7 @@
 import { error, getRole, json } from "./http";
 import {
   createSupplier,
-  getImportCodeScheme,
+  listImportCodeSchemes,
   listMaterials,
   listMaterialSubtypes,
   listMaterialTypes,
@@ -58,12 +58,13 @@ export default {
         if (role !== "quality") return error("Only quality can configure batch-number schemes", 403);
         return setBatchNumberScheme(request, env);
       }
-      if (pathname === "/api/import-code-scheme" && method === "GET") {
-        return getImportCodeScheme(request, env);
+      if (pathname === "/api/import-code-schemes" && method === "GET") {
+        return listImportCodeSchemes(request, env);
       }
-      if (pathname === "/api/import-code-scheme" && method === "PUT") {
-        if (role !== "quality") return error("Only quality can configure the import-code scheme", 403);
-        return setImportCodeScheme(request, env);
+      const importSchemeMatch = pathname.match(/^\/api\/import-code-schemes\/(RMF|RMS)$/);
+      if (importSchemeMatch && method === "PUT") {
+        if (role !== "quality") return error("Only quality can configure the import-code schemes", 403);
+        return setImportCodeScheme(request, env, importSchemeMatch[1]);
       }
 
       // Specifications — Quality's second core function.

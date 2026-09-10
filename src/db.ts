@@ -139,9 +139,12 @@ export interface ImportCodeResult {
 /**
  * Detects which of the three novelty scenarios applies to a
  * (material_code, material_name_text, supplier) combination based on
- * already-reviewed receipt lines (import_code IS NOT NULL), then
- * atomically bumps that exact combination's counter and renders the
- * configured import-code pattern — mirroring generateInternalBatchNo.
+ * already-reviewed receipt lines (import_code IS NOT NULL) — this drives
+ * which pool the code is drawn from: any "new_*" scenario draws from the
+ * RMF pool, a "repeat" draws from RMS. Each pool is a single, simple,
+ * system-wide running count (matching Quality's current RMF/RMS ledger),
+ * not scoped to any one material or supplier — only the scenario
+ * detection itself looks at material/supplier/name history.
  */
 export async function generateImportCode(
   env: Env,
@@ -188,27 +191,27 @@ export async function generateImportCode(
         ? "new_name_variant"
         : "repeat";
 
-  const schemeRow = await env.DB.prepare("SELECT pattern_template FROM import_code_scheme WHERE id = 1").first<{
-    pattern_template: string;
-  }>();
-  const pattern = schemeRow?.pattern_template ?? "{material_code}-{supplier_code}-{seq:03d}";
+  const kind = scenario === "repeat" ? "RMS" : "RMF";
+  const code = await drawImportCode(env, kind);
+
+  return { code, scenario };
+}
+
+async function drawImportCode(env: Env, kind: "RMF" | "RMS"): Promise<string> {
+  const schemeRow = await env.DB.prepare("SELECT pattern_template FROM import_code_schemes WHERE kind = ?")
+    .bind(kind)
+    .first<{ pattern_template: string }>();
+  const pattern = schemeRow?.pattern_template ?? `${kind}{seq:04d}`;
 
   const counterRow = await env.DB.prepare(
-    `INSERT INTO import_code_sequences (material_code, supplier_id, current_sequence)
-     VALUES (?, ?, 1)
-     ON CONFLICT(material_code, supplier_id)
-     DO UPDATE SET current_sequence = current_sequence + 1
+    `INSERT INTO import_code_counters (kind, current_sequence)
+     VALUES (?, 1)
+     ON CONFLICT(kind) DO UPDATE SET current_sequence = current_sequence + 1
      RETURNING current_sequence`
   )
-    .bind(materialCode, supplier.id)
+    .bind(kind)
     .first<{ current_sequence: number }>();
   const sequence = counterRow?.current_sequence ?? 1;
 
-  const code = renderPattern(pattern, {
-    material_code: materialCode,
-    supplier_code: supplier.code,
-    seq: sequence,
-  });
-
-  return { code, scenario };
+  return renderPattern(pattern, { seq: sequence });
 }

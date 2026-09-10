@@ -219,13 +219,16 @@ shape of a line) the first time Quality reviews it, regardless of the
 decision outcome (a brand-new material can still be rejected). It's
 computed from three sequential existence checks against already-reviewed
 lines, classifying the line as `new_material` / `new_supplier` /
-`new_name_variant` / `repeat`, and paired with a code rendered from a
-Quality-editable pattern (`GET/PUT /api/import-code-scheme`, default
-`{material_code}-{supplier_code}-{seq:03d}`) — the sequence counts "how
-many times this material has been received from this supplier," continuing
-across name variants rather than restarting per name (restarting per name
-would let two variants both claim sequence 1 and collide on the same
-code). Quality can freely override the generated value, same as the
+`new_name_variant` / `repeat` — this scenario is stored on the line for
+display, but the *code itself* draws from one of two simple, system-wide
+ledger pools, matching how Quality's current system already labels
+records: **RMF** for any of the three novel scenarios, **RMS** for a
+regular repeat. Each pool is just a prefix plus a plain running number
+(`GET /api/import-code-schemes`, `PUT /api/import-code-schemes/:kind` —
+default `RMF{seq:04d}` / `RMS{seq:04d}`), not scoped to any one material or
+supplier — a material's first-ever receipt and a different material's
+first-ever new-supplier event both draw the next number from the same RMF
+pool. Quality can freely override the generated value, same as the
 internal batch number. This is a separate, coexisting code from the
 internal batch number (§1.8) — import code flags novelty at review time
 for any decision; internal batch number identifies a specific *accepted*
@@ -317,13 +320,13 @@ ReceiptLine
   import_code            nullable until Quality's first review of the line
   import_scenario         new_material | new_supplier | new_name_variant | repeat
 
-ImportCodeSequence      -- atomic counter, keyed by (material_code, supplier_id);
-  material_code            NOT by name — see §1.15 for why
-  supplier_id
-  current_sequence
+ImportCodeCounter       -- one row per pool: RMF, RMS
+  kind                    RMF | RMS
+  current_sequence        system-wide, not scoped to material/supplier
 
-ImportCodeScheme        -- single global, Quality-editable pattern
-  pattern_template        e.g. "{material_code}-{supplier_code}-{seq:03d}"
+ImportCodeScheme        -- one Quality-editable pattern per pool
+  kind                    RMF | RMS
+  pattern_template        e.g. "RMF{seq:04d}", "RMS{seq:04d}"
 
 ReceiptBatch
   id
