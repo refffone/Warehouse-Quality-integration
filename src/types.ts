@@ -1,6 +1,5 @@
 export interface Env {
   DB: D1Database;
-  ATTACHMENTS: R2Bucket;
   ASSETS: Fetcher;
   EXPIRY_ALERT_LEAD_DAYS: string;
 }
@@ -87,7 +86,6 @@ export interface ReceiptBatch {
   expiry_date: string | null;
   production_date: string | null;
   coa_remarks: string | null;
-  coa_file_ref: string | null;
   decided_by: string | null;
   decided_at: string | null;
 }
@@ -119,6 +117,23 @@ export interface SetSampleSenderInput {
   sample_sent_by: string;
 }
 
+export type TestResultOutcome = "pass" | "fail";
+
+export interface TestResultInput {
+  spec_parameter_id: number;
+  measured_value?: string | null;
+  result: TestResultOutcome;
+}
+
+export interface BatchTestResult {
+  id: number;
+  batch_id: number;
+  spec_parameter_id: number;
+  measured_value: string | null;
+  result: TestResultOutcome;
+  created_at: string;
+}
+
 export interface BatchDecisionInput {
   decision: "approve" | "reject" | "partial";
   decided_by: string;
@@ -129,6 +144,9 @@ export interface BatchDecisionInput {
   internal_batch_no?: string; // override; auto-generated when omitted on approve/partial
   import_code?: string; // override; auto-generated when omitted, only on the line's first decision
   coa_remarks?: string | null;
+  /** Measured value + pass/fail per spec parameter — the content of the
+   *  batch's COA. Replaces any previously recorded results for this batch. */
+  test_results?: TestResultInput[];
 }
 
 export interface FinalizeWeightInput {

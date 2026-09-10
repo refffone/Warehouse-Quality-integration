@@ -10,6 +10,7 @@ import { createSpecVersion, getActiveSpec } from "./specs";
 import type {
   AssociateCodeInput,
   BatchDecisionInput,
+  BatchTestResult,
   Env,
   FinalizeWeightInput,
   NewReceiptInput,
@@ -19,6 +20,17 @@ import type {
   SetSampleSenderInput,
   SpecWithParameters,
 } from "../types";
+
+/** A test result joined with enough of its spec parameter to render/export
+ *  without a second lookup. */
+export interface TestResultWithParameter extends BatchTestResult {
+  parameter_name: string;
+  unit: string | null;
+  param_type: string;
+  method: string | null;
+  min_value: number | null;
+  max_value: number | null;
+}
 
 /** Full receipt payload assembled from the three tables for API responses. */
 interface ReceiptWithDetail {
@@ -30,7 +42,25 @@ interface ReceiptWithDetail {
   status: string;
   created_at: string;
   sample_sent_by: string | null;
-  lines: Array<ReceiptLine & { batches: Partial<ReceiptBatch>[]; spec: SpecWithParameters | null }>;
+  lines: Array<
+    ReceiptLine & {
+      batches: Array<Partial<ReceiptBatch> & { test_results: TestResultWithParameter[] }>;
+      spec: SpecWithParameters | null;
+    }
+  >;
+}
+
+export async function getBatchTestResults(env: Env, batchId: number): Promise<TestResultWithParameter[]> {
+  const rows = await env.DB.prepare(
+    `SELECT btr.*, sp.parameter_name, sp.unit, sp.param_type, sp.method, sp.min_value, sp.max_value
+     FROM batch_test_results btr
+     JOIN spec_parameters sp ON sp.id = btr.spec_parameter_id
+     WHERE btr.batch_id = ?
+     ORDER BY sp.sort_order`
+  )
+    .bind(batchId)
+    .all<TestResultWithParameter>();
+  return rows.results ?? [];
 }
 
 export async function createReceipt(request: Request, env: Env): Promise<Response> {
@@ -128,11 +158,12 @@ export async function getReceipt(env: Env, role: Role, id: number): Promise<Resp
       .bind(line.id)
       .all<ReceiptBatch>();
     const spec = line.material_code ? await getActiveSpec(env, line.material_code) : null;
-    detail.lines.push({
-      ...line,
-      spec,
-      batches: (batches.results ?? []).map((b) => redactBatchForRole(b, role, receipt.type as string)),
-    });
+    const batchesWithResults = [];
+    for (const b of batches.results ?? []) {
+      const test_results = role === "quality" || receipt.type !== "sample" ? await getBatchTestResults(env, b.id) : [];
+      batchesWithResults.push({ ...redactBatchForRole(b, role, receipt.type as string), test_results });
+    }
+    detail.lines.push({ ...line, spec, batches: batchesWithResults });
   }
 
   return json(detail);
@@ -210,6 +241,19 @@ export async function decideBatch(
       input.internal_batch_no ?? (await generateInternalBatchNo(env, supplier!, new Date()));
   }
 
+  if (input.test_results?.length) {
+    const spec = await getActiveSpec(env, batch.material_code);
+    const validIds = new Set((spec?.parameters ?? []).map((p) => p.id));
+    for (const r of input.test_results) {
+      if (!validIds.has(r.spec_parameter_id)) {
+        return error(`spec_parameter_id ${r.spec_parameter_id} is not on this material's active spec`, 400);
+      }
+      if (r.result !== "pass" && r.result !== "fail") {
+        return error("Each test result needs result: 'pass' or 'fail'", 400);
+      }
+    }
+  }
+
   await env.DB.prepare(
     `UPDATE receipt_batches
      SET status = ?, qty_accepted = ?, qty_rejected = ?, internal_batch_no = ?,
@@ -228,6 +272,18 @@ export async function decideBatch(
       batchId
     )
     .run();
+
+  if (input.test_results?.length) {
+    await env.DB.prepare("DELETE FROM batch_test_results WHERE batch_id = ?").bind(batchId).run();
+    await env.DB.batch(
+      input.test_results.map((r) =>
+        env.DB.prepare(
+          `INSERT INTO batch_test_results (batch_id, spec_parameter_id, measured_value, result)
+           VALUES (?, ?, ?, ?)`
+        ).bind(batchId, r.spec_parameter_id, r.measured_value ?? null, r.result)
+      )
+    );
+  }
 
   await env.DB.prepare(
     `UPDATE receipts SET status = 'decided' WHERE id = ? AND NOT EXISTS (

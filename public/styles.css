@@ -170,6 +170,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
    instead of overflowing or clipping */
 .hstack { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
+/* ---------- wizard steps ---------- */
+.wizard-steps { display: flex; align-items: center; gap: 10px; font-size: 0.84rem; color: var(--ink-faint); flex-wrap: wrap; }
+.wizard-step { display: flex; align-items: center; gap: 7px; }
+.wizard-step.active { color: var(--ink); font-weight: 600; }
+.wizard-step-num {
+  width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--rule-strong);
+  display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+.wizard-step.active .wizard-step-num { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.wizard-step-rule { flex: 0 1 32px; height: 1px; background: var(--rule-strong); }
+
 /* ---------- cards ---------- */
 .card {
   background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-lg);

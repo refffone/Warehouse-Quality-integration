@@ -501,11 +501,62 @@ issue, since Cloudflare Workers serves to the open internet with no such
 restriction; the font stack's fallback still rendered a clean, legible
 page in the meantime.
 
-**Not yet built**: auth beyond the `X-Role` stand-in, COA/label
-attachment upload (R2 is wired but no UI or endpoint touches it), the
-expiry-alert notification isn't surfaced anywhere beyond the shared bell
-(no dedicated "expiring soon" view), and dark mode is defined in
-`styles.css` tokens but not yet checked against a real dark-mode screenshot.
+**Not yet built**: auth beyond the `X-Role` stand-in, the expiry-alert
+notification isn't surfaced anywhere beyond the shared bell (no dedicated
+"expiring soon" view), and dark mode is defined in `styles.css` tokens but
+not yet checked against a real dark-mode screenshot.
+
+### 7.1 Receive as a two-step form
+
+Split from one long single-page form into two: **Receipt details** (type,
+supplier, date, who) then **Materials & batches**, each getting its own
+screen with a compact step indicator — discussed with the user first
+(question, not a given) given the trade-off of extra navigation for the
+common single-line receipt against a long unbroken scroll for the messier
+multi-code, multi-batch ones the original spec called out. State
+(`receiveWizard`) is a module-level object so stepping back to edit
+details doesn't lose what's already been entered on step 2 (verified by
+navigating back and forward and confirming values persisted); it resets
+only after a successful submit.
+
+### 7.2 Structured test results (the content of a COA) and PDF/Excel export
+
+Closes the gap flagged earlier: Quality had nowhere to enter actual test
+results, only a free-text remarks field. `decideBatch` now accepts an
+optional `test_results[]` (measured value + pass/fail per spec parameter,
+stored in the new `batch_test_results` table, validated against the
+material's active spec parameters), and the Decide modal renders one row
+per active spec parameter — name, method, the spec's own range or
+pass/fail hint, a measured-value input, and a Pass/Fail select — so
+Quality is filling in a checklist, not guessing at a blank field. A
+decided batch shows a compact pass/fail-count badge (opens the full
+read-only table on click) plus **COA PDF** / **COA Excel** buttons.
+
+No file upload, per the user (COA is generated from recorded data, not an
+uploaded document) — `GET /api/batches/:id/coa?format=pdf|xlsx` builds
+the certificate server-side from the batch, its material/supplier/spec
+context, and its test results, using `pdf-lib` (PDF) and `xlsx`/SheetJS
+(Excel) — both pure-JS, Workers-compatible, no Node filesystem dependency.
+xlsx carries known high-severity advisories, but they're in its *parsing*
+path; this app only ever writes files from its own trusted data, so
+they don't apply here. The frontend downloads via `fetch` (so the `X-Role`
+header goes along) into a `Blob` and triggers a normal save through a
+throwaway `<a download>` — a plain `<a href>` link can't carry a custom
+header, which a same-origin API behind a role check needs.
+
+Verified past "the file signature looks right": inspected the Excel
+output's actual cell contents, and rendered the generated PDF in a real
+PDF viewer (Chromium's built-in one, via Playwright) to confirm the
+certificate reads correctly end to end, not just that `file` calls it a
+valid PDF.
+
+## 9. Next Step
+
+Stand up the real Cloudflare deployment: create the actual D1 database
+and R2 bucket, replace the placeholder `database_id` in `wrangler.toml`,
+run the migrations against it, and deploy the Worker — turning this from
+a locally-verified build into something Warehouse and Quality can
+actually open.
 
 ## 8. Next Step
 

@@ -197,31 +197,58 @@ async function toggleNotifPanel() {
   }, 0);
 }
 
-// ---------------------------------------------------------------- view: Receive
+// ---------------------------------------------------------------- view: Receive (2-step)
+
+function freshReceiveWizard() {
+  return {
+    step: 1,
+    type: "import",
+    received_at: nowLocalInput(),
+    created_by: getRememberedName(),
+    supplier_code: null,
+    sample_sent_by: "",
+  };
+}
+let receiveWizard = freshReceiveWizard();
+
+function wizardStepsHtml(current) {
+  return `
+    <div class="wizard-steps">
+      <span class="wizard-step${current === 1 ? " active" : ""}"><span class="wizard-step-num">1</span> Receipt details</span>
+      <span class="wizard-step-rule"></span>
+      <span class="wizard-step${current === 2 ? " active" : ""}"><span class="wizard-step-num">2</span> Materials &amp; batches</span>
+    </div>`;
+}
 
 async function viewReceive() {
   const suppliers = await getSuppliers();
+  if (!receiveWizard.supplier_code && suppliers.length) receiveWizard.supplier_code = suppliers[0].code;
+  if (receiveWizard.step === 2) renderReceiveStep2();
+  else renderReceiveStep1(suppliers);
+}
+
+function renderReceiveStep1(suppliers) {
   const view = document.getElementById("view");
+  const w = receiveWizard;
   view.innerHTML = `
-    <div class="view-head">
-      <div><h1>Receive material</h1><p>Log an import or sample the moment it physically arrives.</p></div>
-    </div>
-    <form class="card form-grid" id="receive-form">
+    <div class="view-head"><div><h1>Receive material</h1><p>Log an import or sample the moment it physically arrives.</p></div></div>
+    ${wizardStepsHtml(1)}
+    <form class="card form-grid" id="receive-step1-form">
       <div class="field-row">
         <div class="field">
           <label>Type</label>
           <select name="type" id="rf-type">
-            <option value="import">Import</option>
-            <option value="sample">Sample</option>
+            <option value="import" ${w.type === "import" ? "selected" : ""}>Import</option>
+            <option value="sample" ${w.type === "sample" ? "selected" : ""}>Sample</option>
           </select>
         </div>
         <div class="field">
           <label>Received at</label>
-          <input type="datetime-local" name="received_at" value="${nowLocalInput()}" required />
+          <input type="datetime-local" name="received_at" value="${esc(w.received_at)}" required />
         </div>
         <div class="field">
           <label>Your name</label>
-          <input type="text" name="created_by" value="${esc(getRememberedName())}" required />
+          <input type="text" name="created_by" value="${esc(w.created_by)}" required />
         </div>
       </div>
       <div class="field-row">
@@ -229,28 +256,92 @@ async function viewReceive() {
           <label>Supplier</label>
           <div style="display:flex; gap:8px;">
             <select name="supplier_code" id="rf-supplier" style="flex:1">
-              ${suppliers.map((s) => `<option value="${esc(s.code)}">${esc(s.name)} (${esc(s.code)})</option>`).join("")}
+              ${suppliers
+                .map((s) => `<option value="${esc(s.code)}" ${w.supplier_code === s.code ? "selected" : ""}>${esc(s.name)} (${esc(s.code)})</option>`)
+                .join("")}
             </select>
             <button type="button" class="btn ghost sm" id="rf-new-supplier">+ New</button>
           </div>
         </div>
-        <div class="field" id="rf-sample-sender-field" hidden style="flex:1">
+        <div class="field" id="rf-sample-sender-field" ${w.type === "sample" ? "" : "hidden"} style="flex:1">
           <label>Sample sent by</label>
-          <input type="text" name="sample_sent_by" placeholder="e.g. Jane Doe (supplier rep)" />
+          <input type="text" name="sample_sent_by" placeholder="e.g. Jane Doe (supplier rep)" value="${esc(w.sample_sent_by)}" />
         </div>
       </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end;">
+        <button type="submit" class="btn primary">Next: Materials &amp; batches →</button>
+      </div>
+    </form>
+  `;
 
+  document.getElementById("rf-type").addEventListener("change", (e) => {
+    document.getElementById("rf-sample-sender-field").hidden = e.target.value !== "sample";
+  });
+
+  document.getElementById("rf-new-supplier").addEventListener("click", () => {
+    openModal(
+      "New supplier",
+      `<form class="form-grid" id="new-supplier-form">
+        <div class="field"><label>Code</label><input name="code" required /></div>
+        <div class="field"><label>Name</label><input name="name" required /></div>
+        <button type="submit" class="btn primary">Create</button>
+      </form>`
+    );
+    document.getElementById("new-supplier-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      try {
+        await api.post("/api/suppliers", { code: fd.get("code"), name: fd.get("name") });
+        await getSuppliers(true);
+        closeModal();
+        viewReceive();
+        toast("Supplier added");
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  });
+
+  document.getElementById("receive-step1-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    w.type = fd.get("type");
+    w.received_at = fd.get("received_at");
+    w.created_by = fd.get("created_by");
+    w.supplier_code = fd.get("supplier_code");
+    w.sample_sent_by = fd.get("sample_sent_by") || "";
+    rememberName(w.created_by);
+    w.step = 2;
+    viewReceive();
+  });
+}
+
+function renderReceiveStep2() {
+  const view = document.getElementById("view");
+  const w = receiveWizard;
+  view.innerHTML = `
+    <div class="view-head"><div><h1>Receive material</h1><p>Log an import or sample the moment it physically arrives.</p></div></div>
+    ${wizardStepsHtml(2)}
+    <div class="card small muted" style="display:flex; justify-content:space-between; align-items:center;">
+      <span>${w.type === "sample" ? "Sample" : "Import"} · ${esc(w.supplier_code)} · ${fmtDateTime(new Date(w.received_at).toISOString())} · ${esc(w.created_by)}</span>
+      <button type="button" class="btn ghost sm" id="rf-back">← Edit details</button>
+    </div>
+    <form class="card form-grid" id="receive-step2-form">
       <div>
         <label class="small muted">Lines received</label>
         <div class="repeatable" id="rf-lines"></div>
         <button type="button" class="btn ghost sm" id="rf-add-line" style="margin-top:8px">+ Add material line</button>
       </div>
-
       <div style="display:flex; gap:10px; justify-content:flex-end;">
         <button type="submit" class="btn primary">Register receipt</button>
       </div>
     </form>
   `;
+
+  document.getElementById("rf-back").addEventListener("click", () => {
+    w.step = 1;
+    viewReceive();
+  });
 
   const linesEl = document.getElementById("rf-lines");
 
@@ -291,38 +382,8 @@ async function viewReceive() {
   document.getElementById("rf-add-line").addEventListener("click", addLine);
   addLine();
 
-  document.getElementById("rf-type").addEventListener("change", (e) => {
-    document.getElementById("rf-sample-sender-field").hidden = e.target.value !== "sample";
-  });
-
-  document.getElementById("rf-new-supplier").addEventListener("click", () => {
-    openModal(
-      "New supplier",
-      `<form class="form-grid" id="new-supplier-form">
-        <div class="field"><label>Code</label><input name="code" required /></div>
-        <div class="field"><label>Name</label><input name="name" required /></div>
-        <button type="submit" class="btn primary">Create</button>
-      </form>`
-    );
-    document.getElementById("new-supplier-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const fd = new FormData(e.target);
-      try {
-        await api.post("/api/suppliers", { code: fd.get("code"), name: fd.get("name") });
-        await getSuppliers(true);
-        closeModal();
-        viewReceive();
-        toast("Supplier added");
-      } catch (err) {
-        toast(err.message, true);
-      }
-    });
-  });
-
-  document.getElementById("receive-form").addEventListener("submit", async (e) => {
+  document.getElementById("receive-step2-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const fd = new FormData(e.target);
-    rememberName(fd.get("created_by"));
 
     const lines = [...linesEl.querySelectorAll(".line-item")].map((item) => {
       const get = (f) => item.querySelector(`[data-f="${f}"]`)?.value || "";
@@ -339,20 +400,19 @@ async function viewReceive() {
     });
 
     const body = {
-      type: fd.get("type"),
-      received_at: new Date(fd.get("received_at")).toISOString(),
-      supplier_code: fd.get("supplier_code"),
-      created_by: fd.get("created_by"),
+      type: w.type,
+      received_at: new Date(w.received_at).toISOString(),
+      supplier_code: w.supplier_code,
+      created_by: w.created_by,
       lines,
     };
-    if (fd.get("type") === "sample" && fd.get("sample_sent_by")) {
-      body.sample_sent_by = fd.get("sample_sent_by");
-    }
+    if (w.type === "sample" && w.sample_sent_by) body.sample_sent_by = w.sample_sent_by;
 
     try {
       const result = await api.post("/api/receipts", body);
       toast(`Receipt #${result.id} registered`);
-      goTo(fd.get("type") === "sample" ? "samples" : "imports");
+      receiveWizard = freshReceiveWizard();
+      goTo("todo");
     } catch (err) {
       toast(err.message, true);
     }
@@ -370,6 +430,62 @@ function batchStatusInline(b) {
   if (b.status === "pending") return `<span class="muted small">awaiting decision</span>`;
   if (b.status === "rejected") return statusPill("rejected");
   return `${statusPill(b.status)}${b.internal_batch_no ? ` <span class="mono small">${esc(b.internal_batch_no)}</span>` : ""}`;
+}
+
+function resultsSummaryBadge(results) {
+  if (!results || results.length === 0) return "";
+  const failed = results.filter((r) => r.result === "fail").length;
+  return failed > 0
+    ? `<span class="badge flag">${failed}/${results.length} failed</span>`
+    : `<span class="badge repeat">${results.length}/${results.length} passed</span>`;
+}
+
+function openResultsModal(results) {
+  const rows = (results || [])
+    .map(
+      (r) => `
+      <tr>
+        <td>${esc(r.parameter_name)}</td>
+        <td class="small muted">${esc(r.method || "—")}</td>
+        <td class="mono small">${esc(r.measured_value || "—")}</td>
+        <td><span class="status-pill ${r.result === "fail" ? "rejected" : "approved"}">${esc(r.result)}</span></td>
+      </tr>`
+    )
+    .join("");
+  openModal(
+    "Test results",
+    `<div class="table-scroll"><table class="data-table">
+      <thead><tr><th>Parameter</th><th>Method</th><th>Measured</th><th>Result</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="4" class="muted">No results recorded</td></tr>`}</tbody>
+    </table></div>`
+  );
+}
+
+/** Downloads a batch's COA via fetch (so the X-Role header goes along),
+ *  then triggers a normal browser save via a throwaway object-URL link. */
+async function downloadCoa(batchId, format) {
+  try {
+    const res = await fetch(`/api/batches/${batchId}/coa?format=${format}`, {
+      headers: { "x-role": getRole() },
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Download failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const match = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") || "");
+    const filename = match ? match[1] : `coa.${format}`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    toast(err.message, true);
+  }
 }
 
 function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
@@ -391,6 +507,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
 
   const batchesHtml = line.batches
     .map((b) => {
+      const decided = b.status && b.status !== "pending";
       const actions = [];
       if (canDecide && b.status === "pending") {
         actions.push(`<button class="btn sm primary" data-decide="${b.id}">Decide</button>`);
@@ -398,16 +515,22 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       if (canFinalize && b.status !== "pending" && b.status !== "rejected" && b.qty_actual_weighed == null) {
         actions.push(`<button class="btn sm ghost" data-finalize="${b.id}">Finalize weight</button>`);
       }
+      if (decided) {
+        actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="pdf">COA PDF</button>`);
+        actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="xlsx">COA Excel</button>`);
+      }
       const qtyLine =
         b.qty_actual_weighed != null
           ? `${b.qty_as_received} as received · ${b.qty_actual_weighed} actual`
           : `${b.qty_as_received} as received`;
+      const resultsBadge = resultsSummaryBadge(b.test_results);
       return `
         <div class="batch-row">
           <div><span class="batch-id">${esc(b.supplier_batch_no)}</span> <span class="batch-qty">${qtyLine} ${esc(line.unit)}</span></div>
           <div class="hstack">
             ${b.expiry_date ? `<span class="small muted">exp ${fmtDate(b.expiry_date)}</span>` : ""}
             ${batchStatusInline(b)}
+            ${resultsBadge ? `<button class="btn sm ghost" data-view-results="${b.id}">${resultsBadge}</button>` : ""}
             ${actions.join("")}
           </div>
         </div>`;
@@ -530,9 +653,21 @@ function buildReceiptCard(receipt, { role, type }) {
     });
   }
 
+  // Per-batch spec/results lookups, for buttons wired below.
+  const specByBatch = {};
+  const resultsByBatch = {};
+  for (const line of receipt.lines) {
+    for (const b of line.batches) {
+      specByBatch[b.id] = line.spec;
+      resultsByBatch[b.id] = b.test_results;
+    }
+  }
+
   // decide
   card.querySelectorAll("[data-decide]").forEach((btn) =>
-    btn.addEventListener("click", () => openDecideModal(btn.dataset.decide, () => refreshCurrentView()))
+    btn.addEventListener("click", () =>
+      openDecideModal(btn.dataset.decide, specByBatch[btn.dataset.decide], () => refreshCurrentView())
+    )
   );
   // finalize
   card.querySelectorAll("[data-finalize]").forEach((btn) =>
@@ -541,6 +676,14 @@ function buildReceiptCard(receipt, { role, type }) {
   // associate code
   card.querySelectorAll("[data-associate]").forEach((btn) =>
     btn.addEventListener("click", () => openAssociateModal(btn.dataset.associate, () => refreshCurrentView()))
+  );
+  // view test results (read-only)
+  card.querySelectorAll("[data-view-results]").forEach((btn) =>
+    btn.addEventListener("click", () => openResultsModal(resultsByBatch[btn.dataset.viewResults]))
+  );
+  // COA download
+  card.querySelectorAll("[data-coa]").forEach((btn) =>
+    btn.addEventListener("click", () => downloadCoa(btn.dataset.coa, btn.dataset.format))
   );
 
   return card;
@@ -569,7 +712,42 @@ async function renderReceiptsInto(container, { role, type, bucket, query }) {
 
 // ---------------------------------------------------------------- decide / finalize / associate modals
 
-async function openDecideModal(batchId, onDone) {
+function paramSpecHint(p) {
+  if (p.param_type === "numeric_range" || p.param_type === "time_range") {
+    return `${p.min_value ?? ""}–${p.max_value ?? ""}${p.unit ? ` ${p.unit}` : ""}`;
+  }
+  if (p.param_type === "pass_fail") return "Pass/Fail";
+  return p.unit ?? "";
+}
+
+async function openDecideModal(batchId, spec, onDone) {
+  const params = spec?.parameters ?? [];
+  const resultsHtml = params.length
+    ? `
+    <div>
+      <label class="small muted">Test results — ${esc(spec.title)} (v${spec.version})</label>
+      <div class="repeatable" style="margin-top:6px">
+        ${params
+          .map(
+            (p) => `
+          <div class="repeatable-item" data-result-row data-param-id="${p.id}">
+            <div class="field-row">
+              <div class="field" style="flex:2">
+                <label>${esc(p.parameter_name)}${p.method ? ` <span class="muted">(${esc(p.method)})</span>` : ""}</label>
+                <div class="small muted">Spec: ${esc(paramSpecHint(p))}</div>
+              </div>
+              <div class="field"><label>Measured value</label><input type="text" data-f="measured_value" /></div>
+              <div class="field" style="max-width:120px"><label>Result</label>
+                <select data-f="result"><option value="">—</option><option value="pass">Pass</option><option value="fail">Fail</option></select>
+              </div>
+            </div>
+          </div>`
+          )
+          .join("")}
+      </div>
+    </div>`
+    : `<p class="small muted">${spec ? "This spec has no parameters yet." : "No active spec on this material — no structured test results."}</p>`;
+
   openModal(
     "Decide batch",
     `<form class="form-grid" id="decide-form">
@@ -585,6 +763,7 @@ async function openDecideModal(batchId, onDone) {
         <div class="field"><label>Qty accepted</label><input type="number" step="any" name="qty_accepted" /></div>
         <div class="field"><label>Qty rejected</label><input type="number" step="any" name="qty_rejected" /></div>
       </div>
+      ${resultsHtml}
       <div class="field-row" id="decide-approve-fields">
         <div class="field"><label>Expiry date</label><input type="date" name="expiry_date" /></div>
         <div class="field"><label>Production date</label><input type="date" name="production_date" /></div>
@@ -628,6 +807,15 @@ async function openDecideModal(batchId, onDone) {
     }
     if (fd.get("import_code")) body.import_code = fd.get("import_code");
     if (fd.get("coa_remarks")) body.coa_remarks = fd.get("coa_remarks");
+
+    const testResults = [...document.querySelectorAll("[data-result-row]")]
+      .map((row) => ({
+        spec_parameter_id: Number(row.dataset.paramId),
+        measured_value: row.querySelector('[data-f="measured_value"]').value || null,
+        result: row.querySelector('[data-f="result"]').value,
+      }))
+      .filter((r) => r.result === "pass" || r.result === "fail");
+    if (testResults.length) body.test_results = testResults;
 
     try {
       await api.post(`/api/batches/${batchId}/decision`, body);

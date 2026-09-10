@@ -12,6 +12,7 @@ import {
   upsertMaterialSubtype,
   upsertMaterialType,
 } from "./routes/masterdata";
+import { downloadCoa } from "./routes/coa";
 import { listNotifications, markNotificationRead } from "./routes/notifications";
 import {
   associateCode,
@@ -127,6 +128,12 @@ export default {
       if (associateMatch && method === "POST") {
         if (role !== "quality") return error("Only quality can associate a code", 403);
         return associateCode(request, env, Number(associateMatch[1]));
+      }
+
+      const coaMatch = pathname.match(/^\/api\/batches\/(\d+)\/coa$/);
+      if (coaMatch && method === "GET") {
+        if (!role) return error("Missing X-Role header", 401);
+        return downloadCoa(env, Number(coaMatch[1]), url.searchParams.get("format") ?? "pdf");
       }
 
       // Notifications
