@@ -72,7 +72,12 @@ code) → Batch (per supplier batch #)** — described in full in §3.
 **Why it matters:** blocking receipt registration on a code existing would
 recreate the same delay problem this project is meant to fix.
 **Fix:** `material_code` is nullable on a Receipt Line; the line carries a
-free-text material name as a fallback and can be reconciled to a code later.
+free-text material name as a fallback and can be reconciled to a code later
+via an **"Associate a Code"** action available to Quality on any uncoded
+line: Quality either links it to an existing material (its existing spec
+then applies) or creates a brand-new material code together with its spec
+in the same step. Implemented as `POST
+/api/receipt-lines/:id/associate-code`.
 
 ### 1.4 Not all materials expire
 **Today:** expiry date is implicitly expected on every approved record.

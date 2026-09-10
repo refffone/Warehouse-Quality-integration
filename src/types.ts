@@ -92,3 +92,22 @@ export interface BatchDecisionInput {
 export interface FinalizeWeightInput {
   qty_actual_weighed: number;
 }
+
+export interface Spec {
+  id: number;
+  material_code: string;
+  title: string;
+  criteria: string;
+  created_at: string;
+}
+
+/** Quality associates an uncoded receipt line to a material code — either
+ *  an existing one (whose spec then applies) or a brand-new one, which
+ *  requires creating its spec in the same step. */
+export type AssociateCodeInput =
+  | { mode: "existing"; material_code: string }
+  | {
+      mode: "new";
+      new_material: { code: string; name: string; unit: string; requires_expiry?: boolean };
+      spec: { title: string; criteria: string };
+    };

@@ -8,6 +8,7 @@ import {
 } from "./routes/masterdata";
 import { listNotifications, markNotificationRead } from "./routes/notifications";
 import {
+  associateCode,
   createReceipt,
   decideBatch,
   finalizeWeight,
@@ -62,6 +63,12 @@ export default {
       if (finalizeMatch && method === "POST") {
         if (role !== "warehouse") return error("Only warehouse finalizes actual weight", 403);
         return finalizeWeight(request, env, Number(finalizeMatch[1]));
+      }
+
+      const associateMatch = pathname.match(/^\/api\/receipt-lines\/(\d+)\/associate-code$/);
+      if (associateMatch && method === "POST") {
+        if (role !== "quality") return error("Only quality can associate a code", 403);
+        return associateCode(request, env, Number(associateMatch[1]));
       }
 
       // Notifications

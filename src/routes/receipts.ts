@@ -1,6 +1,7 @@
 import { generateInternalBatchNo, getSupplierByCode, notify } from "../db";
 import { error, json } from "../http";
 import type {
+  AssociateCodeInput,
   BatchDecisionInput,
   Env,
   FinalizeWeightInput,
@@ -8,6 +9,7 @@ import type {
   ReceiptBatch,
   ReceiptLine,
   Role,
+  Spec,
 } from "../types";
 
 /** Full receipt payload assembled from the three tables for API responses. */
@@ -208,6 +210,70 @@ export async function finalizeWeight(request: Request, env: Env, batchId: number
     .run();
 
   return json({ id: batchId, qty_actual_weighed: input.qty_actual_weighed });
+}
+
+/** Quality resolves an uncoded receipt line ("Associate a Code") either by
+ *  linking it to an existing material (its spec then applies as-is) or by
+ *  creating a brand-new material together with its spec. */
+export async function associateCode(request: Request, env: Env, lineId: number): Promise<Response> {
+  const input = await request.json<AssociateCodeInput>();
+
+  const line = await env.DB.prepare("SELECT * FROM receipt_lines WHERE id = ?")
+    .bind(lineId)
+    .first<ReceiptLine>();
+  if (!line) return error("Receipt line not found", 404);
+  if (line.material_code !== null) {
+    return error("This line already has a material code associated", 409);
+  }
+
+  let materialCode: string;
+
+  if (input.mode === "existing") {
+    if (!input.material_code) return error("material_code is required");
+    const material = await env.DB.prepare("SELECT code FROM materials WHERE code = ?")
+      .bind(input.material_code)
+      .first<{ code: string }>();
+    if (!material) return error(`Unknown material code: ${input.material_code}`, 404);
+    materialCode = material.code;
+  } else if (input.mode === "new") {
+    const { new_material, spec } = input;
+    if (!new_material?.code || !new_material.name || !new_material.unit) {
+      return error("new_material requires code, name and unit");
+    }
+    if (!spec?.title || !spec.criteria) {
+      return error("spec (title, criteria) is required when creating a new code");
+    }
+    const existing = await env.DB.prepare("SELECT code FROM materials WHERE code = ?")
+      .bind(new_material.code)
+      .first();
+    if (existing) return error(`Material code ${new_material.code} already exists`, 409);
+
+    await env.DB.prepare(
+      "INSERT INTO materials (code, name, unit, requires_expiry) VALUES (?, ?, ?, ?)"
+    )
+      .bind(new_material.code, new_material.name, new_material.unit, new_material.requires_expiry === false ? 0 : 1)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO specs (material_code, title, criteria) VALUES (?, ?, ?)"
+    )
+      .bind(new_material.code, spec.title, spec.criteria)
+      .run();
+    materialCode = new_material.code;
+  } else {
+    return error("mode must be 'existing' or 'new'");
+  }
+
+  await env.DB.prepare("UPDATE receipt_lines SET material_code = ? WHERE id = ?")
+    .bind(materialCode, lineId)
+    .run();
+
+  const activeSpec = await env.DB.prepare(
+    "SELECT * FROM specs WHERE material_code = ? ORDER BY created_at DESC LIMIT 1"
+  )
+    .bind(materialCode)
+    .first<Spec>();
+
+  return json({ receipt_line_id: lineId, material_code: materialCode, spec: activeSpec ?? null });
 }
 
 /** Samples never show Quality's in-progress/final test status to warehouse. */
