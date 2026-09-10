@@ -163,7 +163,22 @@ on a sample should **not** be visible to warehouse (warehouse only needs to
 know a sample was logged and stored, not where it stands in testing).
 **Fix:** `Receipt.type` is `import | sample`. This is not just a workflow
 branch — it's also a field-visibility rule enforced by role: warehouse's view
-of a sample record omits Quality's live test status entirely.
+of a sample record omits Quality's live test status entirely. On the
+Quality side, samples get their own **tab**, not a shared list with
+imports: `GET /api/receipts` accepts a `type` filter, and each of
+Quality's two tabs is just that endpoint called with a fixed `type` —
+warehouse's type choice at intake is what routes the record to the
+correct tab, with no separate routing step needed.
+
+Samples also carry a field imports don't: **who sent the sample**
+(`Receipt.sample_sent_by`). It's optional at intake, but has an
+asymmetric edit rule rather than being simply "editable anytime": if
+warehouse captures it in the receiving step, either role can edit it
+afterward; if warehouse skips it, warehouse permanently loses the ability
+to add it — only Quality can fill the gap from then on
+(`PATCH /api/receipts/:id/sample-sender`). This mirrors Quality's real
+concern — the field must not silently stay blank forever — without
+letting warehouse backfill it after the fact from memory.
 
 ### 1.10 No notification mechanism exists at all
 **Today:** nothing pushes an alert to either side; Quality finds out about
@@ -310,6 +325,7 @@ Receipt
   supplier_id
   created_by            (warehouse user)
   status                derived from its lines/batches
+  sample_sent_by         nullable, sample-only — see §1.9 for the edit rule
 
 ReceiptLine
   id

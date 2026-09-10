@@ -16,6 +16,7 @@ import type {
   ReceiptBatch,
   ReceiptLine,
   Role,
+  SetSampleSenderInput,
   SpecWithParameters,
 } from "../types";
 
@@ -28,6 +29,7 @@ interface ReceiptWithDetail {
   created_by: string;
   status: string;
   created_at: string;
+  sample_sent_by: string | null;
   lines: Array<ReceiptLine & { batches: Partial<ReceiptBatch>[]; spec: SpecWithParameters | null }>;
 }
 
@@ -37,15 +39,18 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
   if (!input.lines?.length) {
     return error("A receipt needs at least one line");
   }
+  if (input.sample_sent_by && input.type !== "sample") {
+    return error("sample_sent_by only applies to sample receipts");
+  }
   const supplier = await getSupplierByCode(env, input.supplier_code);
   if (!supplier) return error(`Unknown supplier code: ${input.supplier_code}`, 404);
 
   const receiptRow = await env.DB.prepare(
-    `INSERT INTO receipts (type, received_at, supplier_id, created_by, status)
-     VALUES (?, ?, ?, ?, 'pending')
+    `INSERT INTO receipts (type, received_at, supplier_id, created_by, status, sample_sent_by)
+     VALUES (?, ?, ?, ?, 'pending', ?)
      RETURNING id`
   )
-    .bind(input.type, input.received_at, supplier.id, input.created_by)
+    .bind(input.type, input.received_at, supplier.id, input.created_by, input.sample_sent_by ?? null)
     .first<{ id: number }>();
   const receiptId = receiptRow!.id;
 
@@ -82,14 +87,27 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
   return json({ id: receiptId }, 201);
 }
 
+/** `type` is how Quality's two tabs (Imports / Samples) are implemented —
+ *  each tab is just this endpoint called with a fixed `type` filter. */
 export async function listReceipts(request: Request, env: Env, role: Role): Promise<Response> {
   const url = new URL(request.url);
   const status = url.searchParams.get("status");
+  const type = url.searchParams.get("type");
 
-  const rows = await env.DB.prepare(
-    `SELECT * FROM receipts ${status ? "WHERE status = ?" : ""} ORDER BY created_at DESC LIMIT 200`
-  )
-    .bind(...(status ? [status] : []))
+  const conditions: string[] = [];
+  const params: string[] = [];
+  if (status) {
+    conditions.push("status = ?");
+    params.push(status);
+  }
+  if (type) {
+    conditions.push("type = ?");
+    params.push(type);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const rows = await env.DB.prepare(`SELECT * FROM receipts ${where} ORDER BY created_at DESC LIMIT 200`)
+    .bind(...params)
     .all();
 
   return json(rows.results?.map((r) => redactReceiptSummaryForRole(r, role)) ?? []);
@@ -260,6 +278,35 @@ export async function finalizeWeight(request: Request, env: Env, batchId: number
     .run();
 
   return json({ id: batchId, qty_actual_weighed: input.qty_actual_weighed });
+}
+
+/** Who sent the sample. If warehouse didn't capture it at receiving time
+ *  (createReceipt), warehouse permanently loses the ability to add it —
+ *  only Quality can fill the gap. Once a value exists, either role can
+ *  edit it at any time. */
+export async function setSampleSender(
+  request: Request,
+  env: Env,
+  role: Role,
+  receiptId: number
+): Promise<Response> {
+  const input = await request.json<SetSampleSenderInput>();
+  if (!input.sample_sent_by) return error("sample_sent_by is required");
+
+  const receipt = await env.DB.prepare("SELECT type, sample_sent_by FROM receipts WHERE id = ?")
+    .bind(receiptId)
+    .first<{ type: string; sample_sent_by: string | null }>();
+  if (!receipt) return error("Receipt not found", 404);
+  if (receipt.type !== "sample") return error("sample_sent_by only applies to sample receipts", 400);
+  if (role === "warehouse" && receipt.sample_sent_by === null) {
+    return error("Warehouse can only set this at receiving time — ask Quality to add it now", 403);
+  }
+
+  await env.DB.prepare("UPDATE receipts SET sample_sent_by = ? WHERE id = ?")
+    .bind(input.sample_sent_by, receiptId)
+    .run();
+
+  return json({ id: receiptId, sample_sent_by: input.sample_sent_by });
 }
 
 /** Quality resolves an uncoded receipt line ("Associate a Code") either by

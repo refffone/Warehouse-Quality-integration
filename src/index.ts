@@ -20,6 +20,7 @@ import {
   finalizeWeight,
   getReceipt,
   listReceipts,
+  setSampleSender,
 } from "./routes/receipts";
 import { createSpec, getSubtypeSpecTemplate, listSpecs, setSubtypeSpecTemplate } from "./routes/specs";
 import { runExpiryCheck } from "./scheduled";
@@ -101,6 +102,12 @@ export default {
       if (receiptMatch && method === "GET") {
         if (!role) return error("Missing X-Role header", 401);
         return getReceipt(env, role, Number(receiptMatch[1]));
+      }
+
+      const sampleSenderMatch = pathname.match(/^\/api\/receipts\/(\d+)\/sample-sender$/);
+      if (sampleSenderMatch && method === "PATCH") {
+        if (!role) return error("Missing X-Role header", 401);
+        return setSampleSender(request, env, role, Number(sampleSenderMatch[1]));
       }
 
       // Test Incomings — Quality's third core function.

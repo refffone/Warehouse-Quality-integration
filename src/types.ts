@@ -57,6 +57,8 @@ export interface Receipt {
   created_by: string;
   status: ReceiptStatus;
   created_at: string;
+  /** Who physically sent the sample. Only meaningful when type is "sample". */
+  sample_sent_by: string | null;
 }
 
 export type ImportScenario = "new_material" | "new_supplier" | "new_name_variant" | "repeat";
@@ -107,6 +109,13 @@ export interface NewReceiptInput {
   supplier_code: string;
   created_by: string;
   lines: NewReceiptLineInput[];
+  /** Sample tab only. If omitted here, warehouse loses the ability to add
+   *  it later — only Quality can fill it in after the fact. */
+  sample_sent_by?: string | null;
+}
+
+export interface SetSampleSenderInput {
+  sample_sent_by: string;
 }
 
 export interface BatchDecisionInput {
