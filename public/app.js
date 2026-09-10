@@ -92,11 +92,12 @@ async function getSubtypes(force = false) {
 const ROUTES = {
   warehouse: [
     { id: "receive", label: "Receive" },
-    { id: "imports", label: "Imports" },
-    { id: "samples", label: "Samples" },
+    { id: "todo", label: "To Do" },
+    { id: "history", label: "History" },
   ],
   quality: [
-    { id: "incomings", label: "Test Incomings" },
+    { id: "todo", label: "To Do" },
+    { id: "history", label: "History" },
     { id: "codes", label: "Codes" },
     { id: "specs", label: "Specifications" },
   ],
@@ -371,7 +372,7 @@ function batchStatusInline(b) {
   return `${statusPill(b.status)}${b.internal_batch_no ? ` <span class="mono small">${esc(b.internal_batch_no)}</span>` : ""}`;
 }
 
-async function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
+function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
   const spec = line.spec;
   const specHtml = spec
     ? `<span class="spec-chip">Spec v${spec.version}: ${spec.parameters
@@ -404,7 +405,7 @@ async function renderLineDetail(line, { role, receiptType, canFinalize, canDecid
       return `
         <div class="batch-row">
           <div><span class="batch-id">${esc(b.supplier_batch_no)}</span> <span class="batch-qty">${qtyLine} ${esc(line.unit)}</span></div>
-          <div style="display:flex; align-items:center; gap:8px;">
+          <div class="hstack">
             ${b.expiry_date ? `<span class="small muted">exp ${fmtDate(b.expiry_date)}</span>` : ""}
             ${batchStatusInline(b)}
             ${actions.join("")}
@@ -420,7 +421,7 @@ async function renderLineDetail(line, { role, receiptType, canFinalize, canDecid
           ${esc(line.material_name_text)}
           ${line.material_code ? `<span class="code">${esc(line.material_code)}</span>` : `<span class="badge neutral">uncoded</span>`}
         </div>
-        <div style="display:flex; gap:8px; align-items:center;">
+        <div class="hstack">
           ${importBadge}
           ${specHtml}
           ${role === "quality" && !line.material_code ? `<button class="btn sm ghost" data-associate="${line.id}">Associate a Code</button>` : ""}
@@ -430,14 +431,56 @@ async function renderLineDetail(line, { role, receiptType, canFinalize, canDecid
     </div>`;
 }
 
-async function renderReceiptCard(receiptSummary, { role, type }) {
-  const receipt = await api.get(`/api/receipts/${receiptSummary.id}`);
+/** True if any field of this receipt (across its lines/batches) matches
+ *  the search text: Receipt #, Material Code, Supplier batch#, Internal
+ *  batch#, or Status (receipt- or batch-level). */
+function receiptMatchesQuery(receipt, query) {
+  if (!query) return true;
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const idMatch = String(receipt.id).includes(q) || `#${receipt.id}`.includes(q);
+  if (idMatch) return true;
+  if ((receipt.status || "").toLowerCase().includes(q)) return true;
+  for (const line of receipt.lines) {
+    if ((line.material_code || "").toLowerCase().includes(q)) return true;
+    for (const b of line.batches) {
+      if ((b.supplier_batch_no || "").toLowerCase().includes(q)) return true;
+      if ((b.internal_batch_no || "").toLowerCase().includes(q)) return true;
+      if ((b.status || "").toLowerCase().includes(q)) return true;
+    }
+  }
+  return false;
+}
+
+/** True while an import receipt still has an approved/partial batch that
+ *  hasn't been weighed yet — Quality may be fully "decided," but that's
+ *  still a to-do for Warehouse. */
+function receiptNeedsWeighIn(receipt) {
+  return receipt.lines.some((line) =>
+    line.batches.some((b) => (b.status === "approved" || b.status === "partial") && b.qty_actual_weighed == null)
+  );
+}
+
+async function fetchReceiptsBucket({ role, type, bucket }) {
+  const receipts = await api.get(`/api/receipts?${new URLSearchParams({ type })}`);
+  const full = await Promise.all(receipts.map((r) => api.get(`/api/receipts/${r.id}`)));
+  return full.filter((r) => {
+    const decidedByQuality = r.status === "decided";
+    // Warehouse's own to-do (weighing an approved batch) can outlive
+    // Quality's decision, so "decided" alone isn't enough to file it
+    // under History for them.
+    const stillOpen = role === "warehouse" ? !decidedByQuality || receiptNeedsWeighIn(r) : !decidedByQuality;
+    return bucket === "history" ? !stillOpen : stillOpen;
+  });
+}
+
+function buildReceiptCard(receipt, { role, type }) {
   const canDecide = role === "quality";
   const canFinalize = role === "warehouse" && type === "import";
 
-  const linesHtml = (
-    await Promise.all(receipt.lines.map((line) => renderLineDetail(line, { role, receiptType: type, canFinalize, canDecide })))
-  ).join("");
+  const linesHtml = receipt.lines
+    .map((line) => renderLineDetail(line, { role, receiptType: type, canFinalize, canDecide }))
+    .join("");
 
   const senderHtml =
     type === "sample"
@@ -456,7 +499,7 @@ async function renderReceiptCard(receiptSummary, { role, type }) {
         <div class="receipt-title">Receipt #${receipt.id} · ${supplierName(receipt.supplier_id)}</div>
         <div class="receipt-meta">${fmtDateTime(receipt.received_at)} · logged by ${esc(receipt.created_by)}</div>
       </div>
-      <div style="display:flex; align-items:center; gap:8px;">
+      <div class="hstack">
         ${role === "quality" || type !== "sample" ? statusPill(receipt.status) : ""}
       </div>
     </div>
@@ -479,8 +522,7 @@ async function renderReceiptCard(receiptSummary, { role, type }) {
         try {
           await api.patch(`/api/receipts/${receipt.id}/sample-sender`, { sample_sent_by: value });
           toast("Sample sender updated");
-          receipt.sample_sent_by = value;
-          renderReceiptListInto(card.parentElement, { role, type }); // refresh whole list to stay simple
+          refreshCurrentView();
         } catch (err) {
           toast(err.message, true);
         }
@@ -504,19 +546,24 @@ async function renderReceiptCard(receiptSummary, { role, type }) {
   return card;
 }
 
-async function renderReceiptListInto(container, { role, type, status }) {
+async function renderReceiptsInto(container, { role, type, bucket, query }) {
   container.innerHTML = `<div class="empty-state">Loading…</div>`;
   await getSuppliers();
-  const query = new URLSearchParams({ type });
-  if (status) query.set("status", status);
-  const receipts = await api.get(`/api/receipts?${query}`);
-  if (receipts.length === 0) {
-    container.innerHTML = `<div class="empty-state">No ${type === "sample" ? "samples" : "imports"} yet.</div>`;
+  const all = await fetchReceiptsBucket({ role, type, bucket });
+  const matches = all.filter((r) => receiptMatchesQuery(r, query));
+
+  if (all.length === 0) {
+    const noun = type === "sample" ? "samples" : "imports";
+    container.innerHTML = `<div class="empty-state">No ${bucket === "history" ? "decided" : "pending"} ${noun}.</div>`;
+    return;
+  }
+  if (matches.length === 0) {
+    container.innerHTML = `<div class="empty-state">No results for "${esc(query)}".</div>`;
     return;
   }
   container.innerHTML = "";
-  for (const r of receipts) {
-    container.appendChild(await renderReceiptCard(r, { role, type }));
+  for (const r of matches) {
+    container.appendChild(buildReceiptCard(r, { role, type }));
   }
 }
 
@@ -694,40 +741,63 @@ async function openAssociateModal(lineId, onDone) {
   });
 }
 
-// ---------------------------------------------------------------- view: warehouse receipts / quality incomings
+// ---------------------------------------------------------------- view: receipt buckets (To Do / History)
 
-let qualityIncomingsType = "import";
+// Remembers each role+bucket's last-used Imports/Samples toggle and search
+// text, so switching tabs and coming back doesn't lose your place.
+const listState = {};
+function getListState(role, bucket) {
+  const key = `${role}:${bucket}`;
+  if (!listState[key]) listState[key] = { type: "import", query: "" };
+  return listState[key];
+}
 
-/** Quality's single "Test Incomings" tab, with its own Imports/Samples
- *  subtabs — the two tabs Quality actually asked for. */
-async function viewIncomings({ role }) {
+const BUCKET_COPY = {
+  todo: {
+    warehouse: "Awaiting a Quality decision, or still needing an actual weight.",
+    quality: "Review and decide against spec.",
+  },
+  history: {
+    warehouse: "Decided by Quality, and nothing left for you to do.",
+    quality: "Receipts Quality has finished deciding.",
+  },
+};
+
+async function viewReceiptBucket({ role, bucket }) {
+  const state = getListState(role, bucket);
   const view = document.getElementById("view");
+  const title = bucket === "history" ? "History" : "To Do";
+
   view.innerHTML = `
-    <div class="view-head"><div><h1>Test Incomings</h1><p>Review and decide against spec.</p></div></div>
-    <div class="subtabs">
-      <button class="subtab-btn${qualityIncomingsType === "import" ? " active" : ""}" data-t="import">Imports</button>
-      <button class="subtab-btn${qualityIncomingsType === "sample" ? " active" : ""}" data-t="sample">Samples</button>
+    <div class="view-head"><div><h1>${title}</h1><p>${BUCKET_COPY[bucket][role]}</p></div></div>
+    <div class="list-controls">
+      <div class="subtabs">
+        <button class="subtab-btn${state.type === "import" ? " active" : ""}" data-t="import">Imports</button>
+        <button class="subtab-btn${state.type === "sample" ? " active" : ""}" data-t="sample">Samples</button>
+      </div>
+      <input type="search" class="search-input" id="receipt-search"
+        placeholder="Search receipt #, material code, batch #, status…" value="${esc(state.query)}" />
     </div>
     <div id="receipt-list"></div>
   `;
+
   view.querySelectorAll("[data-t]").forEach((btn) =>
     btn.addEventListener("click", () => {
-      qualityIncomingsType = btn.dataset.t;
-      viewIncomings({ role });
+      state.type = btn.dataset.t;
+      viewReceiptBucket({ role, bucket });
     })
   );
-  await renderReceiptListInto(document.getElementById("receipt-list"), { role, type: qualityIncomingsType });
-}
 
-/** Warehouse's Imports and Samples are already separate top-level tabs, so
- *  this view has no subtabs of its own — that would just duplicate them. */
-async function viewWarehouseReceipts({ role, type }) {
-  const view = document.getElementById("view");
-  view.innerHTML = `
-    <div class="view-head"><div><h1>${type === "sample" ? "Samples" : "Imports"}</h1><p>Track what you've registered.</p></div></div>
-    <div id="receipt-list"></div>
-  `;
-  await renderReceiptListInto(document.getElementById("receipt-list"), { role, type });
+  let debounceTimer;
+  document.getElementById("receipt-search").addEventListener("input", (e) => {
+    state.query = e.target.value;
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query });
+    }, 150);
+  });
+
+  await renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query });
 }
 
 // ---------------------------------------------------------------- view: Codes
@@ -742,10 +812,10 @@ async function viewCodes() {
     <div class="card">
       <h3 style="margin-bottom:12px">Material types &amp; subtypes</h3>
       <div class="field-row">
-        <table class="data-table" style="flex:1"><thead><tr><th>Type</th><th>Name</th></tr></thead>
-          <tbody>${types.map((t) => `<tr><td class="mono">${esc(t.code)}</td><td>${esc(t.name)}</td></tr>`).join("") || `<tr><td colspan="2" class="muted">None yet</td></tr>`}</tbody></table>
-        <table class="data-table" style="flex:1"><thead><tr><th>Subtype</th><th>Type</th><th>Name</th></tr></thead>
-          <tbody>${subtypes.map((s) => `<tr><td class="mono">${esc(s.code)}</td><td class="mono">${esc(s.type_code)}</td><td>${esc(s.name)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">None yet</td></tr>`}</tbody></table>
+        <div class="table-scroll" style="flex:1"><table class="data-table"><thead><tr><th>Type</th><th>Name</th></tr></thead>
+          <tbody>${types.map((t) => `<tr><td class="mono">${esc(t.code)}</td><td>${esc(t.name)}</td></tr>`).join("") || `<tr><td colspan="2" class="muted">None yet</td></tr>`}</tbody></table></div>
+        <div class="table-scroll" style="flex:1"><table class="data-table"><thead><tr><th>Subtype</th><th>Type</th><th>Name</th></tr></thead>
+          <tbody>${subtypes.map((s) => `<tr><td class="mono">${esc(s.code)}</td><td class="mono">${esc(s.type_code)}</td><td>${esc(s.name)}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">None yet</td></tr>`}</tbody></table></div>
       </div>
       <div class="field-row" style="margin-top:14px">
         <form class="form-grid" id="new-type-form" style="flex:1">
@@ -766,14 +836,14 @@ async function viewCodes() {
 
     <div class="card">
       <h3 style="margin-bottom:12px">Materials</h3>
-      <table class="data-table"><thead><tr><th>Code</th><th>Name</th><th>Unit</th><th>Type/Subtype</th><th>Expiry?</th></tr></thead>
+      <div class="table-scroll"><table class="data-table"><thead><tr><th>Code</th><th>Name</th><th>Unit</th><th>Type/Subtype</th><th>Expiry?</th></tr></thead>
         <tbody>${
           materials
             .map(
               (m) => `<tr><td class="mono">${esc(m.code)}</td><td>${esc(m.name)}</td><td>${esc(m.unit)}</td><td>${esc(m.type_code || "—")}${m.subtype_code ? " / " + esc(m.subtype_code) : ""}</td><td>${m.requires_expiry ? "Yes" : "No"}</td></tr>`
             )
             .join("") || `<tr><td colspan="5" class="muted">None yet</td></tr>`
-        }</tbody></table>
+        }</tbody></table></div>
       <form class="form-grid" id="new-material-form" style="margin-top:14px">
         <b class="small">New / edit material</b>
         <div class="field-row">
@@ -1076,15 +1146,12 @@ async function renderView() {
     if (role === "warehouse" && tab === "receive") {
       lastRouteArgs = { fn: viewReceive, args: undefined };
       await viewReceive();
-    } else if (role === "warehouse" && tab === "imports") {
-      lastRouteArgs = { fn: viewWarehouseReceipts, args: { role, type: "import" } };
-      await viewWarehouseReceipts({ role, type: "import" });
-    } else if (role === "warehouse" && tab === "samples") {
-      lastRouteArgs = { fn: viewWarehouseReceipts, args: { role, type: "sample" } };
-      await viewWarehouseReceipts({ role, type: "sample" });
-    } else if (role === "quality" && tab === "incomings") {
-      lastRouteArgs = { fn: viewIncomings, args: { role } };
-      await viewIncomings({ role });
+    } else if (tab === "todo") {
+      lastRouteArgs = { fn: viewReceiptBucket, args: { role, bucket: "todo" } };
+      await viewReceiptBucket({ role, bucket: "todo" });
+    } else if (tab === "history") {
+      lastRouteArgs = { fn: viewReceiptBucket, args: { role, bucket: "history" } };
+      await viewReceiptBucket({ role, bucket: "history" });
     } else if (role === "quality" && tab === "codes") {
       lastRouteArgs = { fn: viewCodes };
       await viewCodes();

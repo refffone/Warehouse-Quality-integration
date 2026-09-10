@@ -453,26 +453,49 @@ IBM Plex Sans/Mono for body and codes. Chosen from three researched
 directions (aurora/mesh-gradient trend, Attio's card style, calm-clinical
 lab UI restraint) presented as a moodboard and picked by the user.
 
-Screens: Warehouse (Receive, Imports, Samples) and Quality (Test
-Incomings with Imports/Samples subtabs, Codes, Specifications), plus a
-shared notification bell. Covers the full loop end-to-end: register →
-notify → decide/associate-code → finalize weight → both roles see the
-result, including the sample-sender asymmetric-edit rule (§1.9) and the
-sample-status redaction it depends on.
+Screens: Warehouse (Receive, To Do, History) and Quality (To Do, History,
+Codes, Specifications), each To Do/History screen with an Imports/Samples
+toggle and a live search box, plus a shared notification bell. Covers the
+full loop end-to-end: register → notify → decide/associate-code →
+finalize weight → both roles see the result, including the sample-sender
+asymmetric-edit rule (§1.9) and the sample-status redaction it depends on.
+
+**To Do vs. History**: a receipt files under History only once nothing
+remains for the *current role* to act on — not just once Quality has
+decided. Quality's split is a straight read of `receipt.status`
+(`decided` → History). Warehouse's is role-aware: a receipt Quality has
+fully decided still counts as Warehouse's to-do if any approved/partial
+batch hasn't been weighed yet (`receiptNeedsWeighIn` in `app.js`) — caught
+during testing, when a receipt that should still need weighing
+disappeared into History the moment Quality finished with it.
+
+**Search**: filters the already-fetched receipts (each To Do/History
+screen fetches full detail for every receipt in view anyway, to compute
+the bucket split and render cards) across receipt #, material code,
+supplier batch #, internal batch #, and status (receipt- or batch-level)
+— no server round-trip per keystroke, debounced 150ms client-side.
 
 Verified in a real browser (Playwright + the sandbox's Chromium) at both
 desktop and phone width, seeded with realistic data through every screen
-and modal. Caught and fixed two real bugs this way: a stray quote turning
-a boolean data-attribute into a bad attribute name (broke two
-"remove row" buttons), and `.field`/`.form-grid` setting `display: flex`
-at the same specificity as the browser's default `[hidden] { display:
-none }` rule, silently defeating every `hidden`-attribute toggle in the
-app — fixed with an explicit `[hidden] { display: none !important; }`
-rule. Google Fonts failed to load only inside this sandbox's restricted
-network egress (confirmed via failed-request capture) — not a real
-deployment issue, since Cloudflare Workers serves to the open internet
-with no such restriction; the font stack's fallback still rendered a
-clean, legible page in the meantime.
+and modal, across two review passes. Caught and fixed four real bugs this
+way:
+- A stray quote turning a boolean data-attribute into a bad attribute
+  name, twice (broke "remove row" buttons in two different forms).
+- `.field`/`.form-grid` setting `display: flex` at the same specificity
+  as the browser's default `[hidden] { display: none }` rule, silently
+  defeating every `hidden`-attribute toggle in the app — fixed with an
+  explicit `[hidden] { display: none !important; }` rule.
+- The mobile "stack every field to full width" rule losing the same kind
+  of specificity fight against `.field-row .field`'s `flex: 1` shorthand
+  (which sets `flex-basis: 0%` as part of the shorthand) — needed
+  `!important` for the same reason.
+- The To Do/History bug described above.
+
+Google Fonts failed to load only inside this sandbox's restricted network
+egress (confirmed via failed-request capture) — not a real deployment
+issue, since Cloudflare Workers serves to the open internet with no such
+restriction; the font stack's fallback still rendered a clean, legible
+page in the meantime.
 
 **Not yet built**: auth beyond the `X-Role` stand-in, COA/label
 attachment upload (R2 is wired but no UI or endpoint touches it), the

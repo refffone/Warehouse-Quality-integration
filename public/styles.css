@@ -154,6 +154,22 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .subtab-btn.active { color: var(--ink); border-bottom-color: var(--accent); }
 .subtab-btn .count { font-family: var(--font-mono); font-size: 0.68rem; color: var(--ink-faint); margin-left: 4px; }
 
+.list-controls {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
+  padding-bottom: 12px; border-bottom: 1px solid var(--rule);
+}
+.list-controls .subtabs { border-bottom: none; }
+.search-input {
+  background: var(--surface); border: 1px solid var(--rule-strong); border-radius: 999px;
+  padding: 8px 14px; font-size: 0.84rem; color: var(--ink); min-width: 220px; flex: 1; max-width: 360px;
+}
+.search-input::placeholder { color: var(--ink-faint); }
+
+/* generic wrapping horizontal row — used anywhere a set of chips/buttons
+   sits on one line on desktop but must fall to multiple lines on mobile
+   instead of overflowing or clipping */
+.hstack { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
 /* ---------- cards ---------- */
 .card {
   background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-lg);
@@ -206,7 +222,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .btn.primary { background: var(--accent); color: var(--accent-ink); }
 .btn.ghost { background: transparent; border-color: var(--rule-strong); color: var(--ink-muted); }
 .btn.danger { background: var(--bad-bg); color: var(--bad); }
-.btn.sm { padding: 5px 10px; font-size: 0.76rem; }
+.btn.sm { padding: 7px 12px; font-size: 0.76rem; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ---------- forms ---------- */
@@ -226,7 +242,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .repeatable-item { border: 1px dashed var(--rule-strong); border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .repeatable-item-head { display: flex; justify-content: space-between; align-items: center; }
 
-table.data-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.table-scroll { overflow-x: auto; }
+table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; font-size: 0.84rem; }
 .data-table th { text-align: left; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); padding: 6px 8px; border-bottom: 1px solid var(--rule); }
 .data-table td { padding: 8px; border-bottom: 1px solid var(--rule); vertical-align: top; }
 .data-table tr:last-child td { border-bottom: none; }
@@ -270,7 +287,29 @@ table.data-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
 .small { font-size: 0.78rem; }
 
 @media (max-width: 640px) {
-  .topbar { gap: 12px; }
-  .tabs { order: 3; width: 100%; }
+  body { font-size: 14.5px; }
+  .shell { padding-inline: 16px; }
+
+  .topbar { gap: 10px; padding-block: 14px; margin-bottom: 20px; }
+  .tabs { order: 3; width: 100%; gap: 2px; }
+  .tab-btn { padding: 7px 11px; font-size: 0.82rem; }
+  .brand-name { font-size: 1.05rem; }
+  .top-actions { gap: 10px; margin-left: auto; }
+  .role-switch span { display: none; }
+
+  .card { padding: 14px 16px; }
   .receipt-card-top, .line-head { flex-direction: column; align-items: flex-start; }
+  .batch-row { flex-direction: column; align-items: flex-start; gap: 6px; }
+  .batch-row .hstack { width: 100%; }
+
+  .list-controls { gap: 10px; }
+  .search-input { min-width: 0; max-width: none; width: 100%; }
+
+  .modal { padding: 16px; max-height: 92vh; }
+  .modal-head h2 { font-size: 1rem; }
+
+  .notif-panel { left: 16px; right: 16px; width: auto; top: 64px; }
+
+  .field-row { gap: 10px; }
+  .field-row > * { min-width: 0 !important; flex-basis: 100% !important; }
 }
