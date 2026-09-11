@@ -115,7 +115,14 @@ function currentRoute() {
   const hash = location.hash.replace(/^#\/?/, "");
   const [role, tab] = hash.split("/");
   if (role === getRole() && ROUTES[role]?.some((r) => r.id === tab)) return tab;
-  return ROUTES[getRole()][0].id;
+  // Invalid or role-mismatched hash (e.g. a stale/bookmarked link, or a role
+  // switch): fall back to this role's first tab, and correct the address bar
+  // to match what's actually rendered — otherwise the URL keeps claiming a
+  // screen (like #quality/masterdata) that was never reached.
+  const fallback = ROUTES[getRole()][0].id;
+  const correctedHash = `#${getRole()}/${fallback}`;
+  if (location.hash !== correctedHash) history.replaceState(null, "", correctedHash);
+  return fallback;
 }
 
 function goTo(tab) {
