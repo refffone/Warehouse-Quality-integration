@@ -252,26 +252,33 @@ async function refreshTodoCount() {
 }
 
 async function toggleNotifPanel() {
+  const btn = document.getElementById("notif-btn");
   const existing = document.querySelector(".notif-panel");
   if (existing) {
     existing.remove();
+    btn.classList.remove("open");
     return;
   }
   const list = await api.get("/api/notifications");
   const panel = document.createElement("div");
   panel.className = "notif-panel";
-  panel.innerHTML = list.length
-    ? list
-        .map(
-          (n) => `
+  panel.innerHTML = `
+    <div class="notif-panel-head">${esc(t("topbar.notifications"))}</div>
+    <div class="notif-panel-list">${
+      list.length
+        ? list
+            .map(
+              (n) => `
       <div class="notif-item${n.read_at ? "" : " unread"}" data-id="${n.id}">
         ${esc(n.message)}
         <span class="when">${fmtDateTime(n.created_at)} · ${esc(t(`notif.kind.${n.kind}`))}</span>
       </div>`
-        )
-        .join("")
-    : emptyState(icons.bell, t("notif.empty"));
+            )
+            .join("")
+        : emptyState(icons.bell, t("notif.empty"))
+    }</div>`;
   document.body.appendChild(panel);
+  btn.classList.add("open");
   panel.querySelectorAll("[data-id]").forEach((item) =>
     item.addEventListener("click", async () => {
       await api.post(`/api/notifications/${item.dataset.id}/read`, {});
@@ -285,6 +292,7 @@ async function toggleNotifPanel() {
       function onDoc(e) {
         if (!panel.contains(e.target) && e.target.id !== "notif-btn") {
           panel.remove();
+          btn.classList.remove("open");
           document.removeEventListener("click", onDoc);
         }
       },
