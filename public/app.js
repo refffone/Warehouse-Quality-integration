@@ -1,6 +1,6 @@
 import { api, getRememberedName, rememberName, uploadFile } from "./api.js";
 import { t, getLang, setLang, applyDocumentDirection } from "./i18n.js";
-import { navIcon } from "./icons.js";
+import { navIcon, icons } from "./icons.js";
 
 // ---------------------------------------------------------------- session
 //
@@ -55,8 +55,8 @@ function nowLocalInput() {
 function toast(message, isError = false) {
   const root = document.getElementById("toast-root");
   const el = document.createElement("div");
-  el.className = "toast" + (isError ? " error" : "");
-  el.textContent = message;
+  el.className = "toast" + (isError ? " error" : " success");
+  el.innerHTML = `<span class="toast-icon">${isError ? icons.alertCircle : icons.check}</span><span>${esc(message)}</span>`;
   root.appendChild(el);
   setTimeout(() => el.remove(), 4000);
 }
@@ -70,8 +70,8 @@ function openModal(titleHtml, bodyHtml) {
   root.innerHTML = `
     <div class="modal-backdrop" data-close>
       <div class="modal" role="dialog" aria-modal="true">
-        <div class="modal-head"><h2>${titleHtml}</h2><button class="icon-btn" data-close>✕</button></div>
-        ${bodyHtml}
+        <div class="modal-head"><h2>${titleHtml}</h2><button class="icon-btn" data-close>${icons.x}</button></div>
+        <div class="modal-body">${bodyHtml}</div>
       </div>
     </div>`;
   root.querySelectorAll("[data-close]").forEach((elm) =>
