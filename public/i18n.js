@@ -326,6 +326,16 @@ const translations = {
     "error.screenLoadFailed": "Couldn't load this screen: {message}",
     "error.requestFailed": "Request failed ({status})",
     "error.uploadFailed": "Upload failed ({status})",
+
+    "reports.export": "Export",
+    "reports.pdf": "PDF",
+    "reports.excel": "Excel",
+    "reports.periodToday": "Today",
+    "reports.periodWeek": "This week",
+    "reports.periodMonth": "This month",
+    "reports.periodCustom": "Custom day",
+    "reports.pickDate": "Pick a date",
+    "reports.selectDateFirst": "Pick a date first",
   },
   ar: {
     "common.save": "حفظ",
@@ -632,6 +642,16 @@ const translations = {
     "error.screenLoadFailed": "تعذّر تحميل هذه الشاشة: {message}",
     "error.requestFailed": "فشل الطلب ({status})",
     "error.uploadFailed": "فشل الرفع ({status})",
+
+    "reports.export": "تصدير",
+    "reports.pdf": "PDF",
+    "reports.excel": "Excel",
+    "reports.periodToday": "اليوم",
+    "reports.periodWeek": "هذا الأسبوع",
+    "reports.periodMonth": "هذا الشهر",
+    "reports.periodCustom": "يوم محدد",
+    "reports.pickDate": "اختر تاريخًا",
+    "reports.selectDateFirst": "اختر تاريخًا أولاً",
   },
 };
 

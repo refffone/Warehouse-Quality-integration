@@ -231,11 +231,19 @@ function passRate(approved: number, rejected: number): number | null {
  *  received under, its full spec history, its import history split into
  *  novel (RMF) vs repeat (RMS) events with each event's batches/attachments,
  *  and pass-rate metrics overall and per supplier. */
+export type MaterialDossier = Awaited<ReturnType<typeof getMaterialDossierData>>;
+
 export async function getMaterialDossier(env: Env, materialCode: string): Promise<Response> {
+  const dossier = await getMaterialDossierData(env, materialCode);
+  if (!dossier) return error("Material not found", 404);
+  return json(dossier);
+}
+
+export async function getMaterialDossierData(env: Env, materialCode: string) {
   const material = await env.DB.prepare("SELECT * FROM materials WHERE code = ?")
     .bind(materialCode)
     .first<Material>();
-  if (!material) return error("Material not found", 404);
+  if (!material) return null;
 
   const namesRows = await env.DB.prepare(
     `SELECT rl.material_name_text as name, COUNT(*) as count, MAX(r.received_at) as last_received_at
@@ -299,14 +307,14 @@ export async function getMaterialDossier(env: Env, materialCode: string): Promis
     pass_rate: passRate(row.approved, row.rejected),
   }));
 
-  return json({
+  return {
     material,
     names: namesRows.results ?? [],
     specs,
     rmf,
     rms,
     metrics: { overall, by_supplier: bySupplier },
-  });
+  };
 }
 
 async function getImportEntries(

@@ -195,6 +195,19 @@ button, input, select, textarea { font: inherit; color: inherit; }
    instead of overflowing or clipping */
 .hstack { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 
+/* ---------- report export bar ---------- */
+.export-bar { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rule); }
+.export-bar .subtabs { border-bottom: none; }
+.export-bar input[type="date"] {
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--rule-strong);
+  font-size: 0.82rem;
+  font-family: inherit;
+  color: var(--ink);
+  background: var(--surface);
+}
+
 /* ---------- wizard steps ---------- */
 .wizard-steps { display: flex; align-items: center; gap: 10px; font-size: 0.84rem; color: var(--ink-faint); flex-wrap: wrap; }
 .wizard-step { display: flex; align-items: center; gap: 7px; }

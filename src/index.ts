@@ -1,5 +1,13 @@
 import { error, getRole, json } from "./http";
-import { adminGetStatus, adminPage, adminSetStatus, getServiceStatus, suspendedResponse } from "./routes/admin";
+import {
+  adminGetBranding,
+  adminGetStatus,
+  adminPage,
+  adminSetBranding,
+  adminSetStatus,
+  getServiceStatus,
+  suspendedResponse,
+} from "./routes/admin";
 import {
   createSupplier,
   getMaterialDossier,
@@ -36,6 +44,15 @@ import {
   recordTestResults,
   setSampleSender,
 } from "./routes/receipts";
+import {
+  exportCodeSpec,
+  exportCodesList,
+  exportHistory,
+  exportMasterData,
+  exportReceivedLog,
+  exportSuppliersList,
+  exportTodos,
+} from "./routes/reports";
 import { createSpec, getSubtypeSpecTemplate, listSpecs, setSubtypeSpecTemplate } from "./routes/specs";
 import { runExpiryCheck } from "./scheduled";
 import type { Env } from "./types";
@@ -55,6 +72,8 @@ export default {
       if (pathname === "/admin" && method === "GET") return adminPage(request, env);
       if (pathname === "/admin/api/status" && method === "GET") return adminGetStatus(request, env);
       if (pathname === "/admin/api/status" && method === "POST") return adminSetStatus(request, env);
+      if (pathname === "/admin/api/branding" && method === "GET") return adminGetBranding(request, env);
+      if (pathname === "/admin/api/branding" && method === "POST") return adminSetBranding(request, env);
 
       if ((await getServiceStatus(env)) === "suspended") {
         return suspendedResponse(pathname);
@@ -231,6 +250,38 @@ export default {
       if (coaMatch && method === "GET") {
         if (role !== "quality") return error("Only quality can export a COA", 403);
         return downloadCoa(env, Number(coaMatch[1]), url.searchParams.get("format") ?? "pdf");
+      }
+
+      // Reports — export as PDF/Excel, branded from Admin panel settings.
+      if (pathname === "/api/reports/received-log" && method === "GET") {
+        if (role !== "warehouse") return error("Only warehouse can export the received log", 403);
+        return exportReceivedLog(request, env);
+      }
+      if (pathname === "/api/reports/todos" && method === "GET") {
+        if (role !== "quality") return error("Only quality can export this report", 403);
+        return exportTodos(request, env);
+      }
+      if (pathname === "/api/reports/history" && method === "GET") {
+        if (role !== "quality") return error("Only quality can export this report", 403);
+        return exportHistory(request, env);
+      }
+      const reportSpecMatch = pathname.match(/^\/api\/reports\/spec\/([^/]+)$/);
+      if (reportSpecMatch && method === "GET") {
+        if (role !== "quality") return error("Only quality can export this report", 403);
+        return exportCodeSpec(request, env, decodeURIComponent(reportSpecMatch[1]));
+      }
+      const reportMasterDataMatch = pathname.match(/^\/api\/reports\/master-data\/([^/]+)$/);
+      if (reportMasterDataMatch && method === "GET") {
+        if (role !== "quality") return error("Only quality can export this report", 403);
+        return exportMasterData(request, env, decodeURIComponent(reportMasterDataMatch[1]));
+      }
+      if (pathname === "/api/reports/suppliers" && method === "GET") {
+        if (role !== "quality") return error("Only quality can export this report", 403);
+        return exportSuppliersList(request, env);
+      }
+      if (pathname === "/api/reports/codes" && method === "GET") {
+        if (role !== "quality") return error("Only quality can export this report", 403);
+        return exportCodesList(request, env);
       }
 
       // Notifications

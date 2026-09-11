@@ -491,6 +491,130 @@ function openResultsModal(results) {
   );
 }
 
+// ---------------------------------------------------------------- reports (PDF/Excel export)
+
+/** Generic branded-report download — same fetch/blob/object-URL pattern as
+ *  downloadCoa, parameterized by report path + query params instead of a
+ *  batch id, since every export screen shares this exact mechanic. */
+async function downloadReport(reportPath, params, fallbackName) {
+  try {
+    const qs = new URLSearchParams(params).toString();
+    const res = await fetch(`/api/reports/${reportPath}?${qs}`, { headers: { "x-role": getRole() } });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || t("download.failed", { status: res.status }));
+    }
+    const blob = await res.blob();
+    const match = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") || "");
+    const filename = match ? match[1] : fallbackName;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+/** Local-calendar-day boundaries as ISO strings, computed in the browser
+ *  so "today"/"this week"/"this month" always match the viewer's own
+ *  clock — the backend just filters a from/to range, no timezone logic
+ *  on the server side at all. Weeks start Monday. */
+function periodRange(period, customDateStr) {
+  const now = new Date();
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+  const endOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+  let from, to;
+  if (period === "week") {
+    const day = now.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + mondayOffset);
+    from = startOfDay(monday);
+    to = endOfDay(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6));
+  } else if (period === "month") {
+    from = startOfDay(new Date(now.getFullYear(), now.getMonth(), 1));
+    to = endOfDay(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+  } else if (period === "custom" && customDateStr) {
+    const [y, m, d] = customDateStr.split("-").map(Number);
+    from = startOfDay(new Date(y, m - 1, d));
+    to = endOfDay(new Date(y, m - 1, d));
+  } else {
+    from = startOfDay(now);
+    to = endOfDay(now);
+  }
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
+/** Export toolbar markup — an optional period picker (Today/Week/Month/
+ *  custom date) plus PDF/Excel buttons, reused identically across every
+ *  report (Received Log, To Do, History, Code Spec, Master Data,
+ *  Suppliers, Codes) instead of building this seven times. */
+function exportBarHtml(id, { withPeriod }) {
+  const periodHtml = withPeriod
+    ? `
+      <div class="subtabs" id="${id}-period">
+        <button class="subtab-btn active" data-period="today">${esc(t("reports.periodToday"))}</button>
+        <button class="subtab-btn" data-period="week">${esc(t("reports.periodWeek"))}</button>
+        <button class="subtab-btn" data-period="month">${esc(t("reports.periodMonth"))}</button>
+        <button class="subtab-btn" data-period="custom">${esc(t("reports.periodCustom"))}</button>
+      </div>
+      <input type="date" id="${id}-custom-date" class="small" hidden />`
+    : "";
+  return `
+    <div class="export-bar hstack" id="${id}">
+      <span class="small muted">${esc(t("reports.export"))}</span>
+      ${periodHtml}
+      <button type="button" class="btn ghost sm" data-export="pdf">${esc(t("reports.pdf"))}</button>
+      <button type="button" class="btn ghost sm" data-export="xlsx">${esc(t("reports.excel"))}</button>
+    </div>`;
+}
+
+/** Wires an exportBarHtml() instance. `getParams()` is called fresh at
+ *  click time (not snapshotted at render time) so filters that can change
+ *  after the bar renders — like the Codes List's live filters — are
+ *  always read as-of the click, not as-of the page load. */
+function wireExportBar(id, reportPathOrFn, { withPeriod, getParams, filenamePrefix }) {
+  const bar = document.getElementById(id);
+  if (!bar) return;
+  let period = "today";
+  let customDate = "";
+
+  if (withPeriod) {
+    const periodButtons = document.getElementById(`${id}-period`);
+    const customInput = document.getElementById(`${id}-custom-date`);
+    periodButtons.querySelectorAll("[data-period]").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        period = btn.dataset.period;
+        periodButtons.querySelectorAll("[data-period]").forEach((b) => b.classList.toggle("active", b === btn));
+        customInput.hidden = period !== "custom";
+        if (period === "custom") customInput.focus();
+      })
+    );
+    customInput.addEventListener("change", () => {
+      customDate = customInput.value;
+    });
+  }
+
+  bar.querySelectorAll("[data-export]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (withPeriod && period === "custom" && !customDate) {
+        toast(t("reports.selectDateFirst"), true);
+        return;
+      }
+      const format = btn.dataset.export;
+      const reportPath = typeof reportPathOrFn === "function" ? reportPathOrFn() : reportPathOrFn;
+      if (!reportPath) return; // e.g. no material selected yet
+      const params = { ...(getParams ? getParams() : {}), format };
+      if (withPeriod) Object.assign(params, periodRange(period, customDate));
+      downloadReport(reportPath, params, `${filenamePrefix}.${format}`);
+    })
+  );
+}
+
 /** Downloads a batch's COA via fetch (so the X-Role header goes along),
  *  then triggers a normal browser save via a throwaway object-URL link. */
 async function downloadCoa(batchId, format) {
@@ -1052,10 +1176,23 @@ const BUCKET_COPY = {
   history: { warehouse: "bucket.historyCopy.warehouse", quality: "bucket.historyCopy.quality" },
 };
 
+/** Which report (if any) this role/bucket combination can export — the
+ *  only three of the four combinations the user actually asked for:
+ *  Warehouse's Received Log lives on their History tab (it is, in effect,
+ *  a log of everything received over a period); Quality gets both their
+ *  To Do (now, no period) and History (period) exported. */
+function bucketExport(role, bucket) {
+  if (role === "warehouse" && bucket === "history") return { path: "received-log", withPeriod: true, prefix: "received-log" };
+  if (role === "quality" && bucket === "todo") return { path: "todos", withPeriod: false, prefix: "todo" };
+  if (role === "quality" && bucket === "history") return { path: "history", withPeriod: true, prefix: "history" };
+  return null;
+}
+
 async function viewReceiptBucket({ role, bucket }) {
   const state = getListState(role, bucket);
   const view = document.getElementById("view");
   const title = bucket === "history" ? t("bucket.historyTitle") : t("bucket.todoTitle");
+  const exportInfo = bucketExport(role, bucket);
 
   view.innerHTML = `
     <div class="view-head"><div><h1>${esc(title)}</h1><p>${esc(t(BUCKET_COPY[bucket][role]))}</p></div></div>
@@ -1067,6 +1204,7 @@ async function viewReceiptBucket({ role, bucket }) {
       <input type="search" class="search-input" id="receipt-search"
         placeholder="${esc(t("bucket.searchPlaceholder"))}" value="${esc(state.query)}" />
     </div>
+    ${exportInfo ? exportBarHtml("bucket-export", { withPeriod: exportInfo.withPeriod }) : ""}
     <div id="receipt-list"></div>
   `;
 
@@ -1076,6 +1214,10 @@ async function viewReceiptBucket({ role, bucket }) {
       viewReceiptBucket({ role, bucket });
     })
   );
+
+  if (exportInfo) {
+    wireExportBar("bucket-export", exportInfo.path, { withPeriod: exportInfo.withPeriod, filenamePrefix: exportInfo.prefix });
+  }
 
   let debounceTimer;
   document.getElementById("receipt-search").addEventListener("input", (e) => {
@@ -1275,9 +1417,21 @@ function renderCodesListSection(section, { types, subtypes, functions, materials
         </div>
         <input type="search" class="search-input" id="codes-list-search" placeholder="${esc(t("codes.listSearchPlaceholder"))}" value="${esc(codesListState.query)}" />
       </div>
+      ${exportBarHtml("codes-list-export", { withPeriod: false })}
       <div class="table-scroll" style="margin-top:12px"><table class="data-table" id="codes-list-table"></table></div>
     </div>
   `;
+
+  wireExportBar("codes-list-export", "codes", {
+    withPeriod: false,
+    filenamePrefix: "codes",
+    getParams: () => ({
+      query: codesListState.query,
+      type: codesListState.filterType,
+      subtype: codesListState.filterSubtype,
+      function: codesListState.filterFunction,
+    }),
+  });
 
   const tableEl = document.getElementById("codes-list-table");
 
@@ -1486,6 +1640,7 @@ async function viewSpecs() {
       <div class="field"><label>${esc(t("common.material"))}</label>
         ${codeSearchHtml("spec-material", t("common.searchByCodeOrName"))}
       </div>
+      ${exportBarHtml("spec-export", { withPeriod: false })}
       <div id="spec-history" style="margin-top:14px"></div>
       <form class="form-grid" id="new-spec-form" style="margin-top:16px; border-top:1px solid var(--rule); padding-top:14px;">
         <b class="small">${esc(t("specs.newVersion"))}</b>
@@ -1549,6 +1704,11 @@ async function viewSpecs() {
     specMaterialSelect.value = materials[0].code;
     await loadHistory();
   }
+  wireExportBar(
+    "spec-export",
+    () => (specMaterialSelect.value ? `spec/${encodeURIComponent(specMaterialSelect.value)}` : null),
+    { withPeriod: false, filenamePrefix: "spec" }
+  );
 
   document.getElementById("spec-add-param").addEventListener("click", () => addParamRow({}));
 
@@ -1843,6 +2003,7 @@ async function renderMaterialDossierSection(section) {
       <div class="field"><label>${esc(t("common.material"))}</label>
         ${codeSearchHtml("dossier-material", t("common.searchByCodeOrName"))}
       </div>
+      ${exportBarHtml("dossier-export", { withPeriod: false })}
     </div>
     <div id="dossier-body"></div>
   `;
@@ -1850,6 +2011,12 @@ async function renderMaterialDossierSection(section) {
   const body = document.getElementById("dossier-body");
   let rmsExpanded = false;
   let currentCode = null;
+
+  wireExportBar(
+    "dossier-export",
+    () => (currentCode ? `master-data/${encodeURIComponent(currentCode)}` : null),
+    { withPeriod: false, filenamePrefix: "master-data" }
+  );
 
   async function loadDossier(code) {
     currentCode = code;
@@ -1994,12 +2161,15 @@ async function renderSupplierAssessmentSection(section) {
       <div class="field"><label>${esc(t("common.supplier"))}</label>
         ${codeSearchHtml("supplier-search", t("common.searchByCodeOrName"))}
       </div>
+      ${exportBarHtml("suppliers-export", { withPeriod: false })}
     </div>
     <div id="supplier-body"></div>
   `;
 
   const body = document.getElementById("supplier-body");
   let currentSupplierCode = null;
+
+  wireExportBar("suppliers-export", "suppliers", { withPeriod: false, filenamePrefix: "suppliers" });
 
   async function loadAssessment(code) {
     currentSupplierCode = code;
