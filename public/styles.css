@@ -25,6 +25,9 @@
   --accent-soft-row: rgba(150, 160, 255, 0.035);
   --accent-glow: 0 0 0 1px rgba(124, 106, 255, 0.5), 0 0 22px -4px rgba(124, 106, 255, 0.65);
   --focus-ring: 0 0 0 3px rgba(124, 106, 255, 0.4);
+  --rule-hover: rgba(150, 160, 255, 0.42);
+  --input-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  --input-glow: 0 0 14px -6px rgba(124, 106, 255, 0.5);
 
   --cyan: #52d8ff;
 
@@ -96,6 +99,9 @@
     --accent-soft-row: rgba(80, 70, 160, 0.035);
     --accent-glow: 0 0 0 1px rgba(101, 82, 224, 0.35), 0 0 18px -6px rgba(101, 82, 224, 0.4);
     --focus-ring: 0 0 0 3px rgba(101, 82, 224, 0.25);
+    --rule-hover: rgba(80, 70, 160, 0.32);
+    --input-shadow: inset 0 1px 2px rgba(20, 20, 50, 0.06);
+    --input-glow: 0 0 10px -6px rgba(101, 82, 224, 0.3);
 
     --good: #21855c;
     --good-bg: #e2f5ec;
@@ -435,12 +441,31 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ---------- forms ---------- */
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field label { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); }
-.field input, .field select, .field textarea {
-  background: var(--surface-2); border: 1px solid var(--rule-strong); border-radius: var(--radius-sm);
-  padding: 8px 10px; font-size: 0.86rem; color: var(--ink);
-  transition: border-color 0.12s, box-shadow 0.12s;
+/* Applies app-wide (not just inside .field) — several mini-forms (Codes'
+   "New type/subtype/function", numbering-scheme patterns) use bare
+   <input>/<select> without a .field wrapper, and were previously falling
+   through to unstyled native controls. Checkbox/radio/range/file keep
+   their native appearance; .search-input is excluded since it already has
+   its own background-image (the search icon) that this rule would clobber. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.search-input),
+select,
+textarea {
+  background: var(--surface-2); border: 1px solid var(--rule-strong); border-radius: var(--radius);
+  padding: 9px 12px; font-size: 0.86rem; color: var(--ink);
+  box-shadow: var(--input-shadow);
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
-.field input:focus-visible, .field select:focus-visible, .field textarea:focus-visible { border-color: var(--accent); box-shadow: var(--focus-ring); }
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.search-input)::placeholder,
+textarea::placeholder { color: var(--ink-faint); }
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.search-input):hover,
+select:hover,
+textarea:hover { border-color: var(--rule-hover); }
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not(.search-input):focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none; border-color: var(--accent); background: var(--surface-solid);
+  box-shadow: var(--input-shadow), var(--focus-ring), var(--input-glow);
+}
 .field textarea { resize: vertical; min-height: 60px; }
 .field-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .field-row .field { flex: 1; min-width: 140px; }

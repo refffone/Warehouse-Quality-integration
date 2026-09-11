@@ -1355,7 +1355,7 @@ function renderTypesSubtypesSection(section, { types, subtypes, functions }) {
       <div class="field-row" style="margin-top:14px">
         <form class="form-grid" id="new-type-form" style="flex:1">
           <b class="small">${esc(t("codes.newType"))}</b>
-          <div class="field-row"><input name="code" placeholder="${esc(t("codes.typeCodePlaceholder"))}" required /><input name="name" placeholder="${esc(t("common.name"))}" required /><button class="btn ghost sm">${esc(t("common.add"))}</button></div>
+          <div class="field-row"><input name="code" placeholder="${esc(t("codes.typeCodePlaceholder"))}" required /><input name="name" placeholder="${esc(t("common.name"))}" required /><button class="btn primary sm">${esc(t("common.add"))}</button></div>
         </form>
         <form class="form-grid" id="new-subtype-form" style="flex:1">
           <b class="small">${esc(t("codes.newSubtype"))}</b>
@@ -1363,7 +1363,7 @@ function renderTypesSubtypesSection(section, { types, subtypes, functions }) {
             <input name="code" placeholder="${esc(t("codes.subtypeCodePlaceholder"))}" required />
             <select name="type_code" required><option value="">${esc(t("codes.typePlaceholder"))}</option>${types.map((ty) => `<option value="${esc(ty.code)}">${esc(ty.code)}</option>`).join("")}</select>
             <input name="name" placeholder="${esc(t("common.name"))}" required />
-            <button class="btn ghost sm">${esc(t("common.add"))}</button>
+            <button class="btn primary sm">${esc(t("common.add"))}</button>
           </div>
         </form>
       </div>
@@ -1375,7 +1375,7 @@ function renderTypesSubtypesSection(section, { types, subtypes, functions }) {
         <tbody>${functions.map((f) => `<tr><td class="mono">${esc(f.code)}</td><td>${esc(f.name)}</td></tr>`).join("") || `<tr><td colspan="2" class="muted">${esc(t("common.noneYet"))}</td></tr>`}</tbody></table></div>
       <form class="form-grid" id="new-function-form" style="margin-top:14px">
         <b class="small">${esc(t("codes.newFunction"))}</b>
-        <div class="field-row"><input name="code" placeholder="${esc(t("codes.functionCodePlaceholder"))}" required /><input name="name" placeholder="${esc(t("common.name"))}" required /><button class="btn ghost sm">${esc(t("common.add"))}</button></div>
+        <div class="field-row"><input name="code" placeholder="${esc(t("codes.functionCodePlaceholder"))}" required /><input name="name" placeholder="${esc(t("common.name"))}" required /><button class="btn primary sm">${esc(t("common.add"))}</button></div>
       </form>
     </div>
   `;
@@ -1599,16 +1599,16 @@ function renderSchemesSection(section) {
         <div class="field-row">
           <input name="supplier_code" placeholder="${esc(t("codes.supplierCodeBlankDefault"))}" />
           <input name="pattern_template" placeholder="{supplier_code}{MMYY}{seq:04d}" required style="flex:2" />
-          <button class="btn ghost sm">${esc(t("common.save"))}</button>
+          <button class="btn primary sm">${esc(t("common.save"))}</button>
         </div>
       </form>
       <form class="form-grid" id="rmf-scheme-form" style="margin-top:10px">
         <b class="small">${esc(t("codes.rmfHeading"))}</b>
-        <div class="field-row"><input name="pattern_template" placeholder="RMF{seq:04d}" required style="flex:1" /><button class="btn ghost sm">${esc(t("common.save"))}</button></div>
+        <div class="field-row"><input name="pattern_template" placeholder="RMF{seq:04d}" required style="flex:1" /><button class="btn primary sm">${esc(t("common.save"))}</button></div>
       </form>
       <form class="form-grid" id="rms-scheme-form" style="margin-top:10px">
         <b class="small">${esc(t("codes.rmsHeading"))}</b>
-        <div class="field-row"><input name="pattern_template" placeholder="RMS{seq:04d}" required style="flex:1" /><button class="btn ghost sm">${esc(t("common.save"))}</button></div>
+        <div class="field-row"><input name="pattern_template" placeholder="RMS{seq:04d}" required style="flex:1" /><button class="btn primary sm">${esc(t("common.save"))}</button></div>
       </form>
     </div>
   `;
