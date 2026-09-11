@@ -11,6 +11,11 @@ database_id = "d34bab08-b4a0-432e-bf83-889a649b8e62"
 [assets]
 directory = "./public"
 binding = "ASSETS"
+# Without this, Cloudflare serves static files (index.html, app.js, ...)
+# directly and never invokes the Worker at all — which would let the
+# suspended-service kill switch (and any future real auth) get silently
+# bypassed for page loads while still correctly gating /api/*.
+run_worker_first = true
 
 [[r2_buckets]]
 binding = "ATTACHMENTS"

@@ -1,4 +1,5 @@
 import { error, getRole, json } from "./http";
+import { adminGetStatus, adminPage, adminSetStatus, getServiceStatus, suspendedResponse } from "./routes/admin";
 import {
   createSupplier,
   getMaterialDossier,
@@ -47,6 +48,18 @@ export default {
     const role = getRole(request);
 
     try {
+      // Admin panel — a real credential (ADMIN_PASSWORD), not the X-Role
+      // stand-in, and the one thing that must keep working even while the
+      // service is suspended (the owner still needs to be able to turn it
+      // back on). Everything else checks the kill switch first.
+      if (pathname === "/admin" && method === "GET") return adminPage(request, env);
+      if (pathname === "/admin/api/status" && method === "GET") return adminGetStatus(request, env);
+      if (pathname === "/admin/api/status" && method === "POST") return adminSetStatus(request, env);
+
+      if ((await getServiceStatus(env)) === "suspended") {
+        return suspendedResponse(pathname);
+      }
+
       // Master data — Warehouse's only legitimate reason to touch this
       // section is picking/adding a supplier while receiving; everything
       // else here (codes, types, subtypes, functions, specs, schemes) is

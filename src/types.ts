@@ -3,6 +3,9 @@ export interface Env {
   ASSETS: Fetcher;
   ATTACHMENTS: R2Bucket;
   EXPIRY_ALERT_LEAD_DAYS: string;
+  /** Owner-only Admin panel password (Worker secret, never in source —
+   *  see src/routes/admin.ts). Local dev value lives in .dev.vars. */
+  ADMIN_PASSWORD: string;
 }
 
 export type Role = "warehouse" | "quality";
