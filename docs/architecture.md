@@ -1007,7 +1007,112 @@ Migration `0013` applied to both local and the production D1 database
 directly via the Cloudflare MCP connector, as established for every
 prior migration in this project.
 
-## 16. Next Step
+## 16. "Mission Control" visual identity + a component-by-component polish pass
+
+A full restyle, done in two phases: first a one-shot identity change,
+then a series of small, individually-verified refinements to specific
+component families, each proposed as a standalone before/after
+comparison (built in the scratchpad, screenshotted, sent for review)
+before being rolled into the real app files — never speculatively
+applied app-wide first.
+
+**The identity itself** (`public/styles.css`, `src/routes/pages.ts`,
+`src/routes/admin.ts`): dark-by-default rather than gated behind
+`prefers-color-scheme` — this is the app's actual visual identity, not
+a dark-mode option, with a lighter "daylight" variant still shipping
+under the media query for anyone who needs it. A deep-navy base
+(`--bg-base: #0a0d1a`) with a nebula radial-gradient glow, a tiled
+starfield texture and a whisper of film-grain, both as inline SVG
+data-URIs (`--stars`, `--grain`); glass panels (`backdrop-filter: blur`)
+over the nebula rather than flat cards; Space Grotesk for display type
+paired with IBM Plex Sans/Mono for body/code; status pills styled like
+panel indicator lights (a glowing dot). All three server-rendered
+entry surfaces (the SPA shell, the landing/login pages, the Admin
+panel) share the same token set so the identity is consistent before
+and after a session exists. The sidebar (`.app-frame` > `.sidebar` +
+`.main-col`) replaced a horizontal tab row that wrapped to two lines
+once the app grew past ~4 tabs; on mobile it collapses back to an
+icon-only horizontal strip. A todo-count badge (`.tab-badge`) was
+added to the To Do nav item, backed by `getTodoCount()` in
+`src/routes/receipts.ts` — a role-aware `SELECT COUNT(*)` mirroring
+the exact client-side pending logic (Quality: not-decided;
+Warehouse: not-decided OR needs-weigh-in) — polled every 20s.
+
+**Reference-driven component refinements**, each shipped after a
+comparison round: **cards** (`.card`) gained a 16px radius, a refined
+shadow, and a diagonal sheen pseudo-element, rolled out to the app,
+the landing page's role cards, and the login card — deliberately never
+given `overflow: hidden`, since several cards host an absolutely-
+positioned `.search-results` dropdown that has to escape the card's
+bounds. **Buttons** (`.btn.primary`) moved from a flat fill to a
+diagonal `--accent` → `--accent-deep` gradient with a hover lift +
+glow and a press-down on `:active`; two new semantic variants,
+`.warning`/`.success`, filled a real gap (an "Approve" action
+previously had no button color of its own). **Tables** (`.data-table`)
+gained zebra striping (`--accent-soft-row`), a firmer 2px header rule,
+and a single accent bar on the leading cell of a hovered row (not
+every cell — an early version of this bug briefly rendered three
+separate bars per row). **Form field labels** switched to uppercase +
+letter-spacing to match the table-header/stat-tile convention that
+already existed everywhere else. **Modals** (`.modal`) gained a
+header/body divider and a ~200ms scale+fade entrance instead of
+appearing instantly; **toasts** (`.toast`) gained a status icon
+(check/alert, from `public/icons.js`) plus a colored left accent bar
+for success/error instead of a flat red fill for errors and a plain
+box otherwise, and a slide-up entrance. **Empty states and loading**
+were previously visually identical — `.empty-state` rendered the same
+plain centered text whether a list was still loading or had genuinely
+come back empty. Split into `loadingState()` (a spinning ring),
+`emptyState(icon, title, sub)` (a 44px icon-circle + title, contextual
+icon per view — bell, inbox, search, database), and `errorState()`
+(the same shape, red-tinted) — three helpers in `public/app.js`
+replacing all ten prior call sites. **Form inputs** were a bigger find
+than expected: several mini-forms (Codes' New type/subtype/function/
+material, the numbering-scheme patterns) used bare `<input>`/`<select>`
+without the `.field` wrapper the input styling was scoped to, so they
+were silently falling through to unstyled native controls. The input
+rule was broadened to apply app-wide (excluding checkbox/radio/range/
+file, and `.search-input`, which owns its own background-image for
+the search icon), and gained an inset shadow, a hover border tint,
+and a soft focus glow — and the "Add"/"Save" buttons on those same
+mini-forms were promoted from `.btn.ghost` to `.btn.primary`, since
+each is the sole submit action of its row, not a secondary option.
+
+**The landing page's role cards and the sidebar nav icons** were
+redesigned around a "each destination owns a distinct accent color"
+principle taken from a reference repo's (chemerp-costing) module
+launcher (`src/pages/home/index.jsx`): a per-role tinted diagonal
+gradient, a large icon watermark bleeding off the bottom-right corner
+(masked with a radial gradient so it fades rather than cutting off
+hard — confirmed by actually standing up that reference repo's real
+backend+frontend locally, logging in, and screenshotting its live
+Home launcher rather than working from source alone), and a hover
+lift + glow in that role's own color. Icon geometry and hues were
+taken directly from that repo's definitions rather than invented:
+`#C084FC` + an isometric-cube icon for Warehouse (their `wh_rm`
+module), `#34D399` + a magnifying-lens icon for Quality (their
+`quality` module). The sidebar received the same underlying principle
+adapted to its own shape — a literal giant watermark icon doesn't fit
+a 36px nav row, so each tab instead gets its own accent hue (via an
+inline `--tab-color` custom property) for its icon and active/hover
+tint, instead of one blanket violet for every tab; `receive` and
+`masterdata` reuse the landing-card hues for continuity, the rest are
+distinct hues from the same reference palette. **Login and landing**
+were also revisited against general B2B auth-UX research (split-
+screen "reason to sign in" layouts, password-visibility toggles,
+loading feedback on submit, autofocus) rather than a generic restyle —
+proposed as a comparison but not yet rolled into the real login pages
+as of this writing.
+
+Every change in this pass followed the same loop: read the current
+component's actual CSS/markup (not an assumption of it), build a
+standalone before/after comparison in the scratchpad, screenshot both
+normal and interactive (hover/focus) states in both themes, get
+explicit go-ahead, then edit the real files and re-verify live with
+Playwright (including a full `wrangler dev` + seeded-account pass, not
+just the isolated comparison) before committing.
+
+## 17. Next Step
 
 One thing blocks a real deploy: someone with Cloudflare account access
 needs to enable R2 in the dashboard and run `wrangler login && wrangler
