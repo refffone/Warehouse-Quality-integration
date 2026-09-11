@@ -202,6 +202,9 @@ export async function decideBatch(
   if (!batch.material_code) {
     return error("Associate a material code on this line before testing it", 400);
   }
+  if (batch.status !== "pending") {
+    return error("This batch has already been decided", 409);
+  }
 
   const supplier = await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?")
     .bind(batch.supplier_id)
@@ -308,6 +311,9 @@ export async function recordTestResults(
   if (!batch.material_code) {
     return error("Associate a material code on this line before testing it", 400);
   }
+  if (batch.status !== "pending") {
+    return error("This batch has already been decided — test results are locked", 409);
+  }
   if (!input.results?.length) {
     return error("Provide at least one test result", 400);
   }
@@ -355,6 +361,9 @@ export async function finalizeWeight(request: Request, env: Env, batchId: number
   if (!batch) return error("Batch not found", 404);
   if (batch.receipt_type === "sample") return error("Samples don't get a weight finalization step", 400);
   if (batch.status === "pending") return error("Batch has not been decided by Quality yet", 400);
+  if (batch.qty_actual_weighed != null) {
+    return error("Actual weight has already been recorded for this batch", 409);
+  }
 
   await env.DB.prepare("UPDATE receipt_batches SET qty_actual_weighed = ? WHERE id = ?")
     .bind(input.qty_actual_weighed, batchId)
