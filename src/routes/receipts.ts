@@ -146,6 +146,31 @@ export async function listReceipts(request: Request, env: Env, role: Role): Prom
   return json(rows.results?.map((r) => redactReceiptSummaryForRole(r, role)) ?? []);
 }
 
+/** Count for the To Do nav badge — deliberately a single SQL COUNT rather
+ *  than reusing listReceiptsDetailed's full fetch-and-filter (this gets
+ *  polled every 20s, so it needs to stay cheap regardless of how many
+ *  receipts exist). Mirrors the exact "still open" rule
+ *  fetchReceiptsBucket() applies client-side in app.js: Quality's to-do is
+ *  simply "not yet decided"; Warehouse's also includes an already-decided
+ *  receipt that still has an approved/partial batch nobody has weighed in
+ *  yet. */
+export async function getTodoCount(env: Env, role: Role): Promise<Response> {
+  const sql =
+    role === "warehouse"
+      ? `SELECT COUNT(*) AS count FROM receipts r
+         WHERE r.status != 'decided'
+            OR EXISTS (
+              SELECT 1 FROM receipt_lines rl
+              JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
+              WHERE rl.receipt_id = r.id
+                AND rb.status IN ('approved', 'partial')
+                AND rb.qty_actual_weighed IS NULL
+            )`
+      : `SELECT COUNT(*) AS count FROM receipts WHERE status != 'decided'`;
+  const row = await env.DB.prepare(sql).first<{ count: number }>();
+  return json({ count: row?.count ?? 0 });
+}
+
 export async function getReceipt(env: Env, role: Role, id: number): Promise<Response> {
   const receipt = await env.DB.prepare("SELECT * FROM receipts WHERE id = ?").bind(id).first();
   if (!receipt) return error("Receipt not found", 404);

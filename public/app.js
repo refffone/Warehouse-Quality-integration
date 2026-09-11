@@ -173,7 +173,9 @@ function renderTopbar() {
   tabsEl.innerHTML = ROUTES[role]
     .map(
       (r) =>
-        `<button class="tab-btn${r.id === active ? " active" : ""}" data-tab="${r.id}">${navIcon(r.id)}<span>${t(r.labelKey)}</span></button>`
+        `<button class="tab-btn${r.id === active ? " active" : ""}" data-tab="${r.id}">${navIcon(r.id)}<span class="tab-label">${t(r.labelKey)}</span>${
+          r.id === "todo" ? `<span class="tab-badge" id="todo-tab-badge" hidden>0</span>` : ""
+        }</button>`
     )
     .join("");
   tabsEl.querySelectorAll("[data-tab]").forEach((btn) =>
@@ -187,6 +189,8 @@ function renderTopbar() {
     setLang(getLang() === "ar" ? "en" : "ar");
     location.reload();
   };
+
+  refreshTodoCount();
 }
 
 // ---------------------------------------------------------------- notifications
@@ -203,6 +207,22 @@ async function refreshNotifCount() {
     }
   } catch {
     // silent — notification badge is best-effort
+  }
+}
+
+async function refreshTodoCount() {
+  try {
+    const { count } = await api.get("/api/receipts/todo-count");
+    const badge = document.getElementById("todo-tab-badge");
+    if (!badge) return; // not rendered on a role/tab without a todo-count badge
+    if (count > 0) {
+      badge.hidden = false;
+      badge.textContent = count > 99 ? "99+" : count;
+    } else {
+      badge.hidden = true;
+    }
+  } catch {
+    // silent — same best-effort convention as the notification badge
   }
 }
 
@@ -2299,6 +2319,7 @@ async function renderView() {
 function refreshCurrentView() {
   if (lastRouteArgs) lastRouteArgs.args ? lastRouteArgs.fn(lastRouteArgs.args) : lastRouteArgs.fn();
   refreshNotifCount();
+  refreshTodoCount();
 }
 
 window.addEventListener("hashchange", () => {
@@ -2323,6 +2344,7 @@ async function boot() {
   renderView();
   refreshNotifCount();
   setInterval(refreshNotifCount, 20000);
+  setInterval(refreshTodoCount, 20000);
 }
 
 boot();
