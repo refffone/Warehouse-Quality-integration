@@ -35,6 +35,8 @@ export const icons = {
   check: svg(`<path d="M4 12.5 9 17.5 20 6.5"/>`),
   alertCircle: svg(`<circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16v.01"/>`),
   x: svg(`<path d="M6 6l12 12M18 6 6 18"/>`),
+
+  inbox: svg(`<path d="M3 12h4.5l1.5 3h6l1.5-3H21"/><path d="M5.5 5h13l2.5 7v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-6l2.5-7Z"/>`),
 };
 
 export const navIcon = (routeId) =>

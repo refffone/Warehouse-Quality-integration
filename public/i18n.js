@@ -45,6 +45,7 @@ const translations = {
     "common.version": "Version",
     "common.searchByCodeOrName": "Search by code or name…",
     "common.noMatches": "No matches",
+    "common.loading": "Loading…",
 
     "lang.toggle": "AR",
 
@@ -363,6 +364,7 @@ const translations = {
     "common.version": "الإصدار",
     "common.searchByCodeOrName": "ابحث بالرمز أو الاسم…",
     "common.noMatches": "لا توجد نتائج",
+    "common.loading": "جارٍ التحميل…",
 
     "lang.toggle": "EN",
 

@@ -61,6 +61,18 @@ function toast(message, isError = false) {
   setTimeout(() => el.remove(), 4000);
 }
 
+function loadingState(label = t("common.loading")) {
+  return `<div class="empty-state is-loading"><div class="empty-icon"><div class="spinner"></div></div><div class="empty-title">${esc(label)}</div></div>`;
+}
+
+function emptyState(iconSvg, title, sub) {
+  return `<div class="empty-state"><div class="empty-icon">${iconSvg}</div><div class="empty-title">${esc(title)}</div>${sub ? `<div class="empty-sub">${esc(sub)}</div>` : ""}</div>`;
+}
+
+function errorState(message) {
+  return `<div class="empty-state is-error"><div class="empty-icon">${icons.alertCircle}</div><div class="empty-title">${esc(message)}</div></div>`;
+}
+
 function closeModal() {
   document.getElementById("modal-root").innerHTML = "";
 }
@@ -245,7 +257,7 @@ async function toggleNotifPanel() {
       </div>`
         )
         .join("")
-    : `<div class="empty-state">${esc(t("notif.empty"))}</div>`;
+    : emptyState(icons.bell, t("notif.empty"));
   document.body.appendChild(panel);
   panel.querySelectorAll("[data-id]").forEach((item) =>
     item.addEventListener("click", async () => {
@@ -901,7 +913,7 @@ function buildReceiptCard(receipt, { role, type }) {
 }
 
 async function renderReceiptsInto(container, { role, type, bucket, query }) {
-  container.innerHTML = `<div class="empty-state">Loading…</div>`;
+  container.innerHTML = loadingState();
   await getSuppliers();
   const all = await fetchReceiptsBucket({ role, type, bucket });
   const matches = all.filter((r) => receiptMatchesQuery(r, query));
@@ -911,11 +923,11 @@ async function renderReceiptsInto(container, { role, type, bucket, query }) {
       bucket === "history"
         ? type === "sample" ? "bucket.noDecidedSamples" : "bucket.noDecidedImports"
         : type === "sample" ? "bucket.noPendingSamples" : "bucket.noPendingImports";
-    container.innerHTML = `<div class="empty-state">${esc(t(key))}</div>`;
+    container.innerHTML = emptyState(icons.inbox, t(key));
     return;
   }
   if (matches.length === 0) {
-    container.innerHTML = `<div class="empty-state">${esc(t("bucket.noResultsFor", { query }))}</div>`;
+    container.innerHTML = emptyState(icons.search, t("bucket.noResultsFor", { query }));
     return;
   }
   container.innerHTML = "";
@@ -1742,7 +1754,7 @@ async function viewSpecs() {
         </div>`
           )
           .join("")
-      : `<div class="empty-state">${esc(t("specs.noSpecsYet"))}</div>`;
+      : emptyState(icons.navSpecs, t("specs.noSpecsYet"));
   }
   const specMaterialSelect = wireCodeSearch("spec-material", materials, loadHistory);
   if (materials.length) {
@@ -2065,7 +2077,7 @@ async function renderMaterialDossierSection(section) {
 
   async function loadDossier(code) {
     currentCode = code;
-    body.innerHTML = `<div class="empty-state">Loading…</div>`;
+    body.innerHTML = loadingState();
     const d = await api.get(`/api/materials/${encodeURIComponent(code)}/dossier`);
     // The user may have switched subtabs/materials while this was in flight —
     // if this section's DOM is gone (or a newer load has since started), bail.
@@ -2188,7 +2200,7 @@ async function renderMaterialDossierSection(section) {
     input.value = materials[0].code;
     await loadDossier(materials[0].code);
   } else {
-    body.innerHTML = `<div class="empty-state">${esc(t("common.noneYet"))}</div>`;
+    body.innerHTML = emptyState(icons.navMasterdata, t("common.noneYet"));
   }
 }
 
@@ -2218,7 +2230,7 @@ async function renderSupplierAssessmentSection(section) {
 
   async function loadAssessment(code) {
     currentSupplierCode = code;
-    body.innerHTML = `<div class="empty-state">Loading…</div>`;
+    body.innerHTML = loadingState();
     const a = await api.get(`/api/suppliers/${encodeURIComponent(code)}/assessment`);
     if (!body.isConnected || currentSupplierCode !== code) return;
 
@@ -2280,7 +2292,7 @@ async function renderSupplierAssessmentSection(section) {
     input.value = suppliers[0].code;
     await loadAssessment(suppliers[0].code);
   } else {
-    body.innerHTML = `<div class="empty-state">${esc(t("suppliers.noSuppliersYet"))}</div>`;
+    body.innerHTML = emptyState(icons.warehouse, t("suppliers.noSuppliersYet"));
   }
 }
 
@@ -2312,7 +2324,7 @@ async function renderView() {
       await viewMasterData();
     }
   } catch (err) {
-    document.getElementById("view").innerHTML = `<div class="empty-state">${esc(t("error.screenLoadFailed", { message: err.message }))}</div>`;
+    document.getElementById("view").innerHTML = errorState(t("error.screenLoadFailed", { message: err.message }));
   }
 }
 
