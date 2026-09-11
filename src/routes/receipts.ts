@@ -1,4 +1,5 @@
 import {
+  fetchByIds,
   generateImportCode,
   generateInternalBatchNo,
   getSupplierByCode,
@@ -6,7 +7,7 @@ import {
   resolveMaterialClassification,
 } from "../db";
 import { error, json } from "../http";
-import { createSpecVersion, getActiveSpec } from "./specs";
+import { createSpecVersion, getActiveSpec, getActiveSpecsForMaterials } from "./specs";
 import type {
   AssociateCodeInput,
   BatchDecisionInput,
@@ -14,6 +15,7 @@ import type {
   Env,
   FinalizeWeightInput,
   NewReceiptInput,
+  Receipt,
   ReceiptBatch,
   ReceiptLine,
   RecordTestResultsInput,
@@ -168,6 +170,90 @@ export async function getReceipt(env: Env, role: Role, id: number): Promise<Resp
   }
 
   return json(detail);
+}
+
+/** Same shape as calling getReceipt once per row, for a whole type-filtered
+ *  page at once — this is what the To Do/History screens actually need,
+ *  every time they load. The frontend used to fetch listReceipts and then
+ *  call getReceipt for every single row (up to 200 sequential round trips
+ *  per page load); this does it in a fixed handful of batched queries
+ *  regardless of how many receipts are in the page. */
+export async function listReceiptsDetailed(request: Request, env: Env, role: Role): Promise<Response> {
+  const url = new URL(request.url);
+  const type = url.searchParams.get("type");
+
+  const conditions: string[] = [];
+  const params: string[] = [];
+  if (type) {
+    conditions.push("type = ?");
+    params.push(type);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const receiptRows = await env.DB.prepare(`SELECT * FROM receipts ${where} ORDER BY created_at DESC LIMIT 200`)
+    .bind(...params)
+    .all<Receipt>();
+  const receipts = receiptRows.results ?? [];
+  if (!receipts.length) return json([]);
+
+  const receiptIds = receipts.map((r) => r.id);
+  const lines = await fetchByIds<ReceiptLine>(
+    env,
+    (ph) => `SELECT * FROM receipt_lines WHERE receipt_id IN (${ph})`,
+    receiptIds
+  );
+
+  const lineIds = lines.map((l) => l.id);
+  const batches = await fetchByIds<ReceiptBatch>(
+    env,
+    (ph) => `SELECT * FROM receipt_batches WHERE receipt_line_id IN (${ph})`,
+    lineIds
+  );
+
+  const batchIds = batches.map((b) => b.id);
+  const testResultRows = await fetchByIds<TestResultWithParameter>(
+    env,
+    (ph) =>
+      `SELECT btr.*, sp.parameter_name, sp.unit, sp.param_type, sp.method, sp.min_value, sp.max_value
+       FROM batch_test_results btr
+       JOIN spec_parameters sp ON sp.id = btr.spec_parameter_id
+       WHERE btr.batch_id IN (${ph})
+       ORDER BY sp.sort_order`,
+    batchIds
+  );
+
+  const materialCodes = lines.map((l) => l.material_code).filter((c): c is string => Boolean(c));
+  const specsByMaterial = await getActiveSpecsForMaterials(env, materialCodes);
+
+  const testResultsByBatch = new Map<number, TestResultWithParameter[]>();
+  for (const r of testResultRows) {
+    if (!testResultsByBatch.has(r.batch_id)) testResultsByBatch.set(r.batch_id, []);
+    testResultsByBatch.get(r.batch_id)!.push(r);
+  }
+  const batchesByLine = new Map<number, ReceiptBatch[]>();
+  for (const b of batches) {
+    if (!batchesByLine.has(b.receipt_line_id)) batchesByLine.set(b.receipt_line_id, []);
+    batchesByLine.get(b.receipt_line_id)!.push(b);
+  }
+  const linesByReceipt = new Map<number, ReceiptLine[]>();
+  for (const l of lines) {
+    if (!linesByReceipt.has(l.receipt_id)) linesByReceipt.set(l.receipt_id, []);
+    linesByReceipt.get(l.receipt_id)!.push(l);
+  }
+
+  const detailed = receipts.map((receipt) => {
+    const receiptLines = (linesByReceipt.get(receipt.id) ?? []).map((line) => {
+      const spec = line.material_code ? (specsByMaterial.get(line.material_code) ?? null) : null;
+      const lineBatches = (batchesByLine.get(line.id) ?? []).map((b) => {
+        const test_results = role === "quality" || receipt.type !== "sample" ? (testResultsByBatch.get(b.id) ?? []) : [];
+        return { ...redactBatchForRole(b, role, receipt.type), test_results };
+      });
+      return { ...line, spec, batches: lineBatches };
+    });
+    return { ...receipt, lines: receiptLines };
+  });
+
+  return json(detailed);
 }
 
 export async function decideBatch(

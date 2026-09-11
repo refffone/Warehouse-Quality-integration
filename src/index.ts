@@ -31,6 +31,7 @@ import {
   finalizeWeight,
   getReceipt,
   listReceipts,
+  listReceiptsDetailed,
   recordTestResults,
   setSampleSender,
 } from "./routes/receipts";
@@ -170,6 +171,10 @@ export default {
       if (pathname === "/api/receipts" && method === "GET") {
         if (!role) return error("Missing X-Role header", 401);
         return listReceipts(request, env, role);
+      }
+      if (pathname === "/api/receipts/detailed" && method === "GET") {
+        if (!role) return error("Missing X-Role header", 401);
+        return listReceiptsDetailed(request, env, role);
       }
 
       const receiptMatch = pathname.match(/^\/api\/receipts\/(\d+)$/);

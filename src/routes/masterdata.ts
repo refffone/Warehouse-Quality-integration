@@ -1,4 +1,4 @@
-import { resolveMaterialClassification } from "../db";
+import { fetchByIds, resolveMaterialClassification } from "../db";
 import { error, json } from "../http";
 import { listSpecsForMaterial } from "./specs";
 import type {
@@ -329,38 +329,33 @@ async function getImportEntries(
   const lineRows = lines.results ?? [];
   if (!lineRows.length) return [];
 
-  // Fetch batches/attachments for every line up front, chunked to stay under
-  // D1's per-statement bound-parameter limit, instead of one round trip per
-  // line — a dossier with hundreds of import-code entries was doing hundreds
-  // of sequential extra queries here.
+  // Fetch batches/attachments for every line up front instead of one round
+  // trip per line — a dossier with hundreds of import-code entries was
+  // doing hundreds of sequential extra queries here.
   const lineIds = lineRows.map((l) => l.receipt_line_id);
-  const batchesByLine = new Map<number, DossierBatchSummary[]>();
-  const attachmentsByLine = new Map<number, Attachment[]>();
-  const CHUNK = 100;
-  for (let i = 0; i < lineIds.length; i += CHUNK) {
-    const chunk = lineIds.slice(i, i + CHUNK);
-    const placeholders = chunk.map(() => "?").join(",");
-    const [batchRows, attachmentRows] = await Promise.all([
-      env.DB.prepare(
+  const [batchRows, attachmentRows] = await Promise.all([
+    fetchByIds<DossierBatchSummary & { receipt_line_id: number }>(
+      env,
+      (ph) =>
         `SELECT id, receipt_line_id, supplier_batch_no, status, internal_batch_no, decided_at
-         FROM receipt_batches WHERE receipt_line_id IN (${placeholders}) ORDER BY id`
-      )
-        .bind(...chunk)
-        .all<DossierBatchSummary & { receipt_line_id: number }>(),
-      env.DB.prepare(
-        `SELECT * FROM attachments WHERE receipt_line_id IN (${placeholders}) ORDER BY uploaded_at DESC`
-      )
-        .bind(...chunk)
-        .all<Attachment & { receipt_line_id: number }>(),
-    ]);
-    for (const { receipt_line_id, ...rest } of batchRows.results ?? []) {
-      if (!batchesByLine.has(receipt_line_id)) batchesByLine.set(receipt_line_id, []);
-      batchesByLine.get(receipt_line_id)!.push(rest);
-    }
-    for (const a of attachmentRows.results ?? []) {
-      if (!attachmentsByLine.has(a.receipt_line_id)) attachmentsByLine.set(a.receipt_line_id, []);
-      attachmentsByLine.get(a.receipt_line_id)!.push(a);
-    }
+         FROM receipt_batches WHERE receipt_line_id IN (${ph}) ORDER BY id`,
+      lineIds
+    ),
+    fetchByIds<Attachment & { receipt_line_id: number }>(
+      env,
+      (ph) => `SELECT * FROM attachments WHERE receipt_line_id IN (${ph}) ORDER BY uploaded_at DESC`,
+      lineIds
+    ),
+  ]);
+  const batchesByLine = new Map<number, DossierBatchSummary[]>();
+  for (const { receipt_line_id, ...rest } of batchRows) {
+    if (!batchesByLine.has(receipt_line_id)) batchesByLine.set(receipt_line_id, []);
+    batchesByLine.get(receipt_line_id)!.push(rest);
+  }
+  const attachmentsByLine = new Map<number, Attachment[]>();
+  for (const a of attachmentRows) {
+    if (!attachmentsByLine.has(a.receipt_line_id)) attachmentsByLine.set(a.receipt_line_id, []);
+    attachmentsByLine.get(a.receipt_line_id)!.push(a);
   }
 
   return lineRows.map((line) => ({

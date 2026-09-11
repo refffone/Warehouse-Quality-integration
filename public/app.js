@@ -617,8 +617,7 @@ function receiptNeedsWeighIn(receipt) {
 }
 
 async function fetchReceiptsBucket({ role, type, bucket }) {
-  const receipts = await api.get(`/api/receipts?${new URLSearchParams({ type })}`);
-  const full = await Promise.all(receipts.map((r) => api.get(`/api/receipts/${r.id}`)));
+  const full = await api.get(`/api/receipts/detailed?${new URLSearchParams({ type })}`);
   return full.filter((r) => {
     const decidedByQuality = r.status === "decided";
     // Warehouse's own to-do (weighing an approved batch) can outlive

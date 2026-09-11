@@ -1,3 +1,4 @@
+import { fetchByIds } from "../db";
 import { error, json } from "../http";
 import type {
   Env,
@@ -156,6 +157,41 @@ export async function getActiveSpec(env: Env, materialCode: string): Promise<Spe
     .first<Spec>();
   if (!spec) return null;
   return getSpecWithParameters(env, spec.id);
+}
+
+/** Bulk form of getActiveSpec, for a page rendering many receipt lines at
+ *  once (e.g. a whole To Do/History bucket) — one pass instead of one
+ *  query per distinct material code. */
+export async function getActiveSpecsForMaterials(
+  env: Env,
+  materialCodes: string[]
+): Promise<Map<string, SpecWithParameters>> {
+  const map = new Map<string, SpecWithParameters>();
+  const codes = [...new Set(materialCodes)];
+  if (!codes.length) return map;
+
+  const specs = await fetchByIds<Spec>(
+    env,
+    (ph) => `SELECT * FROM specs WHERE status = 'active' AND material_code IN (${ph})`,
+    codes
+  );
+  if (!specs.length) return map;
+
+  const specIds = specs.map((s) => s.id);
+  const params = await fetchByIds<SpecParameter>(
+    env,
+    (ph) => `SELECT * FROM spec_parameters WHERE spec_id IN (${ph}) ORDER BY sort_order`,
+    specIds
+  );
+  const paramsBySpec = new Map<number, SpecParameter[]>();
+  for (const p of params) {
+    if (!paramsBySpec.has(p.spec_id)) paramsBySpec.set(p.spec_id, []);
+    paramsBySpec.get(p.spec_id)!.push(p);
+  }
+  for (const s of specs) {
+    map.set(s.material_code, { ...s, parameters: paramsBySpec.get(s.id) ?? [] });
+  }
+  return map;
 }
 
 export async function getSubtypeSpecTemplate(env: Env, subtypeCode: string): Promise<Response> {

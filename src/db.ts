@@ -1,5 +1,30 @@
 import type { Env, ImportScenario, NotificationKind, Role, Supplier } from "./types";
 
+/** D1 caps bound parameters per statement, so a `WHERE col IN (...)` over
+ *  an arbitrarily long id list needs chunking. Runs one query per chunk
+ *  (in parallel) instead of one query per id — the batching fix for every
+ *  spot in this app that used to loop a single-id query per row. */
+export async function fetchByIds<T>(
+  env: Env,
+  buildSql: (placeholders: string) => string,
+  ids: Array<string | number>,
+  chunkSize = 100
+): Promise<T[]> {
+  if (!ids.length) return [];
+  const chunks: Array<string | number>[] = [];
+  for (let i = 0; i < ids.length; i += chunkSize) chunks.push(ids.slice(i, i + chunkSize));
+
+  const results = await Promise.all(
+    chunks.map((chunk) => {
+      const placeholders = chunk.map(() => "?").join(",");
+      return env.DB.prepare(buildSql(placeholders))
+        .bind(...chunk)
+        .all<T>();
+    })
+  );
+  return results.flatMap((r) => r.results ?? []);
+}
+
 export async function getSupplierByCode(env: Env, code: string): Promise<Supplier | null> {
   const row = await env.DB.prepare("SELECT * FROM suppliers WHERE code = ?")
     .bind(code)
