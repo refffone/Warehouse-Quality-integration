@@ -33,6 +33,25 @@ const MODULE_ICON: Record<Role, string> = {
 };
 const MODULE_COLOR: Record<Role, string> = { warehouse: "192,132,252", quality: "52,211,153" };
 
+// Login page: a split layout with a "reason to sign in" context panel
+// (research on B2B auth UX consistently flags this as the safest default)
+// — but grounded in what the role can actually do here, not marketing copy.
+const ROLE_CAPABILITIES: Record<Role, string[]> = {
+  warehouse: [
+    "Log receipts the moment materials arrive",
+    "Track pending imports and samples",
+    "Review supplier and batch history",
+  ],
+  quality: [
+    "Record test results and decide batches",
+    "Manage specifications and material codes",
+    "Review supplier and material history",
+  ],
+};
+const CHECK_ICON = `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 10.5l4 4 8-9" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ALERT_ICON = `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="10" cy="10" r="7.5"/><path d="M10 6.5v4.5M10 13.5v.01" stroke-linecap="round"/></svg>`;
+const EYE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>`;
+
 const SHARED_HEAD = `
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -44,10 +63,11 @@ const SHARED_HEAD = `
       --rule: rgba(150,160,255,0.16); --rule-strong: rgba(150,160,255,0.3);
       --accent: #7c6aff; --accent-hover: #9286ff; --accent-deep: #5d4ce0; --accent-ink: #ffffff;
       --accent-glow: 0 0 0 1px rgba(124,106,255,0.5), 0 0 22px -4px rgba(124,106,255,0.65);
-      --bad: #ff7aa0;
+      --bad: #ff7aa0; --bad-bg: rgba(255,122,160,0.14);
       --shadow-card: 0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 34px -10px rgba(0,0,0,0.5);
       --shadow-card-hover: 0 1px 0 rgba(255,255,255,0.06) inset, 0 18px 44px -12px rgba(0,0,0,0.6), 0 0 0 1px rgba(124,106,255,0.4), 0 0 26px -6px rgba(124,106,255,0.5);
       --sheen: linear-gradient(135deg, rgba(124,106,255,0.10) 0%, transparent 55%);
+      --login-context-bg: linear-gradient(160deg, rgba(124,106,255,0.14), rgba(21,25,45,0.6));
     }
     @media (prefers-color-scheme: light) {
       :root {
@@ -56,10 +76,11 @@ const SHARED_HEAD = `
         --rule: rgba(80,70,160,0.14); --rule-strong: rgba(80,70,160,0.24);
         --accent: #6552e0; --accent-hover: #5a46d1; --accent-deep: #4a3bb8; --accent-ink: #ffffff;
         --accent-glow: 0 0 0 1px rgba(101,82,224,0.35), 0 0 18px -6px rgba(101,82,224,0.4);
-        --bad: #c22e5a;
+        --bad: #c22e5a; --bad-bg: #fce8ee;
         --shadow-card: 0 1px 2px rgba(20,20,40,0.05), 0 10px 30px -10px rgba(20,20,40,0.14);
         --shadow-card-hover: 0 2px 6px rgba(20,20,40,0.06), 0 14px 32px -10px rgba(20,20,40,0.18), 0 0 0 1px rgba(101,82,224,0.3);
         --sheen: linear-gradient(135deg, rgba(101,82,224,0.06) 0%, transparent 55%);
+        --login-context-bg: linear-gradient(160deg, rgba(101,82,224,0.08), rgba(255,255,255,0.5));
       }
     }
     body {
@@ -158,26 +179,39 @@ export function loginPage(role: Role): Response {
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${label} sign in · Warehouse · Quality</title>${SHARED_HEAD}
 <style>
-  .card {
-    position: relative;
-    width: 100%; max-width: 360px; background: var(--surface); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--rule); border-radius: 16px; padding: 32px; box-shadow: var(--shadow-card);
+  .login-shell { display: flex; flex-direction: column; align-items: center; width: 100%; max-width: 640px; }
+  /* Split layout: a "reason to sign in" context panel (what this role can
+     actually do here — not marketing copy) beside the form, the pattern
+     B2B/SaaS auth-UX research repeatedly flags as the safest default for a
+     first-time-per-session visitor. Collapses to a single column with the
+     panel as a compact header under 640px. */
+  .split {
+    position: relative; display: flex; width: 100%; border-radius: 18px; overflow: hidden;
+    border: 1px solid var(--rule); box-shadow: var(--shadow-card);
   }
-  /* Faint diagonal sheen — same passive polish as every other card in the
-     app; no hover-lift here since this card isn't itself a click target
-     (it hosts the login form, not a link). */
-  .card::before {
-    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  .split::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 0;
     background: var(--sheen);
   }
-  .wrap { display: flex; flex-direction: column; align-items: center; }
+  .split-context {
+    position: relative; z-index: 1; flex: 1; padding: 32px 28px;
+    background: var(--login-context-bg); border-inline-end: 1px solid var(--rule);
+    display: flex; flex-direction: column; justify-content: center;
+  }
+  .split-context .role-badge { margin: 0 0 16px; }
+  .split-context h1 { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 1.3rem; margin: 0 0 6px; text-align: start; }
+  .split-context .role-tag { color: var(--ink-faint); font-size: 0.8rem; margin: 0 0 18px; }
+  .split-context ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 11px; }
+  .split-context li { display: flex; align-items: flex-start; gap: 9px; font-size: 0.83rem; color: var(--ink-muted); line-height: 1.45; }
+  .split-context li svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; margin-top: 2px; }
+
+  .split-form { position: relative; z-index: 1; flex: 1; padding: 32px 28px; background: var(--surface-solid); }
   .role-badge {
-    width: 44px; height: 44px; margin: 0 auto 14px; border-radius: 12px; color: var(--accent);
+    width: 44px; height: 44px; border-radius: 12px; color: var(--accent);
     background: var(--surface-2); border: 1px solid var(--rule); display: flex; align-items: center; justify-content: center;
   }
   .role-badge svg { width: 22px; height: 22px; }
-  h1 { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 1.2rem; text-align: center; margin: 0 0 24px; }
-  label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--ink-muted); margin: 14px 0 6px; }
+  label { display: block; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); margin: 14px 0 6px; }
   label:first-of-type { margin-top: 0; }
   input {
     width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px;
@@ -185,53 +219,105 @@ export function loginPage(role: Role): Response {
     font-size: 0.95rem; font-family: inherit; transition: border-color 0.12s, box-shadow 0.12s;
   }
   input:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124,106,255,0.3); }
+  .pw-wrap { position: relative; }
+  .pw-wrap input { padding-inline-end: 38px; }
+  /* Higher specificity than the generic full-width button rule below —
+     without it a bare .pw-toggle class inherits width:100%/margin-top from
+     that rule and stretches into a second full-width bar under the field. */
+  button.pw-toggle {
+    position: absolute; inset-inline-end: 4px; top: 50%; transform: translateY(-50%);
+    width: 30px; height: 30px; margin-top: 0; padding: 0; border-radius: 6px;
+    background: none; border: none; color: var(--ink-faint); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  button.pw-toggle:hover { color: var(--ink); background: var(--surface-2); }
+  button.pw-toggle svg { width: 16px; height: 16px; }
   button {
     width: 100%; margin-top: 20px; padding: 12px; border-radius: 8px; border: none; font-size: 0.95rem;
     font-weight: 600; cursor: pointer; color: var(--accent-ink);
     background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
     box-shadow: 0 2px 10px -2px rgba(0,0,0,0.35);
+    display: flex; align-items: center; justify-content: center; gap: 8px;
     transition: box-shadow 0.15s cubic-bezier(0.16,1,0.3,1), transform 0.15s cubic-bezier(0.16,1,0.3,1), filter 0.15s;
   }
   button:hover:not(:disabled) { box-shadow: var(--accent-glow); filter: brightness(1.08); transform: translateY(-1px); }
   button:active:not(:disabled) { transform: translateY(0); box-shadow: 0 2px 10px -2px rgba(0,0,0,0.35); filter: brightness(1); }
-  button:disabled { opacity: 0.6; cursor: default; }
-  .msg { margin-top: 12px; font-size: 0.85rem; color: var(--bad); min-height: 1.2em; text-align: center; }
+  button:disabled { opacity: 0.75; cursor: default; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .btn-spinner { width: 15px; height: 15px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff; animation: spin 0.6s linear infinite; }
+  .msg {
+    display: flex; align-items: flex-start; gap: 8px; font-size: 0.82rem; color: var(--bad); text-align: start;
+  }
+  .msg:empty { display: none; }
+  .msg:not(:empty) { margin-top: 12px; background: var(--bad-bg); border-radius: 8px; padding: 9px 11px; }
+  .msg svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 1px; }
   .back { display: block; text-align: center; margin-top: 18px; font-size: 0.8rem; color: var(--ink-muted); text-decoration: none; }
   .back:hover { text-decoration: underline; color: var(--ink); }
+
+  @media (max-width: 640px) {
+    .split { flex-direction: column; }
+    .split-context { border-inline-end: none; border-bottom: 1px solid var(--rule); padding: 22px 24px; }
+    .split-context ul { display: none; }
+    .split-context h1 { font-size: 1.1rem; }
+    .split-form { padding: 24px; }
+  }
 </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="brand"><span class="mark">${BRAND_MARK}</span><span class="name">Warehouse <em>·</em> Quality</span></div>
-    <div class="card">
-      <div class="role-badge">${ROLE_ICON[role]}</div>
-      <h1>${label} sign in</h1>
-      <form id="login-form">
-        <label for="username">Username</label>
-        <input type="text" id="username" autocomplete="username" required />
-        <label for="password">Password</label>
-        <input type="password" id="password" autocomplete="current-password" required />
-        <button id="submit-btn" type="submit">Sign in</button>
-        <div class="msg" id="msg"></div>
-      </form>
-      <a class="back" href="/">← Choose a different portal</a>
+  <div class="login-shell">
+    <div class="brand" style="margin-bottom:24px"><span class="mark">${BRAND_MARK}</span><span class="name">Warehouse <em>·</em> Quality</span></div>
+    <div class="split">
+      <div class="split-context">
+        <div class="role-badge">${ROLE_ICON[role]}</div>
+        <h1>${label}</h1>
+        <p class="role-tag">${role === "warehouse" ? "Receive materials, track incoming batches" : "Test, decide, and manage master data"}</p>
+        <ul>
+          ${ROLE_CAPABILITIES[role].map((c) => `<li>${CHECK_ICON}<span>${c}</span></li>`).join("")}
+        </ul>
+      </div>
+      <div class="split-form">
+        <form id="login-form">
+          <label for="username">Username</label>
+          <input type="text" id="username" autocomplete="username" autofocus required />
+          <label for="password">Password</label>
+          <div class="pw-wrap">
+            <input type="password" id="password" autocomplete="current-password" required />
+            <button type="button" class="pw-toggle" id="pw-toggle" aria-label="Show password">${EYE_ICON}</button>
+          </div>
+          <button id="submit-btn" type="submit"><span id="submit-label">Sign in</span></button>
+          <div class="msg" id="msg"></div>
+        </form>
+        <a class="back" href="/">← Choose a different portal</a>
+      </div>
     </div>
   </div>
   <script>
     const form = document.getElementById('login-form');
     const msg = document.getElementById('msg');
     const btn = document.getElementById('submit-btn');
+    const submitLabel = document.getElementById('submit-label');
+    const pwInput = document.getElementById('password');
+    const pwToggle = document.getElementById('pw-toggle');
+    const alertIcon = ${JSON.stringify(ALERT_ICON)};
+
+    pwToggle.addEventListener('click', () => {
+      const shown = pwInput.type === 'text';
+      pwInput.type = shown ? 'password' : 'text';
+      pwToggle.setAttribute('aria-label', shown ? 'Show password' : 'Hide password');
+    });
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       btn.disabled = true;
-      msg.textContent = '';
+      submitLabel.innerHTML = '<span class="btn-spinner"></span>Signing in…';
+      msg.innerHTML = '';
       try {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             username: document.getElementById('username').value,
-            password: document.getElementById('password').value,
+            password: pwInput.value,
             role: ${JSON.stringify(role)},
           }),
         });
@@ -239,7 +325,11 @@ export function loginPage(role: Role): Response {
         if (!res.ok) throw new Error(data.error || 'Sign in failed');
         location.href = '/app';
       } catch (err) {
-        msg.textContent = err.message;
+        const span = document.createElement('span');
+        span.textContent = err.message;
+        msg.innerHTML = alertIcon;
+        msg.appendChild(span);
+        submitLabel.textContent = 'Sign in';
         btn.disabled = false;
       }
     });
