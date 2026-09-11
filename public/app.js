@@ -146,6 +146,19 @@ const ROUTES = {
   ],
 };
 
+// Per-tab accent hue (same "each destination owns a distinct color" idea
+// borrowed from chemerp-costing's module launcher for the landing cards) —
+// receive/masterdata reuse the warehouse/quality landing-card hues for
+// continuity, the rest are distinct chemerp module colors.
+const ROUTE_COLOR = {
+  receive: "192, 132, 252", // purple — matches the Warehouse landing card
+  todo: "251, 191, 36", // amber
+  history: "56, 189, 248", // sky
+  codes: "45, 212, 191", // teal
+  specs: "251, 113, 133", // rose
+  masterdata: "52, 211, 153", // emerald — matches the Quality landing card
+};
+
 function currentRoute() {
   const hash = location.hash.replace(/^#\/?/, "");
   const [role, tab] = hash.split("/");
@@ -185,7 +198,7 @@ function renderTopbar() {
   tabsEl.innerHTML = ROUTES[role]
     .map(
       (r) =>
-        `<button class="tab-btn${r.id === active ? " active" : ""}" data-tab="${r.id}">${navIcon(r.id)}<span class="tab-label">${t(r.labelKey)}</span>${
+        `<button class="tab-btn${r.id === active ? " active" : ""}" data-tab="${r.id}" style="--tab-color:${ROUTE_COLOR[r.id]}">${navIcon(r.id)}<span class="tab-label">${t(r.labelKey)}</span>${
           r.id === "todo" ? `<span class="tab-badge" id="todo-tab-badge" hidden>0</span>` : ""
         }</button>`
     )
