@@ -233,11 +233,13 @@ const SUSPENDED_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <title>Service Suspended</title>
 <style>
-  body { font-family: system-ui, sans-serif; background: #f4f3f7; color: #221f2b;
+  :root { --bg: #f8f9fb; --ink: #1a1c23; --ink-muted: #5a5f6d; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111114; --ink: #edeef2; --ink-muted: #a8adbb; } }
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--ink);
          display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; }
   .card { max-width: 420px; text-align: center; }
   h1 { font-size: 1.25rem; margin-bottom: 8px; }
-  p { color: #63607a; line-height: 1.5; }
+  p { color: var(--ink-muted); line-height: 1.5; }
 </style></head>
 <body><div class="card">
   <h1>Service Suspended</h1>
@@ -257,44 +259,65 @@ const ADMIN_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <title>Admin</title>
 <style>
-  body { font-family: system-ui, sans-serif; background: #f4f3f7; color: #221f2b;
+  :root {
+    --bg: #f8f9fb; --surface: #ffffff; --surface-2: #f1f2f5;
+    --ink: #1a1c23; --ink-muted: #5a5f6d; --ink-faint: #8b90a0;
+    --rule: #dadce4; --rule-strong: #cdd0db;
+    --accent: #6552e0; --accent-ink: #ffffff;
+    --good: #2a7e5b; --good-bg: #e4f5ec;
+    --bad: #c22e5a; --bad-bg: #fce8ee;
+    --shadow-card: 0 1px 2px rgba(20,20,40,0.04), 0 4px 12px -4px rgba(20,20,40,0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111114; --surface: #17181c; --surface-2: #1e2025;
+      --ink: #edeef2; --ink-muted: #a8adbb; --ink-faint: #6b7080;
+      --rule: #32353d; --rule-strong: #3d414b;
+      --accent: #7c6ae8; --accent-ink: #100e1c;
+      --good: #5fc79a; --good-bg: #17322a;
+      --bad: #f290ae; --bad-bg: #3a1f2b;
+      --shadow-card: 0 1px 2px rgba(0,0,0,0.3), 0 6px 16px -6px rgba(0,0,0,0.45);
+    }
+  }
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--ink);
          display: flex; flex-direction: column; align-items: center; min-height: 100vh; margin: 0; padding: 40px 24px; gap: 20px; }
-  .card { max-width: 420px; width: 100%; background: #fff; border: 1px solid #e3e1ec; border-radius: 12px;
-          padding: 28px; box-shadow: 0 4px 16px rgba(30,20,60,0.06); }
+  .card { max-width: 420px; width: 100%; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px;
+          padding: 28px; box-shadow: var(--shadow-card); }
   h1 { font-size: 1.15rem; margin: 0 0 4px; }
-  .sub { color: #8a879c; font-size: 0.85rem; margin: 0 0 20px; }
+  .sub { color: var(--ink-muted); font-size: 0.85rem; margin: 0 0 20px; }
   .status-row { display: flex; align-items: center; justify-content: space-between;
-                padding: 14px 16px; border-radius: 8px; background: #f4f3f7; margin-bottom: 16px; }
+                padding: 14px 16px; border-radius: 8px; background: var(--surface-2); margin-bottom: 16px; }
   .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
-  .pill.active { background: #dcf3e6; color: #1c6b45; }
-  .pill.suspended { background: #fadfe3; color: #9c1f38; }
+  .pill.active { background: var(--good-bg); color: var(--good); }
+  .pill.suspended { background: var(--bad-bg); color: var(--bad); }
   button { width: 100%; padding: 11px; border-radius: 8px; border: none; font-size: 0.95rem; font-weight: 600;
            cursor: pointer; color: #fff; }
-  button.suspend { background: #b3273f; }
-  button.activate { background: #1c6b45; }
-  button.save { background: #3d3557; margin-top: 4px; }
+  button.suspend { background: var(--bad); }
+  button.activate { background: var(--good); }
+  button.save { background: var(--accent); color: var(--accent-ink); margin-top: 4px; }
   button:disabled { opacity: 0.6; cursor: default; }
-  .msg { margin-top: 12px; font-size: 0.85rem; color: #8a879c; min-height: 1.2em; }
-  label { display: block; font-size: 0.8rem; font-weight: 600; color: #4d4a5f; margin: 14px 0 6px; }
+  .msg { margin-top: 12px; font-size: 0.85rem; color: var(--ink-muted); min-height: 1.2em; }
+  label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--ink-muted); margin: 14px 0 6px; }
   label:first-of-type { margin-top: 0; }
   input[type="text"], select { width: 100%; box-sizing: border-box; padding: 9px 10px; border-radius: 6px;
-                        border: 1px solid #d8d5e3; font-size: 0.9rem; font-family: inherit; }
+                        border: 1px solid var(--rule-strong); background: var(--surface); color: var(--ink);
+                        font-size: 0.9rem; font-family: inherit; }
   .user-row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
-              padding: 8px 0; border-bottom: 1px solid #ece9f3; font-size: 0.85rem; }
+              padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 0.85rem; }
   .user-row:last-child { border-bottom: none; }
   .user-row .who { display: flex; flex-direction: column; }
   .user-row .who b { font-size: 0.88rem; }
-  .user-row .who span { color: #8a879c; font-size: 0.75rem; }
-  .user-row button { width: auto; padding: 5px 10px; font-size: 0.78rem; background: #ece9f3; color: #4d4a5f; }
-  .user-row button.deactivate { background: #fadfe3; color: #9c1f38; }
-  .user-row button.reactivate { background: #dcf3e6; color: #1c6b45; }
-  .user-empty { color: #b3b0c2; font-size: 0.82rem; padding: 8px 0; }
+  .user-row .who span { color: var(--ink-muted); font-size: 0.75rem; }
+  .user-row button { width: auto; padding: 5px 10px; font-size: 0.78rem; background: var(--surface-2); color: var(--ink-muted); }
+  .user-row button.deactivate { background: var(--bad-bg); color: var(--bad); }
+  .user-row button.reactivate { background: var(--good-bg); color: var(--good); }
+  .user-empty { color: var(--ink-faint); font-size: 0.82rem; padding: 8px 0; }
   .logo-row { display: flex; align-items: center; gap: 14px; }
-  .logo-preview { width: 64px; height: 64px; border-radius: 8px; border: 1px solid #e3e1ec; background: #f4f3f7;
+  .logo-preview { width: 64px; height: 64px; border-radius: 8px; border: 1px solid var(--rule); background: var(--surface-2);
                    display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; }
   .logo-preview img { max-width: 100%; max-height: 100%; }
-  .logo-preview span { font-size: 0.7rem; color: #b3b0c2; text-align: center; }
-  input[type="file"] { font-size: 0.82rem; }
+  .logo-preview span { font-size: 0.7rem; color: var(--ink-faint); text-align: center; }
+  input[type="file"] { font-size: 0.82rem; color: var(--ink); }
 </style></head>
 <body>
   <div class="card">
