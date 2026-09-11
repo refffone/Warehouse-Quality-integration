@@ -31,7 +31,8 @@ const SHARED_HEAD = `
       --bg-base: #0a0d1a; --surface: rgba(21,25,45,0.72); --surface-solid: #141830; --surface-2: rgba(30,35,60,0.55);
       --ink: #eef0fb; --ink-muted: #9aa2c7; --ink-faint: #666f99;
       --rule: rgba(150,160,255,0.16); --rule-strong: rgba(150,160,255,0.3);
-      --accent: #7c6aff; --accent-hover: #9286ff; --accent-ink: #ffffff;
+      --accent: #7c6aff; --accent-hover: #9286ff; --accent-deep: #5d4ce0; --accent-ink: #ffffff;
+      --accent-glow: 0 0 0 1px rgba(124,106,255,0.5), 0 0 22px -4px rgba(124,106,255,0.65);
       --bad: #ff7aa0;
       --shadow-card: 0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 34px -10px rgba(0,0,0,0.5);
       --shadow-card-hover: 0 1px 0 rgba(255,255,255,0.06) inset, 0 18px 44px -12px rgba(0,0,0,0.6), 0 0 0 1px rgba(124,106,255,0.4), 0 0 26px -6px rgba(124,106,255,0.5);
@@ -42,7 +43,8 @@ const SHARED_HEAD = `
         --bg-base: #f4f5fb; --surface: rgba(255,255,255,0.88); --surface-solid: #ffffff; --surface-2: rgba(237,238,250,0.8);
         --ink: #171a2b; --ink-muted: #565b7a; --ink-faint: #8b90b0;
         --rule: rgba(80,70,160,0.14); --rule-strong: rgba(80,70,160,0.24);
-        --accent: #6552e0; --accent-hover: #5a46d1; --accent-ink: #ffffff;
+        --accent: #6552e0; --accent-hover: #5a46d1; --accent-deep: #4a3bb8; --accent-ink: #ffffff;
+        --accent-glow: 0 0 0 1px rgba(101,82,224,0.35), 0 0 18px -6px rgba(101,82,224,0.4);
         --bad: #c22e5a;
         --shadow-card: 0 1px 2px rgba(20,20,40,0.05), 0 10px 30px -10px rgba(20,20,40,0.14);
         --shadow-card-hover: 0 2px 6px rgba(20,20,40,0.06), 0 14px 32px -10px rgba(20,20,40,0.18), 0 0 0 1px rgba(101,82,224,0.3);
@@ -168,10 +170,13 @@ export function loginPage(role: Role): Response {
   input:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(124,106,255,0.3); }
   button {
     width: 100%; margin-top: 20px; padding: 12px; border-radius: 8px; border: none; font-size: 0.95rem;
-    font-weight: 600; cursor: pointer; color: var(--accent-ink); background: var(--accent);
-    transition: background 0.12s, box-shadow 0.12s;
+    font-weight: 600; cursor: pointer; color: var(--accent-ink);
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%);
+    box-shadow: 0 2px 10px -2px rgba(0,0,0,0.35);
+    transition: box-shadow 0.15s cubic-bezier(0.16,1,0.3,1), transform 0.15s cubic-bezier(0.16,1,0.3,1), filter 0.15s;
   }
-  button:hover:not(:disabled) { background: var(--accent-hover); box-shadow: 0 0 22px -4px rgba(124,106,255,0.65); }
+  button:hover:not(:disabled) { box-shadow: var(--accent-glow); filter: brightness(1.08); transform: translateY(-1px); }
+  button:active:not(:disabled) { transform: translateY(0); box-shadow: 0 2px 10px -2px rgba(0,0,0,0.35); filter: brightness(1); }
   button:disabled { opacity: 0.6; cursor: default; }
   .msg { margin-top: 12px; font-size: 0.85rem; color: var(--bad); min-height: 1.2em; text-align: center; }
   .back { display: block; text-align: center; margin-top: 18px; font-size: 0.8rem; color: var(--ink-muted); text-decoration: none; }

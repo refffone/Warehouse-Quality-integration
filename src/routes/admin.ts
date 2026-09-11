@@ -300,7 +300,10 @@ const ADMIN_HTML = `<!doctype html>
   .pill.active { background: var(--good-bg); color: var(--good); }
   .pill.suspended { background: var(--bad-bg); color: var(--bad); }
   button { width: 100%; padding: 11px; border-radius: 8px; border: none; font-size: 0.95rem; font-weight: 600;
-           cursor: pointer; color: #fff; }
+           cursor: pointer; color: #fff;
+           transition: transform 0.15s cubic-bezier(0.16,1,0.3,1), filter 0.15s; }
+  button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); }
+  button:active:not(:disabled) { transform: translateY(0); filter: brightness(1); }
   button.suspend { background: var(--bad); }
   button.activate { background: var(--good); }
   button.save { background: var(--accent); color: var(--accent-ink); margin-top: 4px; }
