@@ -17,11 +17,6 @@ const GRAIN =
 
 const BRAND_MARK = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2Z"/></svg>`;
 
-const ROLE_ICON: Record<Role, string> = {
-  warehouse: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8.5 12 4l9 4.5"/><path d="M3 8.5v10L12 22l9-3.5v-10"/><path d="M3 8.5 12 13l9-4.5"/><path d="M12 13v9"/></svg>`,
-  quality: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6"/><path d="M10 3v5.5L4.8 18a2 2 0 0 0 1.75 3h10.9a2 2 0 0 0 1.75-3L14 8.5V3"/><path d="M7.5 14.5h9"/></svg>`,
-};
-
 // Landing-card watermark icons — geometry lifted from chemerp-costing's
 // AbstractIcons.jsx (AbstractCubes / AbstractLens), each role's own accent
 // hue matched to that repo's actual module colors (wh_rm: #C084FC, quality:
@@ -67,7 +62,6 @@ const SHARED_HEAD = `
       --shadow-card: 0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 34px -10px rgba(0,0,0,0.5);
       --shadow-card-hover: 0 1px 0 rgba(255,255,255,0.06) inset, 0 18px 44px -12px rgba(0,0,0,0.6), 0 0 0 1px rgba(124,106,255,0.4), 0 0 26px -6px rgba(124,106,255,0.5);
       --sheen: linear-gradient(135deg, rgba(124,106,255,0.10) 0%, transparent 55%);
-      --login-context-bg: linear-gradient(160deg, rgba(124,106,255,0.14), rgba(21,25,45,0.6));
     }
     @media (prefers-color-scheme: light) {
       :root {
@@ -80,7 +74,6 @@ const SHARED_HEAD = `
         --shadow-card: 0 1px 2px rgba(20,20,40,0.05), 0 10px 30px -10px rgba(20,20,40,0.14);
         --shadow-card-hover: 0 2px 6px rgba(20,20,40,0.06), 0 14px 32px -10px rgba(20,20,40,0.18), 0 0 0 1px rgba(101,82,224,0.3);
         --sheen: linear-gradient(135deg, rgba(101,82,224,0.06) 0%, transparent 55%);
-        --login-context-bg: linear-gradient(160deg, rgba(101,82,224,0.08), rgba(255,255,255,0.5));
       }
     }
     body {
@@ -193,24 +186,49 @@ export function loginPage(role: Role): Response {
     content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 0;
     background: var(--sheen);
   }
-  .split-context {
-    position: relative; z-index: 1; flex: 1; padding: 32px 28px;
-    background: var(--login-context-bg); border-inline-end: 1px solid var(--rule);
-    display: flex; flex-direction: column; justify-content: center;
+  /* Visual panel: a full-bleed role-tinted nebula + starfield hero instead
+     of a flat gradient rectangle, with a large line-art version of the
+     role's own icon as the "subject" — a photo substitute that stays
+     inside the app's own space/observatory visual language rather than
+     reaching for stock photography. Role info overlaid at the bottom on a
+     dark scrim for legibility against the busy background. */
+  .split-visual {
+    position: relative; z-index: 1; flex: 1; min-width: 240px; overflow: hidden;
+    display: flex; flex-direction: column; justify-content: flex-end; padding: 28px 28px 26px;
   }
-  .split-context .role-badge { margin: 0 0 16px; }
-  .split-context h1 { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 1.3rem; margin: 0 0 6px; text-align: start; }
-  .split-context .role-tag { color: var(--ink-faint); font-size: 0.8rem; margin: 0 0 18px; }
-  .split-context ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 11px; }
-  .split-context li { display: flex; align-items: flex-start; gap: 9px; font-size: 0.83rem; color: var(--ink-muted); line-height: 1.45; }
-  .split-context li svg { width: 15px; height: 15px; color: var(--accent); flex-shrink: 0; margin-top: 2px; }
+  .split-visual.role-warehouse {
+    background-color: #120a24;
+    background-image:
+      radial-gradient(ellipse 340px 300px at 30% 22%, rgba(${MODULE_COLOR.warehouse},0.55), transparent 65%),
+      radial-gradient(ellipse 260px 260px at 78% 70%, rgba(124,106,255,0.28), transparent 60%),
+      ${STARS}, ${GRAIN};
+    background-repeat: no-repeat, no-repeat, repeat, repeat;
+  }
+  .split-visual.role-quality {
+    background-color: #06180f;
+    background-image:
+      radial-gradient(ellipse 340px 300px at 30% 22%, rgba(${MODULE_COLOR.quality},0.5), transparent 65%),
+      radial-gradient(ellipse 260px 260px at 78% 70%, rgba(82,216,255,0.22), transparent 60%),
+      ${STARS}, ${GRAIN};
+    background-repeat: no-repeat, no-repeat, repeat, repeat;
+  }
+  .visual-icon {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -58%); width: 230px; height: 230px; pointer-events: none;
+  }
+  .visual-icon svg { width: 100%; height: 100%; }
+  .split-visual.role-warehouse .visual-icon { color: #C084FC; opacity: 0.4; }
+  .split-visual.role-quality .visual-icon { color: #34D399; opacity: 0.4; }
+  .visual-scrim { position: absolute; inset: 0; background: linear-gradient(to top, rgba(6,8,18,0.88) 0%, rgba(6,8,18,0.35) 48%, transparent 72%); }
+  .visual-body { position: relative; z-index: 1; }
+  .visual-body h1 { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 1.3rem; margin: 0 0 4px; color: #fff; }
+  .visual-body .role-tag { color: rgba(255,255,255,0.6); font-size: 0.8rem; margin: 0 0 16px; }
+  .visual-body ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+  .visual-body li { display: flex; align-items: flex-start; gap: 8px; font-size: 0.8rem; color: rgba(255,255,255,0.78); line-height: 1.4; }
+  .visual-body li svg { width: 14px; height: 14px; flex-shrink: 0; margin-top: 2px; }
+  .split-visual.role-warehouse .visual-body li svg { color: #C084FC; }
+  .split-visual.role-quality .visual-body li svg { color: #34D399; }
 
-  .split-form { position: relative; z-index: 1; flex: 1; padding: 32px 28px; background: var(--surface-solid); }
-  .role-badge {
-    width: 44px; height: 44px; border-radius: 12px; color: var(--accent);
-    background: var(--surface-2); border: 1px solid var(--rule); display: flex; align-items: center; justify-content: center;
-  }
-  .role-badge svg { width: 22px; height: 22px; }
+  .split-form { position: relative; z-index: 1; flex: 1; min-width: 260px; padding: 32px 28px; background: var(--surface-solid); }
   label { display: block; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); margin: 14px 0 6px; }
   label:first-of-type { margin-top: 0; }
   input {
@@ -256,9 +274,10 @@ export function loginPage(role: Role): Response {
 
   @media (max-width: 640px) {
     .split { flex-direction: column; }
-    .split-context { border-inline-end: none; border-bottom: 1px solid var(--rule); padding: 22px 24px; }
-    .split-context ul { display: none; }
-    .split-context h1 { font-size: 1.1rem; }
+    .split-visual { min-height: 200px; padding: 20px; }
+    .visual-body ul { display: none; }
+    .visual-body h1 { font-size: 1.1rem; }
+    .visual-icon { width: 160px; height: 160px; transform: translate(-50%, -70%); }
     .split-form { padding: 24px; }
   }
 </style>
@@ -267,13 +286,16 @@ export function loginPage(role: Role): Response {
   <div class="login-shell">
     <div class="brand" style="margin-bottom:24px"><span class="mark">${BRAND_MARK}</span><span class="name">Warehouse <em>·</em> Quality</span></div>
     <div class="split">
-      <div class="split-context">
-        <div class="role-badge">${ROLE_ICON[role]}</div>
-        <h1>${label}</h1>
-        <p class="role-tag">${role === "warehouse" ? "Receive materials, track incoming batches" : "Test, decide, and manage master data"}</p>
-        <ul>
-          ${ROLE_CAPABILITIES[role].map((c) => `<li>${CHECK_ICON}<span>${c}</span></li>`).join("")}
-        </ul>
+      <div class="split-visual role-${role}">
+        <div class="visual-icon">${MODULE_ICON[role]}</div>
+        <div class="visual-scrim"></div>
+        <div class="visual-body">
+          <h1>${label}</h1>
+          <p class="role-tag">${role === "warehouse" ? "Receive materials, track incoming batches" : "Test, decide, and manage master data"}</p>
+          <ul>
+            ${ROLE_CAPABILITIES[role].map((c) => `<li>${CHECK_ICON}<span>${c}</span></li>`).join("")}
+          </ul>
+        </div>
       </div>
       <div class="split-form">
         <form id="login-form">
