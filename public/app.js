@@ -1,5 +1,6 @@
 import { api, getRememberedName, rememberName, uploadFile } from "./api.js";
 import { t, getLang, setLang, applyDocumentDirection } from "./i18n.js";
+import { navIcon } from "./icons.js";
 
 // ---------------------------------------------------------------- session
 //
@@ -158,7 +159,7 @@ function applyStaticTranslations() {
   document.getElementById("signed-in-as-role").textContent =
     `(${session.role === "quality" ? t("topbar.roleQuality") : t("topbar.roleWarehouse")})`;
   document.getElementById("notif-btn").title = t("topbar.notifications");
-  document.getElementById("logout-btn").textContent = t("topbar.logout");
+  document.getElementById("logout-label").textContent = t("topbar.logout");
   document.getElementById("lang-toggle").textContent = t("lang.toggle");
   document.querySelector(".brand-name").innerHTML =
     `${esc(t("topbar.roleWarehouse"))} <em>·</em> ${esc(t("topbar.roleQuality"))}`;
@@ -170,7 +171,10 @@ function renderTopbar() {
   const tabsEl = document.getElementById("tabs");
   const active = currentRoute();
   tabsEl.innerHTML = ROUTES[role]
-    .map((r) => `<button class="tab-btn${r.id === active ? " active" : ""}" data-tab="${r.id}">${t(r.labelKey)}</button>`)
+    .map(
+      (r) =>
+        `<button class="tab-btn${r.id === active ? " active" : ""}" data-tab="${r.id}">${navIcon(r.id)}<span>${t(r.labelKey)}</span></button>`
+    )
     .join("");
   tabsEl.querySelectorAll("[data-tab]").forEach((btn) =>
     btn.addEventListener("click", () => goTo(btn.dataset.tab))

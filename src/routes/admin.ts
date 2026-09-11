@@ -233,8 +233,8 @@ const SUSPENDED_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <title>Service Suspended</title>
 <style>
-  :root { --bg: #f8f9fb; --ink: #1a1c23; --ink-muted: #5a5f6d; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #111114; --ink: #edeef2; --ink-muted: #a8adbb; } }
+  :root { --bg: #0a0d1a; --ink: #eef0fb; --ink-muted: #9aa2c7; }
+  @media (prefers-color-scheme: light) { :root { --bg: #f4f5fb; --ink: #171a2b; --ink-muted: #565b7a; } }
   body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--ink);
          display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; }
   .card { max-width: 420px; text-align: center; }
@@ -260,23 +260,23 @@ const ADMIN_HTML = `<!doctype html>
 <title>Admin</title>
 <style>
   :root {
-    --bg: #f8f9fb; --surface: #ffffff; --surface-2: #f1f2f5;
-    --ink: #1a1c23; --ink-muted: #5a5f6d; --ink-faint: #8b90a0;
-    --rule: #dadce4; --rule-strong: #cdd0db;
-    --accent: #6552e0; --accent-ink: #ffffff;
-    --good: #2a7e5b; --good-bg: #e4f5ec;
-    --bad: #c22e5a; --bad-bg: #fce8ee;
-    --shadow-card: 0 1px 2px rgba(20,20,40,0.04), 0 4px 12px -4px rgba(20,20,40,0.08);
+    --bg: #0a0d1a; --surface: #141830; --surface-2: rgba(30,35,60,0.6);
+    --ink: #eef0fb; --ink-muted: #9aa2c7; --ink-faint: #666f99;
+    --rule: rgba(150,160,255,0.16); --rule-strong: rgba(150,160,255,0.3);
+    --accent: #7c6aff; --accent-ink: #ffffff;
+    --good: #4fe3ab; --good-bg: rgba(79,227,171,0.14);
+    --bad: #ff7aa0; --bad-bg: rgba(255,122,160,0.14);
+    --shadow-card: 0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 28px -14px rgba(0,0,0,0.7);
   }
-  @media (prefers-color-scheme: dark) {
+  @media (prefers-color-scheme: light) {
     :root {
-      --bg: #111114; --surface: #17181c; --surface-2: #1e2025;
-      --ink: #edeef2; --ink-muted: #a8adbb; --ink-faint: #6b7080;
-      --rule: #32353d; --rule-strong: #3d414b;
-      --accent: #7c6ae8; --accent-ink: #100e1c;
-      --good: #5fc79a; --good-bg: #17322a;
-      --bad: #f290ae; --bad-bg: #3a1f2b;
-      --shadow-card: 0 1px 2px rgba(0,0,0,0.3), 0 6px 16px -6px rgba(0,0,0,0.45);
+      --bg: #f4f5fb; --surface: #ffffff; --surface-2: #f1f2f5;
+      --ink: #171a2b; --ink-muted: #565b7a; --ink-faint: #8b90b0;
+      --rule: rgba(80,70,160,0.14); --rule-strong: rgba(80,70,160,0.24);
+      --accent: #6552e0; --accent-ink: #ffffff;
+      --good: #21855c; --good-bg: #e2f5ec;
+      --bad: #c22e5a; --bad-bg: #fce8ee;
+      --shadow-card: 0 1px 2px rgba(20,20,40,0.04), 0 4px 12px -4px rgba(20,20,40,0.08);
     }
   }
   body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--ink);
