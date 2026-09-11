@@ -22,6 +22,17 @@ const ROLE_ICON: Record<Role, string> = {
   quality: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6"/><path d="M10 3v5.5L4.8 18a2 2 0 0 0 1.75 3h10.9a2 2 0 0 0 1.75-3L14 8.5V3"/><path d="M7.5 14.5h9"/></svg>`,
 };
 
+// Landing-card watermark icons — geometry lifted from chemerp-costing's
+// AbstractIcons.jsx (AbstractCubes / AbstractLens), each role's own accent
+// hue matched to that repo's actual module colors (wh_rm: #C084FC, quality:
+// #34D399) rather than the app's generic violet, so the two "stations" read
+// as visually distinct the way chemerp's module launcher does.
+const MODULE_ICON: Record<Role, string> = {
+  warehouse: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z" stroke-linejoin="round"/><path d="M12 21v-9"/><path d="M4 7.5l8 4.5"/><path d="M20 7.5l-8 4.5"/><path d="M12 12l4-2" opacity="0.5"/></svg>`,
+  quality: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0"/><path d="M21 21l-6-6" stroke-linecap="round"/><path d="M10 7a3 3 0 0 1 3 3" stroke-linecap="round"/></svg>`,
+};
+const MODULE_COLOR: Record<Role, string> = { warehouse: "192,132,252", quality: "52,211,153" };
+
 const SHARED_HEAD = `
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -87,30 +98,36 @@ export function landingPage(): Response {
   .picker { display: flex; flex-direction: column; align-items: center; }
   .tagline { color: var(--ink-faint); font-size: 0.82rem; letter-spacing: 0.08em; text-transform: uppercase; margin: -20px 0 28px; }
   .cards { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
+  /* "Home card" treatment lifted from chemerp-costing's module launcher
+     (src/pages/home/index.jsx): a per-role tinted diagonal gradient, a
+     large icon watermark bleeding off the bottom-right corner (faded via a
+     radial-gradient mask instead of a hard edge — the "glossy fadeout"
+     look), and a hover lift + glow in that same color. No separate icon
+     chip — the watermark itself is the icon, matching the live reference. */
   a.card {
     position: relative;
-    width: 230px; padding: 34px 24px; background: var(--surface); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--rule); border-radius: 16px; box-shadow: var(--shadow-card);
-    text-decoration: none; color: var(--ink); text-align: center;
-    transition: transform 0.22s cubic-bezier(0.16,1,0.3,1), box-shadow 0.22s cubic-bezier(0.16,1,0.3,1), border-color 0.15s;
+    width: 230px; padding: 30px 24px; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--rule); border-radius: 16px; box-shadow: var(--shadow-card); overflow: hidden;
+    text-decoration: none; color: var(--ink); text-align: left;
+    transition: transform 0.22s cubic-bezier(0.16,1,0.3,1), box-shadow 0.22s cubic-bezier(0.16,1,0.3,1), border-color 0.22s;
   }
-  /* Faint diagonal sheen, same treatment as the app's own .card (public/styles.css) */
-  a.card::before {
-    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
-    background: var(--sheen);
+  a.card.role-warehouse { background: linear-gradient(135deg, var(--surface) 40%, rgba(${MODULE_COLOR.warehouse},0.13) 100%); border-color: rgba(${MODULE_COLOR.warehouse},0.18); }
+  a.card.role-quality { background: linear-gradient(135deg, var(--surface) 40%, rgba(${MODULE_COLOR.quality},0.13) 100%); border-color: rgba(${MODULE_COLOR.quality},0.18); }
+  a.card:hover, a.card:focus-visible { outline: none; transform: translateY(-4px); }
+  a.card.role-warehouse:hover { box-shadow: 0 16px 40px -14px rgba(${MODULE_COLOR.warehouse},0.22), 0 0 0 1px rgba(${MODULE_COLOR.warehouse},0.22); border-color: rgba(${MODULE_COLOR.warehouse},0.3); }
+  a.card.role-quality:hover { box-shadow: 0 16px 40px -14px rgba(${MODULE_COLOR.quality},0.22), 0 0 0 1px rgba(${MODULE_COLOR.quality},0.22); border-color: rgba(${MODULE_COLOR.quality},0.3); }
+  a.card .watermark {
+    position: absolute; right: -16px; bottom: -16px; width: 128px; height: 128px; pointer-events: none; z-index: 0;
+    -webkit-mask-image: radial-gradient(circle at bottom right, black 15%, transparent 68%);
+    mask-image: radial-gradient(circle at bottom right, black 15%, transparent 68%);
+    transition: transform 0.3s cubic-bezier(0.16,1,0.3,1);
   }
-  a.card:hover, a.card:focus-visible {
-    outline: none; transform: translateY(-3px);
-    box-shadow: var(--shadow-card-hover);
-    border-color: rgba(150,160,255,0.35);
-  }
-  a.card .icon {
-    width: 44px; height: 44px; margin: 0 auto 16px; border-radius: 12px; color: var(--accent);
-    background: var(--surface-2); border: 1px solid var(--rule); display: flex; align-items: center; justify-content: center;
-  }
-  a.card .icon svg { width: 22px; height: 22px; }
-  a.card h2 { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 1.15rem; margin: 0 0 6px; }
-  a.card p { margin: 0; color: var(--ink-muted); font-size: 0.85rem; line-height: 1.4; }
+  a.card .watermark svg { width: 100%; height: 100%; }
+  a.card.role-warehouse .watermark { color: #C084FC; }
+  a.card.role-quality .watermark { color: #34D399; }
+  a.card:hover .watermark { transform: scale(1.05); }
+  a.card h2 { position: relative; z-index: 1; font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 1.15rem; margin: 0 0 6px; }
+  a.card p { position: relative; z-index: 1; margin: 0; color: var(--ink-muted); font-size: 0.85rem; line-height: 1.4; max-width: 165px; }
 </style>
 </head>
 <body>
@@ -118,13 +135,13 @@ export function landingPage(): Response {
     <div class="brand"><span class="mark">${BRAND_MARK}</span><span class="name">Warehouse <em>·</em> Quality</span></div>
     <p class="tagline">Select your station</p>
     <div class="cards">
-      <a class="card" href="/login/warehouse">
-        <div class="icon">${ROLE_ICON.warehouse}</div>
+      <a class="card role-warehouse" href="/login/warehouse">
+        <div class="watermark">${MODULE_ICON.warehouse}</div>
         <h2>Warehouse</h2>
         <p>Receive materials, track incoming batches</p>
       </a>
-      <a class="card" href="/login/quality">
-        <div class="icon">${ROLE_ICON.quality}</div>
+      <a class="card role-quality" href="/login/quality">
+        <div class="watermark">${MODULE_ICON.quality}</div>
         <h2>Quality</h2>
         <p>Test, decide, and manage master data</p>
       </a>
