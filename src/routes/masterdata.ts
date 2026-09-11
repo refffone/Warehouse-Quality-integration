@@ -326,22 +326,48 @@ async function getImportEntries(
     .bind(materialCode, `${prefix}%`)
     .all<Omit<DossierImportEntry, "batches" | "attachments">>();
 
-  const entries: DossierImportEntry[] = [];
-  for (const line of lines.results ?? []) {
-    const batches = await env.DB.prepare(
-      `SELECT id, supplier_batch_no, status, internal_batch_no, decided_at
-       FROM receipt_batches WHERE receipt_line_id = ? ORDER BY id`
-    )
-      .bind(line.receipt_line_id)
-      .all<DossierBatchSummary>();
-    const attachments = await env.DB.prepare(
-      "SELECT * FROM attachments WHERE receipt_line_id = ? ORDER BY uploaded_at DESC"
-    )
-      .bind(line.receipt_line_id)
-      .all<Attachment>();
-    entries.push({ ...line, batches: batches.results ?? [], attachments: attachments.results ?? [] });
+  const lineRows = lines.results ?? [];
+  if (!lineRows.length) return [];
+
+  // Fetch batches/attachments for every line up front, chunked to stay under
+  // D1's per-statement bound-parameter limit, instead of one round trip per
+  // line — a dossier with hundreds of import-code entries was doing hundreds
+  // of sequential extra queries here.
+  const lineIds = lineRows.map((l) => l.receipt_line_id);
+  const batchesByLine = new Map<number, DossierBatchSummary[]>();
+  const attachmentsByLine = new Map<number, Attachment[]>();
+  const CHUNK = 100;
+  for (let i = 0; i < lineIds.length; i += CHUNK) {
+    const chunk = lineIds.slice(i, i + CHUNK);
+    const placeholders = chunk.map(() => "?").join(",");
+    const [batchRows, attachmentRows] = await Promise.all([
+      env.DB.prepare(
+        `SELECT id, receipt_line_id, supplier_batch_no, status, internal_batch_no, decided_at
+         FROM receipt_batches WHERE receipt_line_id IN (${placeholders}) ORDER BY id`
+      )
+        .bind(...chunk)
+        .all<DossierBatchSummary & { receipt_line_id: number }>(),
+      env.DB.prepare(
+        `SELECT * FROM attachments WHERE receipt_line_id IN (${placeholders}) ORDER BY uploaded_at DESC`
+      )
+        .bind(...chunk)
+        .all<Attachment & { receipt_line_id: number }>(),
+    ]);
+    for (const { receipt_line_id, ...rest } of batchRows.results ?? []) {
+      if (!batchesByLine.has(receipt_line_id)) batchesByLine.set(receipt_line_id, []);
+      batchesByLine.get(receipt_line_id)!.push(rest);
+    }
+    for (const a of attachmentRows.results ?? []) {
+      if (!attachmentsByLine.has(a.receipt_line_id)) attachmentsByLine.set(a.receipt_line_id, []);
+      attachmentsByLine.get(a.receipt_line_id)!.push(a);
+    }
   }
-  return entries;
+
+  return lineRows.map((line) => ({
+    ...line,
+    batches: batchesByLine.get(line.receipt_line_id) ?? [],
+    attachments: attachmentsByLine.get(line.receipt_line_id) ?? [],
+  }));
 }
 
 const RATING_LABELS: SupplierRating["label"][] = ["Unrated", "Very Poor", "Poor", "Fair", "Good", "Excellent"];
