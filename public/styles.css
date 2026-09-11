@@ -309,9 +309,33 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* ---------- cards (glass panels) ---------- */
 .card {
+  /* No overflow:hidden — several cards (Master Data, Specs, Receive) host
+     an absolutely-positioned search-results dropdown that must be able to
+     escape the card's bounds. The sheen below doesn't need it either: its
+     own border-radius:inherit + exact inset:0 sizing already clips it to
+     the card's rounded rect on its own. */
+  position: relative;
   background: var(--surface); backdrop-filter: var(--blur-panel); -webkit-backdrop-filter: var(--blur-panel);
-  border: 1px solid var(--rule); border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-card); padding: 18px 20px;
+  border: 1px solid var(--rule); border-radius: 16px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 10px 34px -10px rgba(0, 0, 0, 0.5);
+  padding: 18px 20px;
+  transition: box-shadow 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.15s;
+}
+/* Faint diagonal sheen — pure polish, present on every card regardless of
+   whether it's interactive. */
+.card::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: linear-gradient(135deg, rgba(124, 106, 255, 0.10) 0%, transparent 55%);
+}
+/* Lift + glow only on cards that are themselves a click target (currently
+   just the landing page's role-picker cards, via .card-clickable) — a
+   static content panel (receipt details, stat tiles, admin sections)
+   hovering off the page reads as broken, not responsive. */
+.card-clickable:hover, .card-clickable:focus-visible {
+  outline: none;
+  transform: translateY(-3px);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 18px 44px -12px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(124, 106, 255, 0.4), 0 0 26px -6px rgba(124, 106, 255, 0.5);
+  border-color: rgba(150, 160, 255, 0.35);
 }
 
 .receipt-card { display: flex; flex-direction: column; gap: 10px; }

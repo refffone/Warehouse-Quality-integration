@@ -33,8 +33,9 @@ const SHARED_HEAD = `
       --rule: rgba(150,160,255,0.16); --rule-strong: rgba(150,160,255,0.3);
       --accent: #7c6aff; --accent-hover: #9286ff; --accent-ink: #ffffff;
       --bad: #ff7aa0;
-      --shadow-card: 0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 30px -14px rgba(0,0,0,0.7);
-      --shadow-card-hover: 0 1px 0 rgba(255,255,255,0.06) inset, 0 0 0 1px rgba(124,106,255,0.4), 0 20px 44px -14px rgba(0,0,0,0.75), 0 0 28px -6px rgba(124,106,255,0.5);
+      --shadow-card: 0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 34px -10px rgba(0,0,0,0.5);
+      --shadow-card-hover: 0 1px 0 rgba(255,255,255,0.06) inset, 0 18px 44px -12px rgba(0,0,0,0.6), 0 0 0 1px rgba(124,106,255,0.4), 0 0 26px -6px rgba(124,106,255,0.5);
+      --sheen: linear-gradient(135deg, rgba(124,106,255,0.10) 0%, transparent 55%);
     }
     @media (prefers-color-scheme: light) {
       :root {
@@ -43,8 +44,9 @@ const SHARED_HEAD = `
         --rule: rgba(80,70,160,0.14); --rule-strong: rgba(80,70,160,0.24);
         --accent: #6552e0; --accent-hover: #5a46d1; --accent-ink: #ffffff;
         --bad: #c22e5a;
-        --shadow-card: 0 1px 2px rgba(20,20,40,0.04), 0 4px 12px -4px rgba(20,20,40,0.08);
-        --shadow-card-hover: 0 2px 6px rgba(20,20,40,0.06), 0 10px 24px -8px rgba(20,20,40,0.14), 0 0 0 1px rgba(101,82,224,0.3);
+        --shadow-card: 0 1px 2px rgba(20,20,40,0.05), 0 10px 30px -10px rgba(20,20,40,0.14);
+        --shadow-card-hover: 0 2px 6px rgba(20,20,40,0.06), 0 14px 32px -10px rgba(20,20,40,0.18), 0 0 0 1px rgba(101,82,224,0.3);
+        --sheen: linear-gradient(135deg, rgba(101,82,224,0.06) 0%, transparent 55%);
       }
     }
     body {
@@ -84,11 +86,22 @@ export function landingPage(): Response {
   .tagline { color: var(--ink-faint); font-size: 0.82rem; letter-spacing: 0.08em; text-transform: uppercase; margin: -20px 0 28px; }
   .cards { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
   a.card {
+    position: relative;
     width: 230px; padding: 34px 24px; background: var(--surface); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--rule); border-radius: 14px; box-shadow: var(--shadow-card);
-    text-decoration: none; color: var(--ink); text-align: center; transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+    border: 1px solid var(--rule); border-radius: 16px; box-shadow: var(--shadow-card);
+    text-decoration: none; color: var(--ink); text-align: center;
+    transition: transform 0.22s cubic-bezier(0.16,1,0.3,1), box-shadow 0.22s cubic-bezier(0.16,1,0.3,1), border-color 0.15s;
   }
-  a.card:hover, a.card:focus-visible { outline: none; transform: translateY(-3px); box-shadow: var(--shadow-card-hover); border-color: transparent; }
+  /* Faint diagonal sheen, same treatment as the app's own .card (public/styles.css) */
+  a.card::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: var(--sheen);
+  }
+  a.card:hover, a.card:focus-visible {
+    outline: none; transform: translateY(-3px);
+    box-shadow: var(--shadow-card-hover);
+    border-color: rgba(150,160,255,0.35);
+  }
   a.card .icon {
     width: 44px; height: 44px; margin: 0 auto 16px; border-radius: 12px; color: var(--accent);
     background: var(--surface-2); border: 1px solid var(--rule); display: flex; align-items: center; justify-content: center;
@@ -127,8 +140,16 @@ export function loginPage(role: Role): Response {
 <title>${label} sign in · Warehouse · Quality</title>${SHARED_HEAD}
 <style>
   .card {
+    position: relative;
     width: 100%; max-width: 360px; background: var(--surface); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--rule); border-radius: 14px; padding: 32px; box-shadow: var(--shadow-card);
+    border: 1px solid var(--rule); border-radius: 16px; padding: 32px; box-shadow: var(--shadow-card);
+  }
+  /* Faint diagonal sheen — same passive polish as every other card in the
+     app; no hover-lift here since this card isn't itself a click target
+     (it hosts the login form, not a link). */
+  .card::before {
+    content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+    background: var(--sheen);
   }
   .wrap { display: flex; flex-direction: column; align-items: center; }
   .role-badge {
