@@ -38,16 +38,25 @@
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 }
 
-/* Mirrors the Latin pairing's role (a characterful display face over a
-   clean, neutral body face) rather than its mechanism (Arabic has no
-   italic-display convention): Markazi Text is a literary Arabic serif
-   for headings/brand, Cairo is a polished, widely-used Arabic UI face
-   for everything else. */
+/* One professional, widely-used Arabic UI face (Cairo) for both roles —
+   headings get real weight (bold) instead of a second, more decorative
+   face, since Arabic has no italic-display convention and a literary
+   serif read as too soft/slanted for a business tool. */
 :root[dir="rtl"] {
-  --font-display: 'Markazi Text', 'Fraunces', Georgia, serif;
+  --font-display: 'Cairo', 'Fraunces', Georgia, serif;
   --font-body: 'Cairo', 'IBM Plex Sans', system-ui, sans-serif;
 }
-:root[dir="rtl"] .brand-name { font-style: normal; }
+:root[dir="rtl"] .brand-name,
+:root[dir="rtl"] h1,
+:root[dir="rtl"] h2,
+:root[dir="rtl"] h3 {
+  font-style: normal;
+}
+:root[dir="rtl"] h1,
+:root[dir="rtl"] h2,
+:root[dir="rtl"] h3 {
+  font-weight: 700;
+}
 
 @media (prefers-color-scheme: dark) {
   :root {

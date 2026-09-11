@@ -459,7 +459,7 @@ function batchStatusInline(b) {
   if (b.status === undefined) return `<span class="muted small">${esc(t("line.withQuality"))}</span>`; // redacted (sample, warehouse view)
   if (b.status === "pending") return `<span class="muted small">${esc(t("line.awaitingDecision"))}</span>`;
   if (b.status === "rejected") return statusPill("rejected");
-  return `${statusPill(b.status)}${b.internal_batch_no ? ` <span class="mono small">${esc(b.internal_batch_no)}</span>` : ""}`;
+  return `${statusPill(b.status)}${b.internal_batch_no ? ` <bdi class="mono small">${esc(b.internal_batch_no)}</bdi>` : ""}`;
 }
 
 function resultsSummaryBadge(results) {
@@ -675,14 +675,19 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
         actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="pdf">${esc(t("line.coaPdf"))}</button>`);
         actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="xlsx">${esc(t("line.coaExcel"))}</button>`);
       }
+      // Numbers/units/codes are always Latin — bdi keeps each one a single
+      // isolated left-to-right token so it can't get bidi-reordered against
+      // the Arabic connector words around it (e.g. "100 kg" splitting away
+      // from "as received"/"كما استُلمت" mid-sentence).
+      const qtyValue = (qty, unit) => `<bdi>${esc(qty)} ${esc(unit)}</bdi>`;
       const qtyLine =
         b.qty_actual_weighed != null
-          ? t("line.asReceivedActual", { qty: b.qty_as_received, actual: b.qty_actual_weighed })
-          : t("line.asReceived", { qty: b.qty_as_received });
+          ? `${qtyValue(b.qty_as_received, line.unit)} ${esc(t("line.asReceivedLabel"))} · ${qtyValue(b.qty_actual_weighed, line.unit)} ${esc(t("line.actualLabel"))}`
+          : `${qtyValue(b.qty_as_received, line.unit)} ${esc(t("line.asReceivedLabel"))}`;
       const resultsBadge = resultsSummaryBadge(b.test_results);
       return `
         <div class="batch-row">
-          <div><span class="batch-id">${esc(b.supplier_batch_no)}</span> <span class="batch-qty">${esc(qtyLine)} ${esc(line.unit)}</span></div>
+          <div><bdi class="batch-id">${esc(b.supplier_batch_no)}</bdi> <span class="batch-qty">${qtyLine}</span></div>
           <div class="hstack">
             ${b.expiry_date ? `<span class="small muted">${esc(t("line.exp", { date: fmtDate(b.expiry_date) }))}</span>` : ""}
             ${batchStatusInline(b)}
@@ -1804,10 +1809,10 @@ function dossierImportEntryHtml(entry) {
     .map(
       (b) => `
       <div class="batch-row">
-        <div><span class="batch-id">${esc(b.supplier_batch_no)}</span></div>
+        <div><bdi class="batch-id">${esc(b.supplier_batch_no)}</bdi></div>
         <div class="hstack">
           ${statusPill(b.status)}
-          ${b.internal_batch_no ? `<span class="mono small">${esc(b.internal_batch_no)}</span>` : ""}
+          ${b.internal_batch_no ? `<bdi class="mono small">${esc(b.internal_batch_no)}</bdi>` : ""}
           ${b.status !== "pending" ? `<button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="pdf">${esc(t("line.coaPdf"))}</button>
           <button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="xlsx">${esc(t("line.coaExcel"))}</button>` : ""}
         </div>
@@ -1831,7 +1836,7 @@ function dossierImportEntryHtml(entry) {
     <div class="dossier-import-entry" data-line-id="${entry.receipt_line_id}">
       <div class="line-head">
         <div>
-          <b class="mono">${esc(entry.import_code)}</b> ${scenarioBadge}
+          <bdi class="mono"><b>${esc(entry.import_code)}</b></bdi> ${scenarioBadge}
           <div class="small muted">${esc(entry.material_name_text)} · ${esc(entry.supplier_name)} (${esc(entry.supplier_code)}) · ${esc(t("masterdata.receivedOn", { date: fmtDate(entry.received_at) }))}</div>
         </div>
       </div>
