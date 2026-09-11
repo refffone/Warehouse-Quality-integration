@@ -309,7 +309,7 @@ const ADMIN_HTML = `<!doctype html>
   button.save { background: var(--accent); color: var(--accent-ink); margin-top: 4px; }
   button:disabled { opacity: 0.6; cursor: default; }
   .msg { margin-top: 12px; font-size: 0.85rem; color: var(--ink-muted); min-height: 1.2em; }
-  label { display: block; font-size: 0.8rem; font-weight: 600; color: var(--ink-muted); margin: 14px 0 6px; }
+  label { display: block; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); margin: 14px 0 6px; }
   label:first-of-type { margin-top: 0; }
   input[type="text"], select { width: 100%; box-sizing: border-box; padding: 9px 10px; border-radius: 6px;
                         border: 1px solid var(--rule-strong); background: var(--surface); color: var(--ink);
