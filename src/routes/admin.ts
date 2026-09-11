@@ -4,6 +4,16 @@ import type { Env, Role } from "../types";
 
 export type ServiceStatus = "active" | "suspended";
 
+// Same "Mission Control" background textures and brand mark as
+// src/routes/pages.ts — duplicated rather than imported, since this page
+// deliberately shares no JS/CSS with the rest of the frontend (it must
+// keep working even if the rest of the app is broken).
+const STARS =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='260'%3E%3Ccircle cx='20' cy='30' r='1.1' fill='white' opacity='0.9'/%3E%3Ccircle cx='75' cy='12' r='0.7' fill='white' opacity='0.5'/%3E%3Ccircle cx='130' cy='55' r='1.3' fill='white' opacity='0.8'/%3E%3Ccircle cx='190' cy='20' r='0.6' fill='white' opacity='0.4'/%3E%3Ccircle cx='40' cy='95' r='0.8' fill='white' opacity='0.6'/%3E%3Ccircle cx='100' cy='120' r='1.0' fill='white' opacity='0.7'/%3E%3Ccircle cx='160' cy='90' r='0.6' fill='white' opacity='0.45'/%3E%3Ccircle cx='215' cy='130' r='1.1' fill='white' opacity='0.8'/%3E%3Ccircle cx='15' cy='160' r='0.7' fill='white' opacity='0.5'/%3E%3Ccircle cx='65' cy='205' r='1.2' fill='white' opacity='0.85'/%3E%3Ccircle cx='120' cy='180' r='0.6' fill='white' opacity='0.4'/%3E%3Ccircle cx='175' cy='215' r='0.9' fill='white' opacity='0.65'/%3E%3Ccircle cx='230' cy='170' r='0.7' fill='white' opacity='0.5'/%3E%3Ccircle cx='240' cy='60' r='0.5' fill='white' opacity='0.35'/%3E%3Ccircle cx='5' cy='230' r='0.6' fill='white' opacity='0.4'/%3E%3Ccircle cx='245' cy='240' r='0.9' fill='white' opacity='0.6'/%3E%3C/svg%3E\")";
+const GRAIN =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.045'/%3E%3C/svg%3E\")";
+const BRAND_MARK = `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2Z"/></svg>`;
+
 // ---------------------------------------------------------------- auth
 //
 // Deliberately separate from the app's X-Role stand-in: that's a header
@@ -258,80 +268,138 @@ export function adminPage(request: Request, env: Env): Response {
 const ADMIN_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" />
 <title>Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
 <style>
+  * { box-sizing: border-box; }
   :root {
-    --bg: #0a0d1a; --surface: #141830; --surface-2: rgba(30,35,60,0.6);
+    --bg-base: #0a0d1a; --surface: rgba(21,25,45,0.72); --surface-solid: #141830; --surface-2: rgba(30,35,60,0.55);
     --ink: #eef0fb; --ink-muted: #9aa2c7; --ink-faint: #666f99;
-    --rule: rgba(150,160,255,0.16); --rule-strong: rgba(150,160,255,0.3);
-    --accent: #7c6aff; --accent-ink: #ffffff;
+    --rule: rgba(150,160,255,0.16); --rule-strong: rgba(150,160,255,0.3); --rule-hover: rgba(150,160,255,0.42);
+    --accent: #7c6aff; --accent-deep: #5d4ce0; --accent-ink: #ffffff;
+    --accent-glow: 0 0 0 1px rgba(124,106,255,0.5), 0 0 22px -4px rgba(124,106,255,0.65);
+    --focus-ring: 0 0 0 3px rgba(124,106,255,0.4);
     --good: #4fe3ab; --good-bg: rgba(79,227,171,0.14);
     --bad: #ff7aa0; --bad-bg: rgba(255,122,160,0.14);
     --shadow-card: 0 1px 0 rgba(255,255,255,0.05) inset, 0 10px 34px -10px rgba(0,0,0,0.5);
-    --sheen: linear-gradient(135deg, rgba(124,106,255,0.08) 0%, transparent 55%);
+    --sheen: linear-gradient(135deg, rgba(124,106,255,0.10) 0%, transparent 55%);
+    --input-shadow: inset 0 1px 3px rgba(0,0,0,0.24), inset 0 1px 0 rgba(255,255,255,0.02);
+    --font-display: 'Space Grotesk', system-ui, sans-serif; --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+    --stars: ${STARS};
+    --grain: ${GRAIN};
   }
   @media (prefers-color-scheme: light) {
     :root {
-      --bg: #f4f5fb; --surface: #ffffff; --surface-2: #f1f2f5;
+      --bg-base: #f4f5fb; --surface: rgba(255,255,255,0.88); --surface-solid: #ffffff; --surface-2: rgba(237,238,250,0.8);
       --ink: #171a2b; --ink-muted: #565b7a; --ink-faint: #8b90b0;
-      --rule: rgba(80,70,160,0.14); --rule-strong: rgba(80,70,160,0.24);
-      --accent: #6552e0; --accent-ink: #ffffff;
+      --rule: rgba(80,70,160,0.14); --rule-strong: rgba(80,70,160,0.24); --rule-hover: rgba(80,70,160,0.32);
+      --accent: #6552e0; --accent-deep: #4a3bb8; --accent-ink: #ffffff;
+      --accent-glow: 0 0 0 1px rgba(101,82,224,0.35), 0 0 18px -6px rgba(101,82,224,0.4);
+      --focus-ring: 0 0 0 3px rgba(101,82,224,0.25);
       --good: #21855c; --good-bg: #e2f5ec;
       --bad: #c22e5a; --bad-bg: #fce8ee;
       --shadow-card: 0 1px 2px rgba(20,20,40,0.05), 0 10px 30px -10px rgba(20,20,40,0.14);
-      --sheen: linear-gradient(135deg, rgba(101,82,224,0.05) 0%, transparent 55%);
+      --sheen: linear-gradient(135deg, rgba(101,82,224,0.06) 0%, transparent 55%);
+      --input-shadow: inset 0 1px 2px rgba(20,20,50,0.06);
     }
   }
-  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--ink);
-         display: flex; flex-direction: column; align-items: center; min-height: 100vh; margin: 0; padding: 40px 24px; gap: 20px; }
+  body {
+    font-family: var(--font-body); background-color: var(--bg-base); color: var(--ink);
+    display: flex; flex-direction: column; align-items: center; min-height: 100vh; margin: 0; padding: 40px 24px; gap: 20px;
+    -webkit-font-smoothing: antialiased;
+    background-image:
+      radial-gradient(ellipse 820px 520px at 12% -8%, rgba(124,106,255,0.32), transparent 60%),
+      radial-gradient(ellipse 720px 600px at 108% 8%, rgba(82,216,255,0.2), transparent 55%),
+      var(--stars), var(--grain);
+    background-repeat: no-repeat, no-repeat, repeat, repeat;
+    background-attachment: fixed, fixed, fixed, fixed;
+  }
+  @media (prefers-color-scheme: light) {
+    body {
+      background-image:
+        radial-gradient(ellipse 820px 520px at 12% -8%, rgba(124,106,255,0.1), transparent 60%),
+        radial-gradient(ellipse 720px 600px at 108% 8%, rgba(82,216,255,0.08), transparent 55%),
+        var(--grain);
+      background-repeat: no-repeat, no-repeat, repeat;
+    }
+  }
+  .brand { display: flex; align-items: center; gap: 9px; margin-bottom: -2px; }
+  .brand .mark { color: var(--accent); width: 20px; height: 20px; filter: drop-shadow(0 0 6px rgba(124,106,255,0.6)); }
+  .brand .mark svg { width: 100%; height: 100%; }
+  .brand .name { font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; letter-spacing: -0.01em; }
+  .brand .name em { color: var(--accent); font-style: normal; }
   .card {
     position: relative;
-    max-width: 420px; width: 100%; background: var(--surface); border: 1px solid var(--rule); border-radius: 16px;
+    max-width: 420px; width: 100%; background: var(--surface); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--rule); border-radius: 16px;
     padding: 28px; box-shadow: var(--shadow-card);
   }
   .card::before {
     content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
     background: var(--sheen);
   }
-  h1 { font-size: 1.15rem; margin: 0 0 4px; }
-  .sub { color: var(--ink-muted); font-size: 0.85rem; margin: 0 0 20px; }
+  h1 { font-family: var(--font-display); font-weight: 600; font-size: 1.15rem; margin: 0 0 4px; position: relative; }
+  .sub { color: var(--ink-muted); font-size: 0.85rem; margin: 0 0 20px; position: relative; }
   .status-row { display: flex; align-items: center; justify-content: space-between;
-                padding: 14px 16px; border-radius: 8px; background: var(--surface-2); margin-bottom: 16px; }
-  .pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+                padding: 14px 16px; border-radius: 8px; background: var(--surface-2); box-shadow: var(--input-shadow); margin-bottom: 16px; position: relative; }
+  .pill { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 9px; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+  .pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }
   .pill.active { background: var(--good-bg); color: var(--good); }
   .pill.suspended { background: var(--bad-bg); color: var(--bad); }
-  button { width: 100%; padding: 11px; border-radius: 8px; border: none; font-size: 0.95rem; font-weight: 600;
-           cursor: pointer; color: #fff;
-           transition: transform 0.15s cubic-bezier(0.16,1,0.3,1), filter 0.15s; }
-  button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); }
-  button:active:not(:disabled) { transform: translateY(0); filter: brightness(1); }
-  button.suspend { background: var(--bad); }
-  button.activate { background: var(--good); }
-  button.save { background: var(--accent); color: var(--accent-ink); margin-top: 4px; }
-  button:disabled { opacity: 0.6; cursor: default; }
-  .msg { margin-top: 12px; font-size: 0.85rem; color: var(--ink-muted); min-height: 1.2em; }
-  label { display: block; font-size: 0.7rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); margin: 14px 0 6px; }
+  button {
+    position: relative; width: 100%; padding: 11px; border-radius: 8px; font-size: 0.95rem; font-weight: 600;
+    cursor: pointer; color: var(--ink); background: var(--surface-2); border: 1px solid var(--rule-strong);
+    transition: transform 0.15s cubic-bezier(0.16,1,0.3,1), box-shadow 0.15s cubic-bezier(0.16,1,0.3,1), filter 0.15s, background 0.15s, border-color 0.15s;
+  }
+  button:hover:not(:disabled) { background: var(--surface); border-color: var(--rule-hover); transform: translateY(-1px); }
+  button:active:not(:disabled) { transform: translateY(0); }
+  button.suspend, button.deactivate { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+  button.suspend:hover:not(:disabled), button.deactivate:hover:not(:disabled) { filter: brightness(1.1); }
+  button.activate, button.reactivate { background: var(--good-bg); color: var(--good); border-color: transparent; }
+  button.activate:hover:not(:disabled), button.reactivate:hover:not(:disabled) { filter: brightness(1.1); }
+  button.save {
+    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%); color: var(--accent-ink); border-color: transparent;
+    box-shadow: 0 2px 10px -2px rgba(0,0,0,0.35); margin-top: 4px;
+  }
+  button.save:hover:not(:disabled) { box-shadow: var(--accent-glow); filter: brightness(1.08); background: linear-gradient(135deg, var(--accent) 0%, var(--accent-deep) 100%); border-color: transparent; }
+  button:disabled { opacity: 0.6; cursor: default; transform: none; }
+  .msg { margin-top: 12px; font-size: 0.85rem; color: var(--ink-muted); min-height: 1.2em; position: relative; }
+  label { display: block; font-size: 0.68rem; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-faint); margin: 14px 0 6px; position: relative; }
   label:first-of-type { margin-top: 0; }
-  input[type="text"], select { width: 100%; box-sizing: border-box; padding: 9px 10px; border-radius: 6px;
-                        border: 1px solid var(--rule-strong); background: var(--surface); color: var(--ink);
-                        font-size: 0.9rem; font-family: inherit; }
+  input[type="text"], select {
+    position: relative; width: 100%; box-sizing: border-box; padding: 9px 12px; border-radius: 8px;
+    border: 1px solid var(--rule-strong); background: var(--surface-2); color: var(--ink);
+    font-size: 0.9rem; font-family: inherit; box-shadow: var(--input-shadow);
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+  }
+  input[type="text"]:hover, select:hover { border-color: var(--rule-hover); }
+  input[type="text"]:focus-visible, select:focus-visible {
+    outline: none; border-color: var(--accent); background: var(--surface-solid);
+    box-shadow: var(--input-shadow), var(--focus-ring), 0 0 14px -6px rgba(124,106,255,0.5);
+  }
   .user-row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
-              padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 0.85rem; }
+              padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 0.85rem; position: relative; }
   .user-row:last-child { border-bottom: none; }
   .user-row .who { display: flex; flex-direction: column; }
-  .user-row .who b { font-size: 0.88rem; }
+  .user-row .who b { font-size: 0.88rem; font-weight: 600; }
   .user-row .who span { color: var(--ink-muted); font-size: 0.75rem; }
-  .user-row button { width: auto; padding: 5px 10px; font-size: 0.78rem; background: var(--surface-2); color: var(--ink-muted); }
-  .user-row button.deactivate { background: var(--bad-bg); color: var(--bad); }
-  .user-row button.reactivate { background: var(--good-bg); color: var(--good); }
-  .user-empty { color: var(--ink-faint); font-size: 0.82rem; padding: 8px 0; }
-  .logo-row { display: flex; align-items: center; gap: 14px; }
+  .user-row button { width: auto; padding: 6px 12px; font-size: 0.78rem; }
+  .user-empty { color: var(--ink-faint); font-size: 0.82rem; padding: 8px 0; position: relative; }
+  .logo-row { display: flex; align-items: center; gap: 14px; position: relative; }
   .logo-preview { width: 64px; height: 64px; border-radius: 8px; border: 1px solid var(--rule); background: var(--surface-2);
                    display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; }
   .logo-preview img { max-width: 100%; max-height: 100%; }
   .logo-preview span { font-size: 0.7rem; color: var(--ink-faint); text-align: center; }
-  input[type="file"] { font-size: 0.82rem; color: var(--ink); }
+  input[type="file"] { font-size: 0.82rem; color: var(--ink-muted); }
+  input[type="file"]::file-selector-button {
+    padding: 7px 12px; margin-inline-end: 10px; border-radius: 6px; border: 1px solid var(--rule-strong);
+    background: var(--surface-2); color: var(--ink); font-size: 0.8rem; font-weight: 600; font-family: inherit; cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  input[type="file"]::file-selector-button:hover { background: var(--surface); border-color: var(--rule-hover); }
 </style></head>
 <body>
+  <div class="brand"><span class="mark">${BRAND_MARK}</span><span class="name">Warehouse <em>·</em> Quality</span></div>
   <div class="card">
     <h1>Service Control</h1>
     <p class="sub">Owner only. Toggling this affects every user immediately.</p>
