@@ -13,9 +13,13 @@ directory = "./public"
 binding = "ASSETS"
 # Without this, Cloudflare serves static files (index.html, app.js, ...)
 # directly and never invokes the Worker at all — which would let the
-# suspended-service kill switch (and any future real auth) get silently
+# suspended-service kill switch and the real session auth get silently
 # bypassed for page loads while still correctly gating /api/*.
 run_worker_first = true
+# The default ("auto-trailing-slash") redirects a request for the literal
+# path /index.html to / — which breaks GET /app (src/index.ts), which
+# session-gates the SPA shell by fetching exactly that asset path itself.
+html_handling = "none"
 
 [[r2_buckets]]
 binding = "ATTACHMENTS"

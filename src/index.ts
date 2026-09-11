@@ -1,13 +1,20 @@
-import { error, getRole, json } from "./http";
+import { getSession } from "./auth";
+import { error, json } from "./http";
 import {
+  adminCreateUser,
   adminGetBranding,
   adminGetStatus,
+  adminListUsers,
   adminPage,
+  adminResetPassword,
   adminSetBranding,
   adminSetStatus,
+  adminSetUserActive,
   getServiceStatus,
   suspendedResponse,
 } from "./routes/admin";
+import { login, logout, me } from "./routes/auth";
+import { landingPage, loginPage, requireAppSession } from "./routes/pages";
 import {
   createSupplier,
   getMaterialDossier,
@@ -62,22 +69,49 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
     const method = request.method;
-    const role = getRole(request);
 
     try {
-      // Admin panel — a real credential (ADMIN_PASSWORD), not the X-Role
-      // stand-in, and the one thing that must keep working even while the
-      // service is suspended (the owner still needs to be able to turn it
-      // back on). Everything else checks the kill switch first.
+      // Admin panel — a real credential (ADMIN_PASSWORD), not a session,
+      // and the one thing that must keep working even while the service
+      // is suspended (the owner still needs to be able to turn it back
+      // on). Everything else checks the kill switch first.
       if (pathname === "/admin" && method === "GET") return adminPage(request, env);
       if (pathname === "/admin/api/status" && method === "GET") return adminGetStatus(request, env);
       if (pathname === "/admin/api/status" && method === "POST") return adminSetStatus(request, env);
       if (pathname === "/admin/api/branding" && method === "GET") return adminGetBranding(request, env);
       if (pathname === "/admin/api/branding" && method === "POST") return adminSetBranding(request, env);
+      if (pathname === "/admin/api/users" && method === "GET") return adminListUsers(request, env);
+      if (pathname === "/admin/api/users" && method === "POST") return adminCreateUser(request, env);
+      const adminUserPasswordMatch = pathname.match(/^\/admin\/api\/users\/(\d+)\/password$/);
+      if (adminUserPasswordMatch && method === "POST") {
+        return adminResetPassword(request, env, Number(adminUserPasswordMatch[1]));
+      }
+      const adminUserActiveMatch = pathname.match(/^\/admin\/api\/users\/(\d+)\/(deactivate|reactivate)$/);
+      if (adminUserActiveMatch && method === "POST") {
+        return adminSetUserActive(request, env, Number(adminUserActiveMatch[1]), adminUserActiveMatch[2] === "reactivate");
+      }
 
       if ((await getServiceStatus(env)) === "suspended") {
         return suspendedResponse(pathname);
       }
+
+      // Entry pages — landing (pick a portal), the two role-locked logins,
+      // and the auth API behind them. The SPA itself lives at /app and
+      // requires a valid session; everything before this point is public.
+      if (pathname === "/" && method === "GET") return landingPage();
+      if (pathname === "/login/warehouse" && method === "GET") return loginPage("warehouse");
+      if (pathname === "/login/quality" && method === "GET") return loginPage("quality");
+      if (pathname === "/app" && method === "GET") {
+        const guard = await requireAppSession(request, env);
+        if (guard) return guard;
+        return env.ASSETS.fetch(new Request(new URL("/index.html", request.url), request));
+      }
+      if (pathname === "/api/auth/login" && method === "POST") return login(request, env);
+      if (pathname === "/api/auth/logout" && method === "POST") return logout(request, env);
+      if (pathname === "/api/auth/me" && method === "GET") return me(request, env);
+
+      const session = await getSession(request, env);
+      const role = session?.role ?? null;
 
       // Master data — Warehouse's only legitimate reason to touch this
       // section is picking/adding a supplier while receiving; everything
@@ -85,11 +119,11 @@ export default {
       // Quality's catalog and Warehouse's own screens never call it, so
       // it's read *and* write, Quality-only.
       if (pathname === "/api/suppliers" && method === "GET") {
-        if (!role) return error("Missing X-Role header", 401);
+        if (!role) return error("Not signed in", 401);
         return listSuppliers(request, env);
       }
       if (pathname === "/api/suppliers" && method === "POST") {
-        if (!role) return error("Missing X-Role header", 401);
+        if (!role) return error("Not signed in", 401);
         return createSupplier(request, env);
       }
       if (pathname === "/api/materials" && method === "GET") {
@@ -201,23 +235,23 @@ export default {
         return createReceipt(request, env);
       }
       if (pathname === "/api/receipts" && method === "GET") {
-        if (!role) return error("Missing X-Role header", 401);
+        if (!role) return error("Not signed in", 401);
         return listReceipts(request, env, role);
       }
       if (pathname === "/api/receipts/detailed" && method === "GET") {
-        if (!role) return error("Missing X-Role header", 401);
+        if (!role) return error("Not signed in", 401);
         return listReceiptsDetailed(request, env, role);
       }
 
       const receiptMatch = pathname.match(/^\/api\/receipts\/(\d+)$/);
       if (receiptMatch && method === "GET") {
-        if (!role) return error("Missing X-Role header", 401);
+        if (!role) return error("Not signed in", 401);
         return getReceipt(env, role, Number(receiptMatch[1]));
       }
 
       const sampleSenderMatch = pathname.match(/^\/api\/receipts\/(\d+)\/sample-sender$/);
       if (sampleSenderMatch && method === "PATCH") {
-        if (!role) return error("Missing X-Role header", 401);
+        if (!role) return error("Not signed in", 401);
         return setSampleSender(request, env, role, Number(sampleSenderMatch[1]));
       }
 
@@ -286,12 +320,12 @@ export default {
 
       // Notifications
       if (pathname === "/api/notifications" && method === "GET") {
-        if (!role) return error("Missing X-Role header", 401);
+        if (!role) return error("Not signed in", 401);
         return listNotifications(request, env, role);
       }
       const notifReadMatch = pathname.match(/^\/api\/notifications\/(\d+)\/read$/);
       if (notifReadMatch && method === "POST") {
-        if (!role) return error("Missing X-Role header", 401);
+        if (!role) return error("Not signed in", 401);
         return markNotificationRead(env, role, Number(notifReadMatch[1]));
       }
 

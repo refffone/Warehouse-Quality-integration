@@ -28,13 +28,12 @@
         <button id="notif-btn" class="icon-btn" title="Notifications">
           🔔<span id="notif-count" class="notif-count" hidden>0</span>
         </button>
-        <label class="role-switch">
+        <span class="role-switch">
           <span id="signed-in-as-label">Signed in as</span>
-          <select id="role-select">
-            <option id="role-option-warehouse" value="warehouse">Warehouse</option>
-            <option id="role-option-quality" value="quality">Quality</option>
-          </select>
-        </label>
+          <b id="signed-in-as-name"></b>
+          <span id="signed-in-as-role" class="muted small"></span>
+        </span>
+        <button id="logout-btn" class="btn ghost sm" type="button">Log out</button>
         <button id="lang-toggle" class="btn ghost sm" type="button">AR</button>
       </div>
     </header>

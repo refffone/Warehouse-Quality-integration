@@ -153,10 +153,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 .role-switch { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--ink-muted); }
-.role-switch select {
-  background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-sm);
-  padding: 6px 10px; font-weight: 500; color: var(--ink); cursor: pointer;
-}
+.role-switch b { color: var(--ink); font-weight: 600; }
 
 /* ---------- layout helpers ---------- */
 .view { display: flex; flex-direction: column; gap: 22px; }

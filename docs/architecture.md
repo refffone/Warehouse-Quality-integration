@@ -924,10 +924,93 @@ and confirmed full Arabic/RTL rendering of the new subtab and card (new
 this project — 283/283 keys in both dictionaries, zero missing either
 direction).
 
-## 15. Next Step
+## 15. Real accounts, landing page, and role-locked logins
 
-Two things block a real deploy: (1) someone with Cloudflare account
-access needs to enable R2 in the dashboard and run
-`wrangler login && wrangler deploy`; (2) the auth/Admin-panel/push-
-notification/backup work, deliberately held until after the user's
-presentation so today's simple role-switcher stays unchanged for the demo.
+Replaces the `X-Role` header stand-in (a client-set header, spoofable
+from devtools, previously the entire access-control mechanism) with
+real server-enforced accounts, and replaces the topbar's Warehouse/
+Quality `<select>` with a landing page and two separate, role-locked
+login pages — the last piece of the "deploy for presentation first,
+build real auth after" plan from earlier in this project.
+
+**Backend** (migration `0013`: `users`, `sessions`). `src/auth.ts` —
+PBKDF2-SHA256 password hashing (Web Crypto, no external package;
+100k iterations, per-user salt) and session management: an opaque
+32-byte token delivered only via an `httpOnly; Secure; SameSite=Lax`
+cookie, 12-hour lifetime, looked up against `sessions` joined to
+`users` on every request (`getSession`) — the actual replacement for
+the old `getRole(request)` header read. `src/routes/auth.ts` — login
+(username + password + the requesting page's role, all three must
+match; one generic "Invalid username or password" for every failure
+case — wrong password, unknown user, deactivated account, or right
+password on the wrong portal — so a guesser learns nothing), logout,
+and `/api/auth/me` for the frontend to bootstrap its session. Every
+route in `src/index.ts` that used to branch on the header-derived
+`role` now branches on `session?.role` instead — the authorization
+logic itself (who can do what) is unchanged, only the source of truth
+for identity.
+
+**Account management**: there's no public sign-up, so `src/routes/admin.ts`
+gained a small CRUD surface (create account, reset password, deactivate/
+reactivate — deactivating also kills that user's live sessions
+immediately, not just future logins) behind the existing owner-only
+`ADMIN_PASSWORD` HTTP Basic Auth, with a matching "Accounts" card added
+to the Admin page's server-rendered HTML.
+
+**Entry pages** (`src/routes/pages.ts`, server-rendered like the Admin
+page — no dependency on `app.js`/`i18n.js`/`api.js`, since they must
+work before any session exists): `GET /` is a landing page with two
+cards (Warehouse / Quality); `GET /login/warehouse` and
+`GET /login/quality` are separate login forms, each hardcoding its own
+role in the login request so a warehouse account can't accidentally
+(or deliberately) sign in through the quality portal. The SPA itself
+moved to `GET /app`, session-gated server-side (`requireAppSession` —
+302 to `/` without a valid cookie) before the asset is served.
+
+**A real deployment-config bug found during this build**: Cloudflare's
+static-asset handling defaults to `html_handling = "auto-trailing-slash"`,
+which redirects a request for the literal path `/index.html` to `/` —
+harmless normally, but `GET /app`'s guard specifically fetches that
+exact asset path, so every successful login bounced straight back to
+the landing page. Fixed with `html_handling = "none"` in
+`wrangler.toml`. Caught by testing the actual login flow end-to-end
+with Playwright rather than trusting the code read cleanly — the
+session cookie, the query, and the redirect logic were all individually
+correct, so this would have been very hard to catch from code review
+alone.
+
+**Frontend**: `public/api.js` dropped the `x-role` header entirely
+(the cookie rides along automatically on same-origin requests);
+`public/app.js` replaced the `wq_role` localStorage read with an
+in-memory `session` object populated once at boot from `/api/auth/me`
+(never localStorage — the role is now a server-enforced fact, not a
+client-picked stand-in), and the topbar's role `<select>` became a
+"Signed in as `<name>` (`<role>`)" readout plus a Log out button.
+
+Verified with Playwright: unauthenticated `/app` redirects to `/`;
+wrong password, unknown username, and a valid warehouse account
+submitted through the quality login all fail identically; a correct
+login lands on `/app` with exactly that role's tabs; a warehouse
+session hitting a quality-only endpoint directly (bypassing the UI)
+gets a 403 from the server, not just a hidden button — confirming
+enforcement moved to the backend rather than just cosmetic; deactivating
+an account via the Admin panel immediately invalidates its live
+session. Also fixed a latent bug caught during this pass: session
+`expires_at` (an ISO-8601 string) was being compared directly against
+SQLite's `datetime('now')` (a different string format) — the same class
+of bug as the date-range issue fixed in the reports feature — normalized
+with `datetime(s.expires_at)` so expiry actually reflects wall-clock time
+rather than sometimes tolerating a same-day session hours past its
+real expiry.
+
+Migration `0013` applied to both local and the production D1 database
+directly via the Cloudflare MCP connector, as established for every
+prior migration in this project.
+
+## 16. Next Step
+
+One thing blocks a real deploy: someone with Cloudflare account access
+needs to enable R2 in the dashboard and run `wrangler login && wrangler
+deploy`. The Arabic translations throughout the app are a best-effort
+business/QC vocabulary, not a certified translation — worth a native
+Arabic speaker's review before this goes in front of real staff.

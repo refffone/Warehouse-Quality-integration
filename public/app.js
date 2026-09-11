@@ -1,5 +1,27 @@
-import { api, getRole, setRole, getRememberedName, rememberName, uploadFile } from "./api.js";
+import { api, getRememberedName, rememberName, uploadFile } from "./api.js";
 import { t, getLang, setLang, applyDocumentDirection } from "./i18n.js";
+
+// ---------------------------------------------------------------- session
+//
+// Populated once at boot from the httpOnly session cookie (GET /api/auth/me)
+// — never localStorage, since the role is now a real, server-enforced
+// fact rather than a client-picked stand-in. If there's no valid session
+// the user is sent back to the landing page before any view renders.
+
+let session = { role: null, name: "" };
+
+function getRole() {
+  return session.role;
+}
+
+async function logout() {
+  try {
+    await api.post("/api/auth/logout");
+  } catch {
+    // best-effort — the cookie may already be gone
+  }
+  location.href = "/";
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -133,9 +155,10 @@ function goTo(tab) {
 
 function applyStaticTranslations() {
   document.getElementById("signed-in-as-label").textContent = t("topbar.signedInAs");
-  document.getElementById("role-option-warehouse").textContent = t("topbar.roleWarehouse");
-  document.getElementById("role-option-quality").textContent = t("topbar.roleQuality");
+  document.getElementById("signed-in-as-role").textContent =
+    `(${session.role === "quality" ? t("topbar.roleQuality") : t("topbar.roleWarehouse")})`;
   document.getElementById("notif-btn").title = t("topbar.notifications");
+  document.getElementById("logout-btn").textContent = t("topbar.logout");
   document.getElementById("lang-toggle").textContent = t("lang.toggle");
   document.querySelector(".brand-name").innerHTML =
     `${esc(t("topbar.roleWarehouse"))} <em>·</em> ${esc(t("topbar.roleQuality"))}`;
@@ -153,15 +176,8 @@ function renderTopbar() {
     btn.addEventListener("click", () => goTo(btn.dataset.tab))
   );
 
-  const roleSelect = document.getElementById("role-select");
-  roleSelect.value = role;
-  roleSelect.onchange = () => {
-    setRole(roleSelect.value);
-    location.hash = `#${roleSelect.value}/${ROUTES[roleSelect.value][0].id}`;
-    renderTopbar();
-    renderView();
-    refreshNotifCount();
-  };
+  document.getElementById("signed-in-as-name").textContent = session.name;
+  document.getElementById("logout-btn").onclick = logout;
 
   document.getElementById("lang-toggle").onclick = () => {
     setLang(getLang() === "ar" ? "en" : "ar");
@@ -499,7 +515,7 @@ function openResultsModal(results) {
 async function downloadReport(reportPath, params, fallbackName) {
   try {
     const qs = new URLSearchParams(params).toString();
-    const res = await fetch(`/api/reports/${reportPath}?${qs}`, { headers: { "x-role": getRole() } });
+    const res = await fetch(`/api/reports/${reportPath}?${qs}`, { credentials: "same-origin" });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || t("download.failed", { status: res.status }));
@@ -615,12 +631,12 @@ function wireExportBar(id, reportPathOrFn, { withPeriod, getParams, filenamePref
   );
 }
 
-/** Downloads a batch's COA via fetch (so the X-Role header goes along),
+/** Downloads a batch's COA via fetch (so the session cookie goes along),
  *  then triggers a normal browser save via a throwaway object-URL link. */
 async function downloadCoa(batchId, format) {
   try {
     const res = await fetch(`/api/batches/${batchId}/coa?format=${format}`, {
-      headers: { "x-role": getRole() },
+      credentials: "same-origin",
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -1782,7 +1798,7 @@ function fmtPct(rate) {
 
 async function downloadAttachment(id, filename) {
   try {
-    const res = await fetch(`/api/attachments/${id}/download`, { headers: { "x-role": getRole() } });
+    const res = await fetch(`/api/attachments/${id}/download`, { credentials: "same-origin" });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || t("download.failed", { status: res.status }));
@@ -2288,9 +2304,21 @@ window.addEventListener("hashchange", () => {
 
 document.getElementById("notif-btn").addEventListener("click", toggleNotifPanel);
 
-applyDocumentDirection();
-if (!location.hash) location.hash = `#${getRole()}/${ROUTES[getRole()][0].id}`;
-renderTopbar();
-renderView();
-refreshNotifCount();
-setInterval(refreshNotifCount, 20000);
+async function boot() {
+  applyDocumentDirection();
+  try {
+    session = await api.get("/api/auth/me");
+  } catch {
+    location.href = "/";
+    return;
+  }
+  if (!location.hash || !location.hash.startsWith(`#${session.role}/`)) {
+    location.hash = `#${session.role}/${ROUTES[session.role][0].id}`;
+  }
+  renderTopbar();
+  renderView();
+  refreshNotifCount();
+  setInterval(refreshNotifCount, 20000);
+}
+
+boot();

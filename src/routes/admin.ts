@@ -1,5 +1,6 @@
+import { hashPassword } from "../auth";
 import { error, json } from "../http";
-import type { Env } from "../types";
+import type { Env, Role } from "../types";
 
 export type ServiceStatus = "active" | "suspended";
 
@@ -138,6 +139,82 @@ export async function adminSetBranding(request: Request, env: Env): Promise<Resp
   return json(await getBranding(env));
 }
 
+// ---------------------------------------------------------------- users
+//
+// Account management for the real warehouse/quality logins — the only
+// way accounts get created, since there's no public sign-up. Passwords
+// never leave this file in plaintext beyond the request that sets them.
+
+interface UserListRow {
+  id: number;
+  username: string;
+  role: Role;
+  display_name: string;
+  active: number;
+  created_at: string;
+}
+
+export async function adminListUsers(request: Request, env: Env): Promise<Response> {
+  const authError = requireAdminAuth(request, env);
+  if (authError) return authError;
+  const rows = await env.DB.prepare(
+    "SELECT id, username, role, display_name, active, created_at FROM users ORDER BY role, username"
+  ).all<UserListRow>();
+  return json(rows.results ?? []);
+}
+
+export async function adminCreateUser(request: Request, env: Env): Promise<Response> {
+  const authError = requireAdminAuth(request, env);
+  if (authError) return authError;
+  const input = await request.json<{ username?: string; password?: string; role?: string; display_name?: string }>();
+  const username = (input.username ?? "").trim();
+  const password = input.password ?? "";
+  const role = input.role;
+  const displayName = (input.display_name ?? "").trim();
+  if (!username) return error("Username is required");
+  if (password.length < 8) return error("Password must be at least 8 characters");
+  if (role !== "warehouse" && role !== "quality") return error("Role must be 'warehouse' or 'quality'");
+  if (!displayName) return error("Display name is required");
+
+  const existing = await env.DB.prepare("SELECT id FROM users WHERE username = ?").bind(username).first();
+  if (existing) return error("That username is already taken", 409);
+
+  const { hash, salt } = await hashPassword(password);
+  await env.DB.prepare(
+    "INSERT INTO users (username, password_hash, password_salt, role, display_name) VALUES (?, ?, ?, ?, ?)"
+  )
+    .bind(username, hash, salt, role, displayName)
+    .run();
+  return json({ ok: true }, 201);
+}
+
+export async function adminResetPassword(request: Request, env: Env, userId: number): Promise<Response> {
+  const authError = requireAdminAuth(request, env);
+  if (authError) return authError;
+  const input = await request.json<{ password?: string }>();
+  const password = input.password ?? "";
+  if (password.length < 8) return error("Password must be at least 8 characters");
+  const { hash, salt } = await hashPassword(password);
+  const res = await env.DB.prepare("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?")
+    .bind(hash, salt, userId)
+    .run();
+  if (res.meta.changes === 0) return error("User not found", 404);
+  return json({ ok: true });
+}
+
+export async function adminSetUserActive(request: Request, env: Env, userId: number, active: boolean): Promise<Response> {
+  const authError = requireAdminAuth(request, env);
+  if (authError) return authError;
+  const res = await env.DB.prepare("UPDATE users SET active = ? WHERE id = ?")
+    .bind(active ? 1 : 0, userId)
+    .run();
+  if (res.meta.changes === 0) return error("User not found", 404);
+  // Deactivating should also kill any live sessions immediately, not just
+  // block future logins.
+  if (!active) await env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
+  return json({ ok: true });
+}
+
 /** What every non-admin request sees while suspended — an API call gets a
  *  clean JSON error the frontend's existing toast handling already knows
  *  how to show; a page load gets a plain, unmissable notice instead of a
@@ -200,8 +277,18 @@ const ADMIN_HTML = `<!doctype html>
   .msg { margin-top: 12px; font-size: 0.85rem; color: #8a879c; min-height: 1.2em; }
   label { display: block; font-size: 0.8rem; font-weight: 600; color: #4d4a5f; margin: 14px 0 6px; }
   label:first-of-type { margin-top: 0; }
-  input[type="text"] { width: 100%; box-sizing: border-box; padding: 9px 10px; border-radius: 6px;
-                        border: 1px solid #d8d5e3; font-size: 0.9rem; }
+  input[type="text"], select { width: 100%; box-sizing: border-box; padding: 9px 10px; border-radius: 6px;
+                        border: 1px solid #d8d5e3; font-size: 0.9rem; font-family: inherit; }
+  .user-row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+              padding: 8px 0; border-bottom: 1px solid #ece9f3; font-size: 0.85rem; }
+  .user-row:last-child { border-bottom: none; }
+  .user-row .who { display: flex; flex-direction: column; }
+  .user-row .who b { font-size: 0.88rem; }
+  .user-row .who span { color: #8a879c; font-size: 0.75rem; }
+  .user-row button { width: auto; padding: 5px 10px; font-size: 0.78rem; background: #ece9f3; color: #4d4a5f; }
+  .user-row button.deactivate { background: #fadfe3; color: #9c1f38; }
+  .user-row button.reactivate { background: #dcf3e6; color: #1c6b45; }
+  .user-empty { color: #b3b0c2; font-size: 0.82rem; padding: 8px 0; }
   .logo-row { display: flex; align-items: center; gap: 14px; }
   .logo-preview { width: 64px; height: 64px; border-radius: 8px; border: 1px solid #e3e1ec; background: #f4f3f7;
                    display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; }
@@ -233,6 +320,25 @@ const ADMIN_HTML = `<!doctype html>
     </div>
     <button class="save" id="branding-save">Save branding</button>
     <div class="msg" id="branding-msg"></div>
+  </div>
+
+  <div class="card">
+    <h1>Accounts</h1>
+    <p class="sub">Warehouse and Quality sign in with these — there's no public sign-up.</p>
+    <div id="user-list"></div>
+    <label for="new-username">Username</label>
+    <input type="text" id="new-username" autocomplete="off" />
+    <label for="new-display-name">Display name</label>
+    <input type="text" id="new-display-name" autocomplete="off" />
+    <label for="new-role">Role</label>
+    <select id="new-role">
+      <option value="warehouse">Warehouse</option>
+      <option value="quality">Quality</option>
+    </select>
+    <label for="new-password">Password (min 8 characters)</label>
+    <input type="text" id="new-password" autocomplete="off" />
+    <button class="save" id="user-create">Create account</button>
+    <div class="msg" id="user-msg"></div>
   </div>
 
   <script>
@@ -337,5 +443,93 @@ const ADMIN_HTML = `<!doctype html>
 
     loadStatus().catch((err) => { statusMsg.textContent = err.message; });
     loadBranding().catch((err) => { brandingMsg.textContent = err.message; });
+
+    // ---- accounts ----
+    const userList = document.getElementById('user-list');
+    const userMsg = document.getElementById('user-msg');
+    const newUsername = document.getElementById('new-username');
+    const newDisplayName = document.getElementById('new-display-name');
+    const newRole = document.getElementById('new-role');
+    const newPassword = document.getElementById('new-password');
+    const userCreateBtn = document.getElementById('user-create');
+
+    function esc(s) {
+      return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    async function loadUsers() {
+      const res = await fetch('/admin/api/users');
+      const rows = await res.json();
+      if (!rows.length) {
+        userList.innerHTML = '<div class="user-empty">No accounts yet.</div>';
+        return;
+      }
+      userList.innerHTML = rows.map((u) => \`
+        <div class="user-row" data-id="\${u.id}">
+          <div class="who">
+            <b>\${esc(u.display_name)} — \${esc(u.username)}</b>
+            <span>\${u.role}\${u.active ? '' : ' · deactivated'}</span>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button data-action="reset">Reset password</button>
+            <button data-action="toggle" class="\${u.active ? 'deactivate' : 'reactivate'}">\${u.active ? 'Deactivate' : 'Reactivate'}</button>
+          </div>
+        </div>\`).join('');
+
+      userList.querySelectorAll('[data-action="reset"]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = btn.closest('.user-row').dataset.id;
+          const password = prompt('New password (min 8 characters):');
+          if (!password) return;
+          try {
+            const res = await fetch('/admin/api/users/' + id + '/password', {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }),
+            });
+            if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+            userMsg.textContent = 'Password reset.';
+          } catch (err) { userMsg.textContent = err.message; }
+        });
+      });
+      userList.querySelectorAll('[data-action="toggle"]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const row = btn.closest('.user-row');
+          const id = row.dataset.id;
+          const reactivating = btn.classList.contains('reactivate');
+          try {
+            const res = await fetch('/admin/api/users/' + id + '/' + (reactivating ? 'reactivate' : 'deactivate'), { method: 'POST' });
+            if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+            await loadUsers();
+          } catch (err) { userMsg.textContent = err.message; }
+        });
+      });
+    }
+
+    userCreateBtn.addEventListener('click', async () => {
+      userCreateBtn.disabled = true;
+      try {
+        const res = await fetch('/admin/api/users', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            username: newUsername.value.trim(),
+            display_name: newDisplayName.value.trim(),
+            role: newRole.value,
+            password: newPassword.value,
+          }),
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Failed');
+        newUsername.value = '';
+        newDisplayName.value = '';
+        newPassword.value = '';
+        userMsg.textContent = 'Account created.';
+        await loadUsers();
+      } catch (err) {
+        userMsg.textContent = err.message;
+      } finally {
+        userCreateBtn.disabled = false;
+      }
+    });
+
+    loadUsers().catch((err) => { userMsg.textContent = err.message; });
   </script>
 </body></html>`;

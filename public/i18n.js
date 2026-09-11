@@ -53,6 +53,7 @@ const translations = {
     "topbar.roleWarehouse": "Warehouse",
     "topbar.roleQuality": "Quality",
     "topbar.brand": "Warehouse · Quality",
+    "topbar.logout": "Log out",
 
     "nav.receive": "Receive",
     "nav.todo": "To Do",
@@ -326,6 +327,7 @@ const translations = {
     "error.screenLoadFailed": "Couldn't load this screen: {message}",
     "error.requestFailed": "Request failed ({status})",
     "error.uploadFailed": "Upload failed ({status})",
+    "error.notSignedIn": "Not signed in",
 
     "reports.export": "Export",
     "reports.pdf": "PDF",
@@ -369,6 +371,7 @@ const translations = {
     "topbar.roleWarehouse": "المستودع",
     "topbar.roleQuality": "الجودة",
     "topbar.brand": "المستودع · الجودة",
+    "topbar.logout": "تسجيل الخروج",
 
     "nav.receive": "استلام",
     "nav.todo": "المهام",
@@ -642,6 +645,7 @@ const translations = {
     "error.screenLoadFailed": "تعذّر تحميل هذه الشاشة: {message}",
     "error.requestFailed": "فشل الطلب ({status})",
     "error.uploadFailed": "فشل الرفع ({status})",
+    "error.notSignedIn": "لم يتم تسجيل الدخول",
 
     "reports.export": "تصدير",
     "reports.pdf": "PDF",
