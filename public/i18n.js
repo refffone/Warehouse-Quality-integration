@@ -55,6 +55,10 @@ const translations = {
     "topbar.roleQuality": "Quality",
     "topbar.brand": "Warehouse · Quality",
     "topbar.logout": "Log out",
+    "topbar.enablePush": "Enable push notifications",
+    "push.enabled": "Push notifications enabled on this device",
+    "push.denied": "Notifications are blocked in your browser settings",
+    "push.failed": "Couldn't enable push notifications",
 
     "nav.receive": "Receive",
     "nav.todo": "To Do",
@@ -374,6 +378,10 @@ const translations = {
     "topbar.roleQuality": "الجودة",
     "topbar.brand": "المستودع · الجودة",
     "topbar.logout": "تسجيل الخروج",
+    "topbar.enablePush": "تفعيل إشعارات الدفع",
+    "push.enabled": "تم تفعيل إشعارات الدفع على هذا الجهاز",
+    "push.denied": "الإشعارات محظورة في إعدادات المتصفح",
+    "push.failed": "تعذّر تفعيل إشعارات الدفع",
 
     "nav.receive": "استلام",
     "nav.todo": "المهام",

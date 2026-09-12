@@ -15,6 +15,7 @@
     "wrangler": "^3.90.0"
   },
   "dependencies": {
+    "@block65/webcrypto-web-push": "^2.0.0",
     "pdf-lib": "^1.17.1",
     "xlsx": "^0.18.5"
   }

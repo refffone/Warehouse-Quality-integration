@@ -1,3 +1,4 @@
+import { sendPushToRole } from "./push";
 import type { Env, ImportScenario, NotificationKind, Role, Supplier } from "./types";
 
 /** D1 caps bound parameters per statement, so a `WHERE col IN (...)` over
@@ -82,6 +83,15 @@ export async function notify(
   )
     .bind(targetRole, opts.receiptId ?? null, opts.batchId ?? null, kind, message)
     .run();
+
+  // Fire-and-forget: a push-service outage or missing VAPID config must
+  // never break the caller's own request (e.g. registering a receipt).
+  await sendPushToRole(env, targetRole, {
+    title: kind === "new_receipt" ? "New receipt" : kind === "decision" ? "Decision recorded" : "Expiry alert",
+    body: message,
+    kind,
+    receiptId: opts.receiptId ?? null,
+  }).catch(() => {});
 }
 
 /**

@@ -1112,10 +1112,76 @@ explicit go-ahead, then edit the real files and re-verify live with
 Playwright (including a full `wrangler dev` + seeded-account pass, not
 just the isolated comparison) before committing.
 
-## 17. Next Step
+## 17. Web Push notifications + auto-refreshing To Do/History
 
-One thing blocks a real deploy: someone with Cloudflare account access
-needs to enable R2 in the dashboard and run `wrangler login && wrangler
-deploy`. The Arabic translations throughout the app are a best-effort
-business/QC vocabulary, not a certified translation — worth a native
-Arabic speaker's review before this goes in front of real staff.
+Two related requests: get notified on phone/desktop instead of only via
+the in-app bell, and have the To Do/History views update themselves when
+a receipt is registered elsewhere, instead of needing a manual reload.
+
+**Web Push** (`src/push.ts`, using `@block65/webcrypto-web-push` — a
+WebCrypto-native implementation of RFC 8291/8292 that runs directly in
+the Workers runtime, unlike the Node-only `web-push` package):
+`notify()` (`src/db.ts`), the single choke point every notification
+already flowed through, now also calls `sendPushToRole()` right after
+inserting the `notification_events` row — one integration point covers
+`new_receipt`, `decision`, and `expiry_alert` without touching any of
+their call sites. A new `push_subscriptions` table
+(`migrations/0015_push_subscriptions.sql`) stores one row per opted-in
+device (`role`, `endpoint`, and the `p256dh`/`auth` keys `PushManager.
+subscribe()` returns) — keyed by role rather than user id, since a
+subscription belongs to whichever portal a browser was signed into, not
+a specific account. Three new endpoints (`/api/push/vapid-public-key`,
+`/api/push/subscribe`, `/api/push/unsubscribe`) and three optional Worker
+secrets (`VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/`VAPID_SUBJECT`, documented
+in `docs/deployment.md` step 6b) — unset in local dev and push is silently
+skipped, so nothing else depends on them. A 404/410 from the push service
+(a dead subscription) deletes that row; any other failure is swallowed —
+one unreachable device must never break the request that triggered the
+notification.
+
+**Client side** (`public/app.js`, `public/sw.js`): a topbar bell-with-plus
+button (hidden once subscribed, or once permission is denied) drives
+`Notification.requestPermission()` → `pushManager.subscribe()` → POST
+the subscription to the backend. `public/sw.js` handles the `push` event
+(shows the OS notification) and `notificationclick` (focuses/opens the
+app), and also forwards the payload via `postMessage` to any open tab —
+`app.js` listens for that message and, if the current tab is on To Do or
+History, refetches immediately instead of waiting on the polling
+fallback below. A `public/manifest.webmanifest` (plus `icon-192.png`/
+`icon-512.png`, hand-rasterized with a small Node/zlib script since no
+image tooling was available — a violet square with the sidebar's white
+diamond mark) and an `apple-touch-icon` link make the app installable to
+an iOS home screen, the *only* way iOS delivers push at all — Safari
+never delivers push to a plain browser tab.
+
+**Auto-refresh** deliberately doesn't depend on push being granted:
+`boot()` (`public/app.js`) gained a third 20s interval alongside the
+existing notification/todo-count polls, that refetches-and-rerenders the
+current view only when it's To Do or History (the two views that
+actually list receipts — Receive, Codes, Specs, and Master Data are
+untouched, per explicit scope). This is the backstop for devices that
+never subscribed to push; a subscribed device gets the same refresh
+near-instantly via the service-worker message path instead of waiting
+out the interval.
+
+Verified against a real `wrangler dev` + seeded accounts: registering a
+receipt via the API while a second Playwright session sat on the To Do
+view showed it appear with no manual reload, within one poll interval;
+service worker registration/activation and all new static assets (manifest,
+icons, `sw.js`) returned 200; the subscribe flow's actual `pushManager.
+subscribe()` call can't be exercised in this sandbox (Chromium disables
+the Push API in the ephemeral/incognito-style context Playwright launches
+here — a Chromium limitation, not an app bug) but the failure path was
+confirmed to fail gracefully (toast, no crash) rather than exercising the
+happy path, which needs a real browser profile.
+
+## 18. Next Step
+
+The app is deployed and in use (see `docs/deployment.md`); logins are now
+real accounts with case-insensitive usernames (migration 0014). Two things
+still worth following up: the Arabic translations are a best-effort
+business/QC vocabulary, not a certified translation, worth a native
+speaker's review before more staff rely on them day to day; and Web Push
+(previous section) needs the three `VAPID_*` secrets set before it does
+anything beyond the in-app bell + polling refresh, which already work
+without them.

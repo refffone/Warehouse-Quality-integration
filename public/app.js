@@ -184,6 +184,7 @@ function applyStaticTranslations() {
   document.getElementById("signed-in-as-role").textContent =
     `(${session.role === "quality" ? t("topbar.roleQuality") : t("topbar.roleWarehouse")})`;
   document.getElementById("notif-btn").title = t("topbar.notifications");
+  document.getElementById("push-btn").title = t("topbar.enablePush");
   document.getElementById("logout-label").textContent = t("topbar.logout");
   document.getElementById("lang-toggle").textContent = t("lang.toggle");
   document.querySelector(".brand-name").innerHTML =
@@ -299,6 +300,75 @@ async function toggleNotifPanel() {
       { once: false }
     );
   }, 0);
+}
+
+// ---------------------------------------------------------------- push notifications
+//
+// Web Push, so a device gets notified even when the app isn't in an open
+// tab. iOS only delivers push to a home-screen-installed PWA (never a
+// plain Safari tab), which is why index.html also ships a manifest — but
+// desktop/Android work in a regular browser tab.
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+}
+
+const PUSH_SUBSCRIBED_KEY = "wq_push_subscribed";
+
+async function initPush() {
+  const btn = document.getElementById("push-btn");
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+
+  const registration = await navigator.serviceWorker.register("/sw.js").catch(() => null);
+  if (!registration) return;
+
+  navigator.serviceWorker.addEventListener("message", (event) => {
+    if (event.data?.type !== "push-received") return;
+    const tab = currentRoute();
+    if (tab === "todo" || tab === "history") refreshCurrentView();
+  });
+
+  const existing = await registration.pushManager.getSubscription().catch(() => null);
+  if (existing) {
+    localStorage.setItem(PUSH_SUBSCRIBED_KEY, "1");
+    btn.hidden = true;
+    return;
+  }
+  if (Notification.permission === "denied") {
+    btn.hidden = true;
+    return;
+  }
+
+  btn.hidden = false;
+  btn.onclick = () => subscribeToPush(registration);
+}
+
+async function subscribeToPush(registration) {
+  try {
+    const { key } = await api.get("/api/push/vapid-public-key");
+    if (!key) {
+      toast(t("push.failed"), true);
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== "granted") {
+      toast(t("push.denied"), true);
+      return;
+    }
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(key),
+    });
+    await api.post("/api/push/subscribe", subscription.toJSON());
+    localStorage.setItem(PUSH_SUBSCRIBED_KEY, "1");
+    document.getElementById("push-btn").hidden = true;
+    toast(t("push.enabled"));
+  } catch {
+    toast(t("push.failed"), true);
+  }
 }
 
 // ---------------------------------------------------------------- view: Receive (2-step)
@@ -2376,8 +2446,17 @@ async function boot() {
   renderTopbar();
   renderView();
   refreshNotifCount();
+  initPush();
   setInterval(refreshNotifCount, 20000);
   setInterval(refreshTodoCount, 20000);
+  // Polling backstop for "refresh when a receipt is registered" — works
+  // even when push permission was never granted. Push (above) additionally
+  // triggers an instant refresh via initPush()'s service-worker message
+  // listener, so a subscribed device doesn't have to wait for this tick.
+  setInterval(() => {
+    const tab = currentRoute();
+    if (tab === "todo" || tab === "history") refreshCurrentView();
+  }, 20000);
 }
 
 boot();

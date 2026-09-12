@@ -8,6 +8,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="theme-color" content="#7c6aff" />
   <script>
     (function () {
       var lang = localStorage.getItem("wq_lang") || "en";
@@ -29,6 +33,9 @@
     <div class="main-col">
       <header class="topbar">
         <div class="top-actions">
+          <button id="push-btn" class="icon-btn" title="Enable push notifications" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 9a6 6 0 0 1 9-5.2"/><path d="M6 10c0 5-2 6-2 6h14"/><path d="M9.5 18a2.5 2.5 0 0 0 5 0"/><path d="M19 3v6"/><path d="M16 6h6"/></svg>
+          </button>
           <button id="notif-btn" class="icon-btn" title="Notifications">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6Z"/><path d="M9.5 18a2.5 2.5 0 0 0 5 0"/></svg>
             <span id="notif-count" class="notif-count" hidden>0</span>

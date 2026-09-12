@@ -40,6 +40,7 @@ import {
 } from "./routes/attachments";
 import { downloadCoa } from "./routes/coa";
 import { listNotifications, markNotificationRead } from "./routes/notifications";
+import { getVapidPublicKey, subscribeToPush, unsubscribeFromPush } from "./push";
 import {
   associateCode,
   createReceipt,
@@ -332,6 +333,19 @@ export default {
       if (notifReadMatch && method === "POST") {
         if (!role) return error("Not signed in", 401);
         return markNotificationRead(env, role, Number(notifReadMatch[1]));
+      }
+
+      // Web Push
+      if (pathname === "/api/push/vapid-public-key" && method === "GET") {
+        return getVapidPublicKey(env);
+      }
+      if (pathname === "/api/push/subscribe" && method === "POST") {
+        if (!role) return error("Not signed in", 401);
+        return subscribeToPush(request, env, role);
+      }
+      if (pathname === "/api/push/unsubscribe" && method === "POST") {
+        if (!role) return error("Not signed in", 401);
+        return unsubscribeFromPush(request, env);
       }
 
       if (pathname.startsWith("/api/")) return json({ error: "Not found" }, 404);

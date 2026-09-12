@@ -6,6 +6,12 @@ export interface Env {
   /** Owner-only Admin panel password (Worker secret, never in source —
    *  see src/routes/admin.ts). Local dev value lives in .dev.vars. */
   ADMIN_PASSWORD: string;
+  /** VAPID keypair for Web Push (see src/push.ts). Worker secrets — never
+   *  in source. Push is silently skipped when these are unset, so local
+   *  dev works fine without them. */
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  VAPID_SUBJECT?: string;
 }
 
 export type Role = "warehouse" | "quality";

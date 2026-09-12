@@ -10,6 +10,10 @@ this for the first time — no prior Cloudflare Workers experience assumed.
 - **A D1 database** (SQLite at the edge) — all application data.
 - **An R2 bucket** — stores uploaded attachments (COAs, receipt files).
 - **One secret** (`ADMIN_PASSWORD`) — protects the owner-only `/admin` panel.
+- **Three optional secrets** (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`,
+  `VAPID_SUBJECT`) — enable Web Push (step 6b). The app works fine without
+  them; push sends are silently skipped and only the in-app bell + polling
+  refresh are active.
 - **A cron trigger** — already declared in `wrangler.toml` (`0 3 * * *`, daily
   expiry-alert check), no separate setup needed.
 
@@ -87,9 +91,9 @@ If you changed the bucket name, update the `[[r2_buckets]]` block in
 
 ## 5. Apply the database migrations
 
-The 13 files in `migrations/` are plain, numbered SQL files (`0001_init.sql`
-through `0013_users_sessions.sql`) — apply each one, **in numeric order**,
-against the remote database:
+The files in `migrations/` are plain, numbered SQL files (`0001_init.sql`
+through the latest) — apply each one, **in numeric order**, against the
+remote database:
 
 ```bash
 npm run db:migrate:remote
@@ -104,7 +108,7 @@ which needs bookkeeping this project doesn't set up).
 > *every* file each time, so re-running `db:migrate:remote` against a
 > database that already has these tables will error on migration `0001`
 > (the table already exists) before it gets anywhere near a new one. Once
-> the initial 13 are applied, apply any *future* migration individually
+> the initial set is applied, apply any *future* migration individually
 > instead — see "Adding a new migration" further down.
 
 To sanity-check the migrations landed:
@@ -133,6 +137,50 @@ account can suspend the entire service and create/deactivate every login.
 (For **local development only**, `.dev.vars` already has a placeholder
 dev password and is git-ignored — never put a real production password
 in that file.)
+
+## 6b. Enable Web Push (optional)
+
+Lets Warehouse/Quality get a real OS-level push notification (desktop or
+Android browser tab, or an iOS device that has added the app to its home
+screen — iOS never delivers push to a plain Safari tab) when a receipt is
+registered or a decision is recorded, on top of the existing in-app bell.
+Skip this section entirely if you don't need it yet; nothing else in the
+app depends on it.
+
+Generate a VAPID keypair (the identity the push service uses to verify
+sends actually came from this app) — any machine with Node 18+ works, it
+doesn't need to be run inside this repo:
+
+```bash
+node -e "
+(async () => {
+  const kp = await crypto.subtle.generateKey({name:'ECDSA', namedCurve:'P-256'}, true, ['sign','verify']);
+  const pub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+  const jwk = await crypto.subtle.exportKey('jwk', kp.privateKey);
+  console.log('VAPID_PUBLIC_KEY=' + Buffer.from(pub).toString('base64url'));
+  console.log('VAPID_PRIVATE_KEY=' + jwk.d);
+})();
+"
+```
+
+Set the three secrets (the public key is technically not secret, but it's
+simplest to manage it the same way as the private key since the app only
+ever reads it from `env`):
+
+```bash
+npx wrangler secret put VAPID_PUBLIC_KEY
+npx wrangler secret put VAPID_PRIVATE_KEY
+npx wrangler secret put VAPID_SUBJECT   # e.g. mailto:you@yourcompany.com — required by the push spec
+```
+
+Apply the `push_subscriptions` migration if you haven't already run all of
+step 5 (it's `migrations/0015_push_subscriptions.sql`, included in the
+loop `npm run db:migrate:remote` already runs).
+
+No redeploy is required after setting secrets — take effect immediately.
+Once set, each user sees a bell-with-plus icon in the topbar to opt in
+their device; nothing is sent to a device that hasn't explicitly enabled
+it.
 
 ## 7. Deploy
 
@@ -208,11 +256,11 @@ npm run deploy
 ```
 
 **Adding a new migration:** create the next-numbered file in `migrations/`
-(e.g. `0014_your_change.sql`), then apply it the same way as step 5, but
+(e.g. `0016_your_change.sql`), then apply it the same way as step 5, but
 only the new file:
 
 ```bash
-npx wrangler d1 execute warehouse-quality-db --remote --file=migrations/0014_your_change.sql
+npx wrangler d1 execute warehouse-quality-db --remote --file=migrations/0016_your_change.sql
 ```
 
 Always apply new migrations to `--remote` (production) *and* run them
