@@ -1,0 +1,245 @@
+# Deployment Guide
+
+Step-by-step instructions to take this repo from a fresh checkout to a live,
+working deployment on Cloudflare Workers. Written for whoever is deploying
+this for the first time — no prior Cloudflare Workers experience assumed.
+
+## What this app needs from Cloudflare
+
+- **A Worker** — runs `src/index.ts`, serves the API and the static frontend.
+- **A D1 database** (SQLite at the edge) — all application data.
+- **An R2 bucket** — stores uploaded attachments (COAs, receipt files).
+- **One secret** (`ADMIN_PASSWORD`) — protects the owner-only `/admin` panel.
+- **A cron trigger** — already declared in `wrangler.toml` (`0 3 * * *`, daily
+  expiry-alert check), no separate setup needed.
+
+There's no separate database server, no Node backend process, and no
+build step for the frontend (`public/` is served as-is).
+
+---
+
+## 1. Prerequisites
+
+- A Cloudflare account (the free plan works — D1 and Workers are free-tier
+  eligible; R2 requires adding a payment method to your account, see step 4,
+  but has a generous free monthly allowance).
+- Node.js 18+ and npm.
+- This repo cloned locally.
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+## 2. Log in to Cloudflare
+
+```bash
+npx wrangler login
+```
+
+This opens a browser tab to authorize the CLI against your Cloudflare
+account. Confirm you're pointed at the right account afterward:
+
+```bash
+npx wrangler whoami
+```
+
+## 3. Create the D1 database
+
+`wrangler.toml` already has a `[[d1_databases]]` block with a
+`database_id` — if you're continuing to deploy this project under the
+**same Cloudflare account** that database was created in, skip to step 4.
+
+If you're setting this up under a **different/new account**, create your
+own database and point the config at it:
+
+```bash
+npx wrangler d1 create warehouse-quality-db
+```
+
+This prints a `database_id` — copy it into `wrangler.toml`, replacing the
+existing value in the `[[d1_databases]]` block:
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "warehouse-quality-db"
+database_id = "<paste-the-new-id-here>"
+```
+
+## 4. Enable R2 and create the bucket
+
+R2 is a separate product toggle on Cloudflare accounts and needs to be
+turned on once in the dashboard before the CLI can create buckets:
+
+1. Cloudflare dashboard → **R2** (left sidebar) → follow the prompt to
+   enable R2 for your account (this requires a payment method on file,
+   even though usage stays within the free tier for typical use).
+2. Once enabled, create the bucket from the CLI:
+
+   ```bash
+   npx wrangler r2 bucket create warehouse-quality-attachments
+   ```
+
+If you changed the bucket name, update the `[[r2_buckets]]` block in
+`wrangler.toml` to match.
+
+## 5. Apply the database migrations
+
+The 13 files in `migrations/` are plain, numbered SQL files (`0001_init.sql`
+through `0013_users_sessions.sql`) — apply each one, **in numeric order**,
+against the remote database:
+
+```bash
+for f in migrations/*.sql; do
+  npx wrangler d1 execute warehouse-quality-db --remote --file="$f"
+done
+```
+
+> **Note:** `package.json` has `db:migrate:remote` / `db:migrate:local`
+> npm scripts that call `wrangler d1 migrations apply warehouse_quality_db`
+> (underscore) — that name doesn't match the `database_name` in
+> `wrangler.toml` (hyphen), and there's no `migrations_dir` configured for
+> wrangler's own migration-tracking system. Those scripts are unreliable as
+> currently written; the loop above (applying each file directly via
+> `d1 execute --file`) is the tested, working method and is what this
+> project's own development used throughout. If you'd rather fix the
+> scripts instead, point them at the binding name `DB` and add a
+> `migrations_dir = "migrations"` line to the `[[d1_databases]]` block.
+
+To sanity-check the migrations landed:
+
+```bash
+npx wrangler d1 execute warehouse-quality-db --remote --command "SELECT name FROM sqlite_master WHERE type='table';"
+```
+
+You should see `users`, `sessions`, `receipts`, `receipt_batches`,
+`suppliers`, `materials`, `notification_events`, `app_settings`, and the
+rest of the schema.
+
+## 6. Set the admin secret
+
+`ADMIN_PASSWORD` protects `/admin` (HTTP Basic Auth, any username, this
+password) — it must never live in source control. Set it as a Worker
+secret:
+
+```bash
+npx wrangler secret put ADMIN_PASSWORD
+```
+
+You'll be prompted to paste the value. Pick something strong — this
+account can suspend the entire service and create/deactivate every login.
+
+(For **local development only**, `.dev.vars` already has a placeholder
+dev password and is git-ignored — never put a real production password
+in that file.)
+
+## 7. Deploy
+
+```bash
+npm run deploy
+```
+
+This runs `wrangler deploy`, which bundles `src/index.ts`, uploads
+`public/` as static assets, and wires up the D1/R2 bindings and cron
+trigger declared in `wrangler.toml`. On success it prints your Worker's
+URL — something like:
+
+```
+https://warehouse-quality-integration.<your-subdomain>.workers.dev
+```
+
+## 8. Create the first accounts
+
+There's no public sign-up — every Warehouse/Quality account is created
+through the admin panel, which itself requires `ADMIN_PASSWORD` from step 6.
+
+Easiest path: open `https://<your-worker-url>/admin` in a browser, enter
+any username and the admin password when the browser's Basic Auth prompt
+appears, and use the **Accounts** card to create your first Warehouse and
+Quality logins.
+
+Or from the command line:
+
+```bash
+curl -u admin:<your-ADMIN_PASSWORD> \
+  -X POST https://<your-worker-url>/admin/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"username":"whouse1","password":"<a-real-password>","role":"warehouse","display_name":"Warehouse User"}'
+
+curl -u admin:<your-ADMIN_PASSWORD> \
+  -X POST https://<your-worker-url>/admin/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"username":"quality1","password":"<a-real-password>","role":"quality","display_name":"Quality User"}'
+```
+
+## 9. Verify the deployment
+
+- Visit `https://<your-worker-url>/` — you should land on the Warehouse ·
+  Quality role-picker landing page.
+- Sign in through `/login/warehouse` and `/login/quality` with the
+  accounts from step 8; confirm each role only sees its own nav tabs.
+- Visit `/admin` again and confirm **Service Control** shows "active".
+- Try receiving a material (Warehouse) and deciding a batch (Quality) to
+  confirm D1 writes are working end-to-end.
+- Upload an attachment (a COA file on a decided batch) to confirm the R2
+  binding works.
+
+## 10. Optional: a custom domain
+
+By default the app is only reachable at the `workers.dev` subdomain from
+step 7. To use your own domain:
+
+1. Add the domain to your Cloudflare account (it must already use
+   Cloudflare DNS).
+2. Cloudflare dashboard → **Workers & Pages** → your Worker →
+   **Settings → Domains & Routes** → **Add Custom Domain**.
+3. Cloudflare provisions the certificate and routes traffic automatically
+   — no `wrangler.toml` change needed for this part.
+
+---
+
+## Ongoing maintenance
+
+**Deploying a code change:**
+
+```bash
+npm run deploy
+```
+
+**Adding a new migration:** create the next-numbered file in `migrations/`
+(e.g. `0014_your_change.sql`), then apply it the same way as step 5, but
+only the new file:
+
+```bash
+npx wrangler d1 execute warehouse-quality-db --remote --file=migrations/0014_your_change.sql
+```
+
+Always apply new migrations to `--remote` (production) *and* run them
+against a local D1 (`--local`, or just delete `.wrangler/state` and let it
+rebuild) before deploying code that depends on the new schema, so you can
+catch mistakes against a throwaway copy first.
+
+**Rotating the admin password:**
+
+```bash
+npx wrangler secret put ADMIN_PASSWORD
+```
+
+(Overwrites the existing secret; takes effect immediately, no redeploy
+needed.)
+
+**Checking the cron job ran:** Cloudflare dashboard → your Worker →
+**Logs**, or `npx wrangler tail` while waiting for the next 03:00 UTC run,
+to confirm `runExpiryCheck` executes without errors.
+
+---
+
+## Known gaps to be aware of
+
+- **Arabic translations** are a best-effort business/QC vocabulary, not a
+  certified translation — worth a native Arabic speaker's review before
+  this goes in front of real staff (see `docs/architecture.md`).
+- **The `db:migrate:*` npm scripts** don't currently work as configured —
+  see the note in step 5.
