@@ -92,21 +92,20 @@ through `0013_users_sessions.sql`) — apply each one, **in numeric order**,
 against the remote database:
 
 ```bash
-for f in migrations/*.sql; do
-  npx wrangler d1 execute warehouse-quality-db --remote --file="$f"
-done
+npm run db:migrate:remote
 ```
 
-> **Note:** `package.json` has `db:migrate:remote` / `db:migrate:local`
-> npm scripts that call `wrangler d1 migrations apply warehouse_quality_db`
-> (underscore) — that name doesn't match the `database_name` in
-> `wrangler.toml` (hyphen), and there's no `migrations_dir` configured for
-> wrangler's own migration-tracking system. Those scripts are unreliable as
-> currently written; the loop above (applying each file directly via
-> `d1 execute --file`) is the tested, working method and is what this
-> project's own development used throughout. If you'd rather fix the
-> scripts instead, point them at the binding name `DB` and add a
-> `migrations_dir = "migrations"` line to the `[[d1_databases]]` block.
+This runs every file in `migrations/` through `wrangler d1 execute --file`,
+in order — the same tested method used throughout this project's own
+development (not wrangler's own `d1 migrations apply` tracking system,
+which needs bookkeeping this project doesn't set up).
+
+> **Only for the initial, from-scratch apply.** These scripts loop over
+> *every* file each time, so re-running `db:migrate:remote` against a
+> database that already has these tables will error on migration `0001`
+> (the table already exists) before it gets anywhere near a new one. Once
+> the initial 13 are applied, apply any *future* migration individually
+> instead — see "Adding a new migration" further down.
 
 To sanity-check the migrations landed:
 
@@ -241,5 +240,3 @@ to confirm `runExpiryCheck` executes without errors.
 - **Arabic translations** are a best-effort business/QC vocabulary, not a
   certified translation — worth a native Arabic speaker's review before
   this goes in front of real staff (see `docs/architecture.md`).
-- **The `db:migrate:*` npm scripts** don't currently work as configured —
-  see the note in step 5.
