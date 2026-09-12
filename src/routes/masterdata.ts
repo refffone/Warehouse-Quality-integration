@@ -1,5 +1,7 @@
 import { fetchByIds, resolveMaterialClassification } from "../db";
 import { error, json } from "../http";
+import { buildTemplateXlsx, parseImportBoolean, parseXlsxRows, templateResponse } from "../xlsxImport";
+import { isUploadedFile } from "./attachments";
 import { listSpecsForMaterial } from "./specs";
 import type {
   Attachment,
@@ -9,6 +11,8 @@ import type {
   DossierStatusCounts,
   DossierSupplierMetrics,
   Env,
+  ImportRowResult,
+  ImportSummary,
   Material,
   Supplier,
   SupplierCodeMetrics,
@@ -37,6 +41,88 @@ export async function createSupplier(request: Request, env: Env): Promise<Respon
     .bind(input.code, input.name)
     .first<{ id: number }>();
   return json({ id: row!.id }, 201);
+}
+
+export async function suppliersImportTemplate(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare("SELECT code, name FROM suppliers ORDER BY name").all<{
+    code: string;
+    name: string;
+  }>();
+  const bytes = buildTemplateXlsx(
+    [
+      { key: "code", header: "Code" },
+      { key: "name", header: "Name" },
+    ],
+    rows.results ?? []
+  );
+  return templateResponse(bytes, "suppliers-import-template.xlsx");
+}
+
+/** `commit: false` is a dry run — validates and reports what *would*
+ *  happen without writing anything, so the UI can show a preview before
+ *  the client commits to it. A commit is refused outright (400) while any
+ *  row still has an error, rather than silently applying the valid rows
+ *  and skipping the rest — so "did my import work?" always has a clean
+ *  yes/no answer instead of "partially." */
+export async function importSuppliers(request: Request, env: Env, commit: boolean): Promise<Response> {
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!isUploadedFile(file)) return error("file is required", 400);
+
+  let parsedRows: Record<string, string>[];
+  try {
+    parsedRows = parseXlsxRows(await file.arrayBuffer());
+  } catch {
+    return error("Couldn't read that file — make sure it's a valid .xlsx export", 400);
+  }
+
+  const existingRows = await env.DB.prepare("SELECT code FROM suppliers").all<{ code: string }>();
+  const existingCodes = new Set((existingRows.results ?? []).map((r) => r.code));
+  const seenInFile = new Set<string>();
+
+  const results: ImportRowResult[] = [];
+  const toWrite: Array<{ code: string; name: string }> = [];
+
+  parsedRows.forEach((row, i) => {
+    const rowNum = i + 1;
+    const code = (row["Code"] ?? "").trim();
+    const name = (row["Name"] ?? "").trim();
+
+    if (!code || !name) {
+      results.push({ row: rowNum, code: code || "(blank)", action: "error", message: "Code and Name are required" });
+      return;
+    }
+    if (seenInFile.has(code)) {
+      results.push({ row: rowNum, code, action: "error", message: "Duplicate code — already on an earlier row in this file" });
+      return;
+    }
+    seenInFile.add(code);
+    results.push({ row: rowNum, code, action: existingCodes.has(code) ? "update" : "insert" });
+    toWrite.push({ code, name });
+  });
+
+  const errors = results.filter((r) => r.action === "error").length;
+  if (commit && errors > 0) return error("Fix the rows with errors before importing", 400);
+
+  if (commit && toWrite.length > 0) {
+    await env.DB.batch(
+      toWrite.map((r) =>
+        env.DB.prepare(
+          `INSERT INTO suppliers (code, name) VALUES (?, ?)
+           ON CONFLICT(code) DO UPDATE SET name = excluded.name`
+        ).bind(r.code, r.name)
+      )
+    );
+  }
+
+  const summary: ImportSummary = {
+    rows: results,
+    inserts: results.filter((r) => r.action === "insert").length,
+    updates: results.filter((r) => r.action === "update").length,
+    errors,
+    committed: commit,
+  };
+  return json(summary);
 }
 
 export async function listMaterials(_request: Request, env: Env): Promise<Response> {
@@ -89,6 +175,136 @@ export async function upsertMaterial(request: Request, env: Env): Promise<Respon
     .run();
 
   return json({ code: input.code }, 200);
+}
+
+export async function materialsImportTemplate(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare(
+    "SELECT code, name, function_code, type_code, subtype_code, unit, requires_expiry FROM materials ORDER BY name"
+  ).all<{
+    code: string;
+    name: string;
+    function_code: string | null;
+    type_code: string | null;
+    subtype_code: string | null;
+    unit: string;
+    requires_expiry: number;
+  }>();
+  const bytes = buildTemplateXlsx(
+    [
+      { key: "code", header: "Code" },
+      { key: "name", header: "Name" },
+      { key: "function_code", header: "Function" },
+      { key: "type_code", header: "Type" },
+      { key: "subtype_code", header: "Subtype" },
+      { key: "unit", header: "Unit" },
+      { key: "requires_expiry", header: "Requires Expiry" },
+    ],
+    (rows.results ?? []).map((r) => ({ ...r, requires_expiry: r.requires_expiry ? "Yes" : "No" }))
+  );
+  return templateResponse(bytes, "materials-import-template.xlsx");
+}
+
+/** Same dry-run/commit shape as importSuppliers, but with an extra layer
+ *  of validation: Type/Subtype/Function are foreign keys into Quality's
+ *  own classification tables (src/routes/masterdata.ts's Codes screens),
+ *  not free text, so a row referencing a code that doesn't exist there is
+ *  an error rather than silently creating an orphaned reference. All
+ *  three lookup tables are small (Quality manages them by hand), so
+ *  they're loaded once up front instead of a query per row. */
+export async function importMaterials(request: Request, env: Env, commit: boolean): Promise<Response> {
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!isUploadedFile(file)) return error("file is required", 400);
+
+  let parsedRows: Record<string, string>[];
+  try {
+    parsedRows = parseXlsxRows(await file.arrayBuffer());
+  } catch {
+    return error("Couldn't read that file — make sure it's a valid .xlsx export", 400);
+  }
+
+  const [existingRows, typeRows, subtypeRows, functionRows] = await Promise.all([
+    env.DB.prepare("SELECT code FROM materials").all<{ code: string }>(),
+    env.DB.prepare("SELECT code FROM material_types").all<{ code: string }>(),
+    env.DB.prepare("SELECT code, type_code FROM material_subtypes").all<{ code: string; type_code: string }>(),
+    env.DB.prepare("SELECT code FROM material_functions").all<{ code: string }>(),
+  ]);
+  const existingCodes = new Set((existingRows.results ?? []).map((r) => r.code));
+  const validTypes = new Set((typeRows.results ?? []).map((r) => r.code));
+  const subtypeToType = new Map((subtypeRows.results ?? []).map((r) => [r.code, r.type_code]));
+  const validFunctions = new Set((functionRows.results ?? []).map((r) => r.code));
+
+  const seenInFile = new Set<string>();
+  const results: ImportRowResult[] = [];
+  const toWrite: Array<{
+    code: string;
+    name: string;
+    unit: string;
+    requires_expiry: number;
+    type_code: string | null;
+    subtype_code: string | null;
+    function_code: string | null;
+  }> = [];
+
+  parsedRows.forEach((row, i) => {
+    const rowNum = i + 1;
+    const code = (row["Code"] ?? "").trim();
+    const name = (row["Name"] ?? "").trim();
+    const unit = (row["Unit"] ?? "").trim();
+    const functionCode = (row["Function"] ?? "").trim() || null;
+    const typeCode = (row["Type"] ?? "").trim() || null;
+    const subtypeCode = (row["Subtype"] ?? "").trim() || null;
+    const requiresExpiry = parseImportBoolean(row["Requires Expiry"] ?? "");
+
+    const fail = (message: string) => results.push({ row: rowNum, code: code || "(blank)", action: "error", message });
+
+    if (!code || !name || !unit) return fail("Code, Name and Unit are required");
+    if (seenInFile.has(code)) return fail("Duplicate code — already on an earlier row in this file");
+    if (subtypeCode && !subtypeToType.has(subtypeCode)) return fail(`Unknown subtype code: ${subtypeCode}`);
+    if (subtypeCode && typeCode && subtypeToType.get(subtypeCode) !== typeCode) {
+      return fail(`Subtype ${subtypeCode} belongs to type ${subtypeToType.get(subtypeCode)}, not ${typeCode}`);
+    }
+    if (!subtypeCode && typeCode && !validTypes.has(typeCode)) return fail(`Unknown type code: ${typeCode}`);
+    if (functionCode && !validFunctions.has(functionCode)) return fail(`Unknown function code: ${functionCode}`);
+
+    seenInFile.add(code);
+    results.push({ row: rowNum, code, action: existingCodes.has(code) ? "update" : "insert" });
+    toWrite.push({
+      code,
+      name,
+      unit,
+      requires_expiry: requiresExpiry ? 1 : 0,
+      type_code: subtypeCode ? subtypeToType.get(subtypeCode)! : typeCode,
+      subtype_code: subtypeCode,
+      function_code: functionCode,
+    });
+  });
+
+  const errors = results.filter((r) => r.action === "error").length;
+  if (commit && errors > 0) return error("Fix the rows with errors before importing", 400);
+
+  if (commit && toWrite.length > 0) {
+    await env.DB.batch(
+      toWrite.map((r) =>
+        env.DB.prepare(
+          `INSERT INTO materials (code, name, unit, requires_expiry, type_code, subtype_code, function_code)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(code) DO UPDATE SET name = excluded.name, unit = excluded.unit,
+             requires_expiry = excluded.requires_expiry, type_code = excluded.type_code,
+             subtype_code = excluded.subtype_code, function_code = excluded.function_code`
+        ).bind(r.code, r.name, r.unit, r.requires_expiry, r.type_code, r.subtype_code, r.function_code)
+      )
+    );
+  }
+
+  const summary: ImportSummary = {
+    rows: results,
+    inserts: results.filter((r) => r.action === "insert").length,
+    updates: results.filter((r) => r.action === "update").length,
+    errors,
+    committed: commit,
+  };
+  return json(summary);
 }
 
 export async function listMaterialFunctions(_request: Request, env: Env): Promise<Response> {

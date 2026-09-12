@@ -790,6 +790,108 @@ async function downloadCoa(batchId, format) {
   }
 }
 
+// ---------------------------------------------------------------- Excel import (Suppliers & Materials)
+//
+// Shared preview-then-commit flow: pick a file, "Preview" posts it with
+// commit=false (nothing written yet) and renders one row per sheet row
+// with its would-be action (insert/update/error). "Confirm import" only
+// appears once a preview comes back with zero errors, and re-posts the
+// same file with commit=true.
+
+function importSectionHtml(prefix, templateHref) {
+  return `
+    <div class="hstack" style="margin-top:14px; flex-wrap:wrap; border-top:1px solid var(--rule); padding-top:14px;">
+      <a class="btn ghost sm" href="${esc(templateHref)}">${esc(t("import.downloadTemplate"))}</a>
+      <label class="btn ghost sm" style="cursor:pointer;">
+        ${esc(t("import.chooseFile"))}
+        <input type="file" id="${prefix}-file" accept=".xlsx" hidden />
+      </label>
+      <span class="small muted" id="${prefix}-filename"></span>
+      <button type="button" class="btn primary sm" id="${prefix}-preview" disabled>${esc(t("import.preview"))}</button>
+    </div>
+    <div id="${prefix}-results"></div>
+  `;
+}
+
+/** `onImported` is called once a commit succeeds, so the caller can
+ *  reload its list. */
+function wireImportSection(prefix, importPath, onImported) {
+  const fileInput = document.getElementById(`${prefix}-file`);
+  const filenameEl = document.getElementById(`${prefix}-filename`);
+  const previewBtn = document.getElementById(`${prefix}-preview`);
+  const resultsEl = document.getElementById(`${prefix}-results`);
+  let selectedFile = null;
+
+  fileInput.addEventListener("change", () => {
+    selectedFile = fileInput.files[0] || null;
+    filenameEl.textContent = selectedFile ? selectedFile.name : "";
+    previewBtn.disabled = !selectedFile;
+    resultsEl.innerHTML = "";
+  });
+
+  const actionPill = { insert: "approved", update: "partial", error: "rejected" };
+
+  function renderSummary(summary) {
+    const rows = summary.rows
+      .map(
+        (r) => `<tr>
+          <td>${r.row}</td>
+          <td class="mono">${esc(r.code)}</td>
+          <td><span class="status-pill ${actionPill[r.action]}">${esc(t(`import.action.${r.action}`))}</span></td>
+          <td>${esc(r.message || "")}</td>
+        </tr>`
+      )
+      .join("");
+
+    resultsEl.innerHTML = `
+      <div class="card" style="box-shadow:none; margin-top:12px; padding:14px;">
+        <div class="small muted">${esc(
+          t("import.summary", { inserts: summary.inserts, updates: summary.updates, errors: summary.errors })
+        )}</div>
+        ${
+          rows
+            ? `<div class="table-scroll" style="margin-top:8px">
+                <table class="data-table">
+                  <thead><tr><th>${esc(t("import.row"))}</th><th>${esc(t("common.code"))}</th><th>${esc(t("import.actionCol"))}</th><th>${esc(t("import.messageCol"))}</th></tr></thead>
+                  <tbody>${rows}</tbody>
+                </table>
+              </div>`
+            : ""
+        }
+        ${
+          summary.committed
+            ? `<div class="small" style="margin-top:10px; color:var(--good)">${esc(t("import.success"))}</div>`
+            : summary.errors > 0
+              ? `<div class="small" style="margin-top:10px; color:var(--bad)">${esc(t("import.fixErrors"))}</div>`
+              : `<button type="button" class="btn primary sm" id="${prefix}-confirm" style="margin-top:10px">${esc(t("import.confirm"))}</button>`
+        }
+      </div>
+    `;
+
+    if (!summary.committed && summary.errors === 0) {
+      document.getElementById(`${prefix}-confirm`).addEventListener("click", () => runImport(true));
+    }
+  }
+
+  async function runImport(commit) {
+    if (!selectedFile) return;
+    const fd = new FormData();
+    fd.append("file", selectedFile);
+    try {
+      const summary = await uploadFile(`${importPath}?commit=${commit}`, fd);
+      renderSummary(summary);
+      if (summary.committed) {
+        toast(t("import.success"));
+        if (onImported) onImported();
+      }
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  previewBtn.addEventListener("click", () => runImport(false));
+}
+
 function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
   const spec = line.spec;
   const specHtml = spec
@@ -1525,6 +1627,7 @@ function renderMaterialsSection(section, { types, subtypes, functions, materials
           <button class="btn primary sm">${esc(t("common.save"))}</button>
         </div>
       </form>
+      ${importSectionHtml("materials-import", "/api/materials/import-template")}
     </div>
   `;
 
@@ -1547,6 +1650,8 @@ function renderMaterialsSection(section, { types, subtypes, functions, materials
       toast(err.message, true);
     }
   });
+
+  wireImportSection("materials-import", "/api/materials/import", viewCodes);
 }
 
 const codesListState = { sortKey: "code", sortDir: "asc", query: "", filterType: "", filterSubtype: "", filterFunction: "" };
@@ -1814,10 +1919,12 @@ async function viewSuppliers() {
           <button class="btn primary sm">${esc(t("common.add"))}</button>
         </div>
       </form>
+      ${importSectionHtml("suppliers-import", "/api/suppliers/import-template")}
     </div>
   `;
 
   wireExportBar("suppliers-list-export", "suppliers", { withPeriod: false, filenamePrefix: "suppliers" });
+  wireImportSection("suppliers-import", "/api/suppliers/import", viewSuppliers);
 
   document.getElementById("new-supplier-form").addEventListener("submit", async (e) => {
     e.preventDefault();

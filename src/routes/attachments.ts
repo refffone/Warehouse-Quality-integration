@@ -7,13 +7,13 @@ const KINDS: AttachmentKind[] = ["photo", "tds", "msds"];
 // string | null (it doesn't know about File), even though the Workers
 // runtime returns an actual File for a file field. Narrow structurally
 // instead of `instanceof File`.
-interface UploadedFile {
+export interface UploadedFile {
   name: string;
   type: string;
   arrayBuffer(): Promise<ArrayBuffer>;
 }
 
-function isUploadedFile(value: unknown): value is UploadedFile {
+export function isUploadedFile(value: unknown): value is UploadedFile {
   return (
     typeof value === "object" &&
     value !== null &&

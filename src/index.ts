@@ -20,14 +20,18 @@ import {
   getMaterialDossier,
   getSupplierAssessment,
   getSupplierWeightAssessment,
+  importMaterials,
+  importSuppliers,
   listImportCodeSchemes,
   listMaterialFunctions,
   listMaterials,
   listMaterialSubtypes,
   listMaterialTypes,
   listSuppliers,
+  materialsImportTemplate,
   setBatchNumberScheme,
   setImportCodeScheme,
+  suppliersImportTemplate,
   upsertMaterial,
   upsertMaterialFunction,
   upsertMaterialSubtype,
@@ -129,6 +133,14 @@ export default {
         if (!role) return error("Not signed in", 401);
         return createSupplier(request, env);
       }
+      if (pathname === "/api/suppliers/import-template" && method === "GET") {
+        if (!role) return error("Not signed in", 401);
+        return suppliersImportTemplate(env);
+      }
+      if (pathname === "/api/suppliers/import" && method === "POST") {
+        if (!role) return error("Not signed in", 401);
+        return importSuppliers(request, env, url.searchParams.get("commit") === "true");
+      }
       if (pathname === "/api/materials" && method === "GET") {
         if (role !== "quality") return error("Material codes are a quality-only view", 403);
         return listMaterials(request, env);
@@ -136,6 +148,14 @@ export default {
       if (pathname === "/api/materials" && method === "PUT") {
         if (role !== "quality") return error("Only quality can create/edit material codes", 403);
         return upsertMaterial(request, env);
+      }
+      if (pathname === "/api/materials/import-template" && method === "GET") {
+        if (role !== "quality") return error("Material codes are a quality-only view", 403);
+        return materialsImportTemplate(env);
+      }
+      if (pathname === "/api/materials/import" && method === "POST") {
+        if (role !== "quality") return error("Only quality can create/edit material codes", 403);
+        return importMaterials(request, env, url.searchParams.get("commit") === "true");
       }
       if (pathname === "/api/material-types" && method === "GET") {
         if (role !== "quality") return error("Material types are a quality-only view", 403);

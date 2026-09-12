@@ -1217,7 +1217,55 @@ both needed their own container added to the `#…-body`-style flex-gap
 fix from the mobile layout pass above, since they're built on the same
 "stack a few `.card`s below the page header" shape that bug came from.
 
-## 19. Next Step
+## 19. Excel export/import for Suppliers and Materials
+
+The existing PDF/Excel export (`buildReportXlsx`, `reportBuilders.ts`) is a
+branded, human-read-only report — timestamped title rows unsuitable for
+round-tripping. Import needed a plainer sheet, so `src/xlsxImport.ts` adds
+a second, undecorated builder (`buildTemplateXlsx`: just a header row plus
+data, no title/blank rows to confuse a naive re-import) alongside a reader
+(`parseXlsxRows`, via `XLSX.read`/`sheet_to_json`) and a lenient boolean
+parser (`parseImportBoolean` — accepts "true"/"1"/"yes"/"y", so a client's
+own spelling of a checkbox column doesn't matter).
+
+Both entities follow the same preview-then-commit shape
+(`suppliersImportTemplate`/`importSuppliers`,
+`materialsImportTemplate`/`importMaterials` in `src/routes/masterdata.ts`):
+a `GET .../import-template` downloads the current table as a starting
+point; `POST .../import?commit=false` (the default the UI calls first)
+validates every row and reports, per row, `insert`/`update`/`error` without
+writing anything; `commit=true` is refused outright (400) while any row
+still errors, and otherwise writes every row in one `env.DB.batch()` via
+the existing `ON CONFLICT(code) DO UPDATE` upsert pattern already used by
+the JSON create/edit endpoints. Refusing a partial commit — rather than
+applying the good rows and skipping the bad ones — keeps "did my import
+work?" a clean yes/no instead of "partially, check which."
+
+Materials import carries one extra layer Suppliers doesn't need: Type,
+Subtype and Function are foreign keys into Quality's own classification
+tables, not free text, so an unrecognized or mismatched code in those
+columns is a validation error rather than a silently-created dangling
+reference (all three lookup tables are small and loaded once up front,
+not per row). Permissions mirror each entity's existing tier — Suppliers
+import is open to any signed-in role, Materials import is quality-only —
+reusing `isUploadedFile`'s structural `File` check from
+`attachments.ts` (exported for this reuse) since the pinned
+`@cloudflare/workers-types` version doesn't type `FormData.get()` as
+possibly returning a `File`.
+
+On the frontend, `importSectionHtml`/`wireImportSection` (`public/app.js`)
+are a shared pair added once and wired into both `viewSuppliers()` and
+the Codes → Materials subtab: a template-download link, a file picker, a
+"Preview" button that posts with `commit=false` and renders one row per
+result (`status-pill` reused as insert→green, update→purple, error→red),
+and a "Confirm import" button that only appears once a preview comes back
+with zero errors and re-posts the same file with `commit=true`. A
+successful commit reloads the calling view so the refreshed list and a
+reset import section show immediately. No new CSS was needed — the
+section reuses `.card`, `.hstack`, `.btn`, `.status-pill` and
+`.table-scroll`/`.data-table` as they already exist.
+
+## 20. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Two things

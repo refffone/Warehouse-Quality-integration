@@ -20,6 +20,27 @@ export type ReceiptStatus = "pending" | "in_review" | "decided";
 export type BatchStatus = "pending" | "approved" | "rejected" | "partial";
 export type NotificationKind = "new_receipt" | "decision" | "expiry_alert";
 
+/** One row's outcome from an Excel import preview or commit — "error" rows
+ *  never reach the database; a commit is refused outright while any exist
+ *  (see importSuppliers/importMaterials), so the client always fixes the
+ *  file and re-previews rather than wondering which half of an import
+ *  actually landed. */
+export interface ImportRowResult {
+  row: number;
+  code: string;
+  action: "insert" | "update" | "error";
+  message?: string;
+}
+
+export interface ImportSummary {
+  rows: ImportRowResult[];
+  inserts: number;
+  updates: number;
+  errors: number;
+  /** false for a preview (dry run) — nothing was written yet. */
+  committed: boolean;
+}
+
 export interface SupplierWithStats extends Supplier {
   /** Total receipts ever logged against this supplier (any status) — the
    *  one at-a-glance number the plain Suppliers list needs; everything
