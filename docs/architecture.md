@@ -1285,6 +1285,16 @@ rows a user adds by hand. `validateParameter` (refactored out of the
 existing bounds-check loop) is exported so the import path and the regular
 create-spec-version path enforce the exact same rule.
 
+The same `importSectionHtml("masterdata-specs-import", ...)`/
+`wireImportSection` pair is also wired into Master Data's Material Dossier
+section (`renderMaterialDossierSection`, next to its own `dossier-export`
+export bar), since that's the other screen a quality user already has a
+material pulled up on. Its `onImported` callback re-loads just that
+material's dossier (not a full view re-render like Suppliers/Materials/
+Specifications use), so the import result panel stays visible instead of
+being wiped by the refresh — showing the confirmation alongside the
+now-updated Specifications card underneath.
+
 ## 20. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now

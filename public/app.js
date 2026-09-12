@@ -2410,6 +2410,7 @@ async function renderMaterialDossierSection(section) {
         ${codeSearchHtml("dossier-material", t("common.searchByCodeOrName"))}
       </div>
       ${exportBarHtml("dossier-export", { withPeriod: false })}
+      ${importSectionHtml("masterdata-specs-import", "/api/specs/import-template")}
     </div>
     <div id="dossier-body"></div>
   `;
@@ -2423,6 +2424,7 @@ async function renderMaterialDossierSection(section) {
     () => (currentCode ? `master-data/${encodeURIComponent(currentCode)}` : null),
     { withPeriod: false, filenamePrefix: "master-data" }
   );
+  wireImportSection("masterdata-specs-import", "/api/specs/import", () => currentCode && loadDossier(currentCode));
 
   async function loadDossier(code) {
     currentCode = code;
