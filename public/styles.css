@@ -256,7 +256,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
    flex gap only reaches its own direct children, and without this these
    cards render edge-to-edge with nothing but their own box-shadow (barely
    visible on a narrow screen) implying any separation between them. */
-#codes-section, #masterdata-section, #dossier-body, #supplier-body {
+#codes-section, #masterdata-section, #dossier-body, #supplier-body, #weight-assessment-body {
   display: flex; flex-direction: column; gap: 22px;
 }
 
@@ -601,7 +601,7 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
   .role-switch span { display: none; }
 
   .card { padding: 14px 16px; }
-  .view, #codes-section, #masterdata-section, #dossier-body, #supplier-body { gap: 16px; }
+  .view, #codes-section, #masterdata-section, #dossier-body, #supplier-body, #weight-assessment-body { gap: 16px; }
 
   /* iOS Safari auto-zooms the whole page in when focusing any text input,
      select or textarea whose *computed* font-size is under 16px — every

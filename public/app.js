@@ -136,11 +136,14 @@ const ROUTES = {
     { id: "receive", labelKey: "nav.receive" },
     { id: "todo", labelKey: "nav.todo" },
     { id: "history", labelKey: "nav.history" },
+    { id: "suppliers", labelKey: "nav.suppliers" },
+    { id: "supplierassessment", labelKey: "nav.supplierAssessment" },
   ],
   quality: [
     { id: "todo", labelKey: "nav.todo" },
     { id: "history", labelKey: "nav.history" },
     { id: "codes", labelKey: "nav.codes" },
+    { id: "suppliers", labelKey: "nav.suppliers" },
     { id: "specs", labelKey: "nav.specs" },
     { id: "masterdata", labelKey: "nav.masterdata" },
   ],
@@ -155,6 +158,8 @@ const ROUTE_COLOR = {
   todo: "251, 191, 36", // amber
   history: "56, 189, 248", // sky
   codes: "45, 212, 191", // teal
+  suppliers: "129, 140, 248", // indigo
+  supplierassessment: "251, 146, 60", // orange — distinct from Quality's own emerald assessment
   specs: "251, 113, 133", // rose
   masterdata: "52, 211, 153", // emerald — matches the Quality landing card
 };
@@ -1776,6 +1781,149 @@ function collectParams(container) {
   });
 }
 
+// ---------------------------------------------------------------- suppliers list (both roles)
+
+async function viewSuppliers() {
+  const view = document.getElementById("view");
+  const suppliers = await getSuppliers(true);
+
+  const rows = suppliers
+    .map(
+      (s) =>
+        `<tr><td class="mono">${esc(s.code)}</td><td>${esc(s.name)}</td><td>${s.total_receipts}</td></tr>`
+    )
+    .join("");
+
+  view.innerHTML = `
+    <div class="view-head"><div><h1>${esc(t("suppliersList.title"))}</h1><p>${esc(t("suppliersList.subtitle"))}</p></div></div>
+
+    <div class="card">
+      <h3 style="margin-bottom:12px">${esc(t("suppliersList.directory"))}</h3>
+      ${exportBarHtml("suppliers-list-export", { withPeriod: false })}
+      <div class="table-scroll" style="margin-top:12px">
+        <table class="data-table">
+          <thead><tr><th>${esc(t("common.code"))}</th><th>${esc(t("common.name"))}</th><th>${esc(t("suppliersList.totalReceipts"))}</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="3" class="muted">${esc(t("common.noneYet"))}</td></tr>`}</tbody>
+        </table>
+      </div>
+      <form class="form-grid" id="new-supplier-form" style="margin-top:16px; border-top:1px solid var(--rule); padding-top:14px;">
+        <b class="small">${esc(t("suppliersList.addSupplier"))}</b>
+        <div class="field-row">
+          <input name="code" placeholder="${esc(t("common.code"))}" required />
+          <input name="name" placeholder="${esc(t("common.name"))}" required />
+          <button class="btn primary sm">${esc(t("common.add"))}</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  wireExportBar("suppliers-list-export", "suppliers", { withPeriod: false, filenamePrefix: "suppliers" });
+
+  document.getElementById("new-supplier-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await api.post("/api/suppliers", { code: fd.get("code"), name: fd.get("name") });
+      toast(t("suppliersList.supplierAdded"));
+      viewSuppliers();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+}
+
+// ---------------------------------------------------------------- supplier assessment (warehouse only)
+//
+// A different question from Quality's own Master Data > Suppliers
+// assessment: not "did the material pass QC" but "did the supplier ship
+// what their paperwork claimed" — as-received qty (what the receipt says)
+// vs actual weighed qty (what Warehouse physically found), per material
+// code and overall.
+
+function fmtVariance(pct) {
+  if (pct == null) return "—";
+  const rounded = Math.round(pct * 10) / 10;
+  return `${rounded > 0 ? "+" : ""}${rounded}%`;
+}
+function varianceClass(pct) {
+  if (pct == null) return "";
+  return Math.abs(pct) < 2 ? "" : pct < 0 ? "bad" : "good";
+}
+
+async function viewSupplierAssessment() {
+  const view = document.getElementById("view");
+  const suppliers = await getSuppliers(true);
+
+  view.innerHTML = `
+    <div class="view-head"><div><h1>${esc(t("supplierAssessment.title"))}</h1><p>${esc(t("supplierAssessment.subtitle"))}</p></div></div>
+    <div class="card">
+      <div class="field"><label>${esc(t("common.supplier"))}</label>
+        ${codeSearchHtml("weight-supplier-search", t("common.searchByCodeOrName"))}
+      </div>
+    </div>
+    <div id="weight-assessment-body"></div>
+  `;
+
+  const body = document.getElementById("weight-assessment-body");
+  let currentCode = null;
+
+  async function loadAssessment(code) {
+    currentCode = code;
+    body.innerHTML = loadingState();
+    const a = await api.get(`/api/suppliers/${encodeURIComponent(code)}/weight-assessment`);
+    if (!body.isConnected || currentCode !== code) return;
+
+    const materialRows = a.by_material
+      .map(
+        (m) => `
+      <tr>
+        <td class="mono">${esc(m.material_code || t("supplierAssessment.uncoded"))}</td>
+        <td>${esc(m.material_name)}</td>
+        <td>${m.batches}</td>
+        <td>${m.qty_as_received} ${esc(m.unit || "")}</td>
+        <td>${m.qty_actual_weighed} ${esc(m.unit || "")}</td>
+        <td class="${varianceClass(m.variance_pct)}">${fmtVariance(m.variance_pct)}</td>
+      </tr>`
+      )
+      .join("");
+
+    body.innerHTML = `
+      <div class="card">
+        <h3>${esc(a.supplier.name)} <span class="mono small muted">(${esc(a.supplier.code)})</span></h3>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">${esc(t("supplierAssessment.overall"))}</h3>
+        <div class="stat-grid">
+          <div class="stat-tile"><div class="stat-label">${esc(t("supplierAssessment.batchesFinalized"))}</div><div class="stat-value">${a.overall.batches}</div></div>
+          <div class="stat-tile"><div class="stat-label">${esc(t("supplierAssessment.variance"))}</div><div class="stat-value ${varianceClass(a.overall.variance_pct)}">${fmtVariance(a.overall.variance_pct)}</div></div>
+        </div>
+        <div class="small muted" style="margin-top:8px">${esc(t("supplierAssessment.note"))}</div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:10px">${esc(t("supplierAssessment.byMaterial"))}</h3>
+        ${
+          a.by_material.length
+            ? `<div class="table-scroll"><table class="data-table">
+                <thead><tr><th>${esc(t("common.code"))}</th><th>${esc(t("common.name"))}</th><th>${esc(t("supplierAssessment.batches"))}</th><th>${esc(t("supplierAssessment.qtyAsReceived"))}</th><th>${esc(t("supplierAssessment.qtyActual"))}</th><th>${esc(t("supplierAssessment.variance"))}</th></tr></thead>
+                <tbody>${materialRows}</tbody>
+              </table></div>`
+            : `<div class="small muted">${esc(t("supplierAssessment.noFinalizedYet"))}</div>`
+        }
+      </div>
+    `;
+  }
+
+  const input = wireCodeSearch("weight-supplier-search", suppliers, loadAssessment);
+  if (suppliers.length) {
+    input.value = suppliers[0].code;
+    await loadAssessment(suppliers[0].code);
+  } else {
+    body.innerHTML = emptyState(icons.navSuppliers, t("suppliers.noSuppliersYet"));
+  }
+}
+
 async function viewSpecs() {
   const view = document.getElementById("view");
   const [materials, subtypes] = await Promise.all([getMaterials(true), getSubtypes(true)]);
@@ -2413,6 +2561,12 @@ async function renderView() {
     } else if (role === "quality" && tab === "masterdata") {
       lastRouteArgs = { fn: viewMasterData };
       await viewMasterData();
+    } else if (tab === "suppliers") {
+      lastRouteArgs = { fn: viewSuppliers };
+      await viewSuppliers();
+    } else if (role === "warehouse" && tab === "supplierassessment") {
+      lastRouteArgs = { fn: viewSupplierAssessment };
+      await viewSupplierAssessment();
     }
   } catch (err) {
     document.getElementById("view").innerHTML = errorState(t("error.screenLoadFailed", { message: err.message }));

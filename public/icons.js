@@ -31,6 +31,8 @@ export const icons = {
   navCodes: svg(`<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>`),
   navSpecs: svg(`<path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z"/><path d="M14 3v5h5"/><path d="M8 13h8M8 17h5"/>`),
   navMasterdata: svg(`<path d="M12 3c4.4 0 8 1.3 8 3s-3.6 3-8 3-8-1.3-8-3 3.6-3 8-3Z"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>`),
+  navSuppliers: svg(`<path d="M3 7h11v9H3z"/><path d="M14 10h4l3 3v3h-7z"/><circle cx="7.5" cy="18.5" r="1.5"/><circle cx="17.5" cy="18.5" r="1.5"/>`),
+  navScale: svg(`<path d="M12 3v18"/><path d="M5 7h14"/><path d="M8 21h8"/><path d="M5 7 2 13a3 3 0 0 0 6 0L5 7Z"/><path d="M19 7l-3 6a3 3 0 0 0 6 0l-3-6Z"/>`),
 
   check: svg(`<path d="M4 12.5 9 17.5 20 6.5"/>`),
   alertCircle: svg(`<circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><path d="M12 16v.01"/>`),
@@ -47,4 +49,6 @@ export const navIcon = (routeId) =>
     codes: icons.navCodes,
     specs: icons.navSpecs,
     masterdata: icons.navMasterdata,
+    suppliers: icons.navSuppliers,
+    supplierassessment: icons.navScale,
   })[routeId] ?? "";

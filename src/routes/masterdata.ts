@@ -13,10 +13,17 @@ import type {
   Supplier,
   SupplierCodeMetrics,
   SupplierRating,
+  SupplierWeightVariance,
 } from "../types";
 
 export async function listSuppliers(_request: Request, env: Env): Promise<Response> {
-  const rows = await env.DB.prepare("SELECT * FROM suppliers ORDER BY name").all();
+  const rows = await env.DB.prepare(
+    `SELECT s.*, COUNT(r.id) as total_receipts
+     FROM suppliers s
+     LEFT JOIN receipts r ON r.supplier_id = s.id
+     GROUP BY s.id
+     ORDER BY s.name`
+  ).all();
   return json(rows.results ?? []);
 }
 
@@ -475,4 +482,73 @@ export async function getSupplierAssessment(env: Env, supplierCode: string): Pro
     codes,
     best_code: bestCode,
   });
+}
+
+function weightVariance(asReceived: number, actualWeighed: number): number | null {
+  return asReceived === 0 ? null : ((actualWeighed - asReceived) / asReceived) * 100;
+}
+
+/** Warehouse's own supplier scorecard — separate from Quality's pass/fail
+ *  assessment above, because it answers a different question: not "did
+ *  the material meet spec" but "did the supplier actually ship what their
+ *  paperwork claimed." Only batches that have been through the
+ *  finalize-weight step (Warehouse physically re-weighing after Quality's
+ *  decision) have an actual figure to compare against, so anything still
+ *  pending that step is excluded rather than counted as a 0. */
+export async function getSupplierWeightAssessment(env: Env, supplierCode: string): Promise<Response> {
+  const supplier = await env.DB.prepare("SELECT * FROM suppliers WHERE code = ?")
+    .bind(supplierCode)
+    .first<Supplier>();
+  if (!supplier) return error("Supplier not found", 404);
+
+  const byMaterialRows = await env.DB.prepare(
+    `SELECT rl.material_code,
+       COALESCE(m.name, rl.material_name_text) as material_name,
+       -- rl.unit is what the batch was actually logged/weighed in; m.unit
+       -- (the code's canonical unit) is only a fallback for display when a
+       -- line somehow has none of its own.
+       COALESCE(rl.unit, m.unit) as unit,
+       COUNT(*) as batches,
+       COALESCE(SUM(rb.qty_as_received), 0) as qty_as_received,
+       COALESCE(SUM(rb.qty_actual_weighed), 0) as qty_actual_weighed
+     FROM receipt_batches rb
+     JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
+     JOIN receipts r ON r.id = rl.receipt_id
+     LEFT JOIN materials m ON m.code = rl.material_code
+     WHERE r.supplier_id = ? AND rb.qty_actual_weighed IS NOT NULL
+     GROUP BY rl.material_code
+     ORDER BY batches DESC`
+  )
+    .bind(supplier.id)
+    .all<{
+      material_code: string | null;
+      material_name: string;
+      unit: string;
+      batches: number;
+      qty_as_received: number;
+      qty_actual_weighed: number;
+    }>();
+
+  const byMaterial: SupplierWeightVariance[] = (byMaterialRows.results ?? []).map((row) => ({
+    ...row,
+    variance_pct: weightVariance(row.qty_as_received, row.qty_actual_weighed),
+  }));
+
+  // A supplier that ships several material codes can ship them in
+  // different units (KG, L, PCS, ...) — summing raw quantities across
+  // codes to get one "overall" figure would silently add kilograms to
+  // pallet counts. Each material's own variance_pct is unit-agnostic
+  // (it's a ratio within that one material), so "overall" is a
+  // batch-weighted average of those instead of a cross-unit sum.
+  const totalBatches = byMaterial.reduce((sum, m) => sum + m.batches, 0);
+  const weightedVarianceSum = byMaterial.reduce(
+    (sum, m) => sum + (m.variance_pct ?? 0) * m.batches,
+    0
+  );
+  const overall = {
+    batches: totalBatches,
+    variance_pct: totalBatches === 0 ? null : weightedVarianceSum / totalBatches,
+  };
+
+  return json({ supplier, overall, by_material: byMaterial });
 }

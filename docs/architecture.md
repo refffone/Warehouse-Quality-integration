@@ -1175,7 +1175,49 @@ here — a Chromium limitation, not an app bug) but the failure path was
 confirmed to fail gracefully (toast, no crash) rather than exercising the
 happy path, which needs a real browser profile.
 
-## 18. Next Step
+## 18. Suppliers list (both roles) + Warehouse's own weight-accuracy assessment
+
+Two additions, both about suppliers but answering different questions for
+different audiences.
+
+**Suppliers list** (`public/app.js` `viewSuppliers()`, new "Suppliers" nav
+tab for both roles) is a plain browsable directory — code, name, total
+receipts — plus an inline add-supplier form, backed by the existing
+`GET/POST /api/suppliers` (already open to both roles) rather than a new
+endpoint. `listSuppliers` (`src/routes/masterdata.ts`) now also returns
+`total_receipts` (a `LEFT JOIN` + `COUNT`), an additive field the existing
+consumers of that same endpoint (the Receive wizard's supplier picker,
+Master Data's own supplier search) simply ignore. The supplier list's own
+PDF/Excel export reuses the already-existing `/api/reports/suppliers`
+endpoint, whose permission was loosened from quality-only to any signed-in
+role to match.
+
+**Supplier Assessment** (new "Supplier Assessment" nav tab, Warehouse
+role only) is a different question from Quality's own pass/fail
+assessment already living in Master Data › Suppliers: not "did the
+material meet spec" but "did the supplier actually ship what their
+paperwork claimed" — comparing `qty_as_received` (what the receipt says)
+against `qty_actual_weighed` (what Warehouse physically found, from the
+existing finalize-weight step — the same field, just aggregated for the
+first time). `getSupplierWeightAssessment` (`src/routes/masterdata.ts`,
+new warehouse-only route `GET /api/suppliers/:code/weight-assessment`)
+scopes to batches that have actually been through finalize-weight, and
+reports per material code (a supplier can ship several codes in
+different units — KG, L, PCS — so per-code sums are the only place raw
+quantities are safe to add). The "overall" figure is deliberately *not* a
+cross-material sum of those quantities (that would silently add
+kilograms to pallet counts); it's a batch-weighted average of each
+material's own unit-agnostic variance percentage instead.
+
+Both new views reuse this app's established conventions rather than
+inventing new ones: `codeSearchHtml`/`wireCodeSearch` for the supplier
+picker, `exportBarHtml`/`wireExportBar` for exports, `.stat-grid` for the
+headline numbers, `.table-scroll` + `.data-table` for the breakdown — and
+both needed their own container added to the `#…-body`-style flex-gap
+fix from the mobile layout pass above, since they're built on the same
+"stack a few `.card`s below the page header" shape that bug came from.
+
+## 19. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Two things

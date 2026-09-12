@@ -20,6 +20,43 @@ export type ReceiptStatus = "pending" | "in_review" | "decided";
 export type BatchStatus = "pending" | "approved" | "rejected" | "partial";
 export type NotificationKind = "new_receipt" | "decision" | "expiry_alert";
 
+export interface SupplierWithStats extends Supplier {
+  /** Total receipts ever logged against this supplier (any status) — the
+   *  one at-a-glance number the plain Suppliers list needs; everything
+   *  deeper (pass rate, weight variance) lives in the two assessment
+   *  tabs instead of being crammed into this list too. */
+  total_receipts: number;
+}
+
+/** Per material code (or the shared bucket for still-uncoded lines, where
+ *  material_code is null and material_name falls back to whatever was
+ *  typed on the receipt), how much a supplier's paperwork claimed vs what
+ *  Warehouse actually weighed in, for every batch that's been through the
+ *  finalize-weight step. Only Warehouse does that step, so only Warehouse
+ *  sees this — Quality's own supplier assessment is a separate, pass/fail
+ *  based view. */
+export interface SupplierWeightVariance {
+  material_code: string | null;
+  material_name: string;
+  unit: string;
+  batches: number;
+  qty_as_received: number;
+  qty_actual_weighed: number;
+  /** (actual − as received) ÷ as received, as a percentage — negative
+   *  means the supplier under-delivered relative to their own paperwork,
+   *  positive means they over-delivered. Null when as-received is 0
+   *  (shouldn't happen in practice, guarded anyway). */
+  variance_pct: number | null;
+}
+
+export interface SupplierWeightAssessment {
+  supplier: Supplier;
+  /** batch-weighted average of each material's own variance_pct, not a
+   *  cross-material quantity sum — see getSupplierWeightAssessment. */
+  overall: { batches: number; variance_pct: number | null };
+  by_material: SupplierWeightVariance[];
+}
+
 export interface Supplier {
   id: number;
   code: string;

@@ -19,6 +19,7 @@ import {
   createSupplier,
   getMaterialDossier,
   getSupplierAssessment,
+  getSupplierWeightAssessment,
   listImportCodeSchemes,
   listMaterialFunctions,
   listMaterials,
@@ -209,6 +210,15 @@ export default {
         return getSupplierAssessment(env, decodeURIComponent(supplierAssessmentMatch[1]));
       }
 
+      // Warehouse's own supplier scorecard: as-received vs actually-weighed
+      // quantity — a different question from Quality's pass/fail assessment
+      // above, so it's a separate tab and a separate warehouse-only route.
+      const weightAssessmentMatch = pathname.match(/^\/api\/suppliers\/([^/]+)\/weight-assessment$/);
+      if (weightAssessmentMatch && method === "GET") {
+        if (role !== "warehouse") return error("Only warehouse can view this assessment", 403);
+        return getSupplierWeightAssessment(env, decodeURIComponent(weightAssessmentMatch[1]));
+      }
+
       // Attachments (photo/TDS/MSDS) per import code — Quality-only, like the dossier.
       const lineAttachmentsMatch = pathname.match(/^\/api\/receipt-lines\/(\d+)\/attachments$/);
       if (lineAttachmentsMatch && method === "POST") {
@@ -316,7 +326,11 @@ export default {
         return exportMasterData(request, env, decodeURIComponent(reportMasterDataMatch[1]));
       }
       if (pathname === "/api/reports/suppliers" && method === "GET") {
-        if (role !== "quality") return error("Only quality can export this report", 403);
+        // Unlike the other reports here, this one backs the plain Suppliers
+        // list tab both roles now have, not a quality-only screen — the
+        // underlying supplier directory (GET /api/suppliers) was already
+        // open to both.
+        if (!role) return error("Not signed in", 401);
         return exportSuppliersList(request, env);
       }
       if (pathname === "/api/reports/codes" && method === "GET") {
