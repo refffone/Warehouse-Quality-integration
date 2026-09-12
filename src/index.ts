@@ -67,7 +67,14 @@ import {
   exportSuppliersList,
   exportTodos,
 } from "./routes/reports";
-import { createSpec, getSubtypeSpecTemplate, listSpecs, setSubtypeSpecTemplate } from "./routes/specs";
+import {
+  createSpec,
+  getSubtypeSpecTemplate,
+  importSpecs,
+  listSpecs,
+  setSubtypeSpecTemplate,
+  specsImportTemplate,
+} from "./routes/specs";
 import { runExpiryCheck } from "./scheduled";
 import type { Env } from "./types";
 
@@ -214,6 +221,14 @@ export default {
       if (materialSpecsMatch && method === "POST") {
         if (role !== "quality") return error("Only quality can create specifications", 403);
         return createSpec(request, env, decodeURIComponent(materialSpecsMatch[1]));
+      }
+      if (pathname === "/api/specs/import-template" && method === "GET") {
+        if (role !== "quality") return error("Specifications are a quality-only view", 403);
+        return specsImportTemplate(env);
+      }
+      if (pathname === "/api/specs/import" && method === "POST") {
+        if (role !== "quality") return error("Only quality can create specifications", 403);
+        return importSpecs(request, env, url.searchParams.get("commit") === "true");
       }
 
       // Master Data dossier — Quality-only aggregate view of a material code.

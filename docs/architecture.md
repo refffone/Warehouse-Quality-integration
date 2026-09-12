@@ -1217,7 +1217,7 @@ both needed their own container added to the `#…-body`-style flex-gap
 fix from the mobile layout pass above, since they're built on the same
 "stack a few `.card`s below the page header" shape that bug came from.
 
-## 19. Excel export/import for Suppliers and Materials
+## 19. Excel export/import for Suppliers, Materials, and Specs
 
 The existing PDF/Excel export (`buildReportXlsx`, `reportBuilders.ts`) is a
 branded, human-read-only report — timestamped title rows unsuitable for
@@ -1264,6 +1264,26 @@ successful commit reloads the calling view so the refreshed list and a
 reset import section show immediately. No new CSS was needed — the
 section reuses `.card`, `.hstack`, `.btn`, `.status-pill` and
 `.table-scroll`/`.data-table` as they already exist.
+
+**Specs** (`specsImportTemplate`/`importSpecs`, `src/routes/specs.ts`) don't
+fit the upsert-by-code shape the other two use: a spec is versioned,
+append-only history (creating one always supersedes the material's
+current active version, never edits one in place), and one spec has many
+parameters. So the sheet is one row *per parameter* — Material Code,
+Title, Notes, Created By, Parameter Name, Param Type, Method, Min/Max
+Value, Unit — and `importSpecs` groups all rows sharing a Material Code
+into one new spec version, importing via the exact same `createSpecVersion`
+the manual "new spec version" form already calls (not a hand-rolled copy),
+so the behavior — supersede the old active version, validate parameter
+bounds per `param_type` — is identical either way. A bad row invalidates
+its *whole group*, not just itself (one bad parameter shouldn't half-create
+a spec with the rest silently applied), so every row sharing that Material
+Code shows as an error even if only one of them was actually wrong. The
+template downloads one row per parameter of each material's current active
+spec — a material with no active spec yet has no rows, and gets a spec via
+rows a user adds by hand. `validateParameter` (refactored out of the
+existing bounds-check loop) is exported so the import path and the regular
+create-spec-version path enforce the exact same rule.
 
 ## 20. Next Step
 

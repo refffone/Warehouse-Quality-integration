@@ -2059,6 +2059,7 @@ async function viewSpecs() {
         </div>
         <button type="submit" class="btn primary">${esc(t("specs.createVersion"))}</button>
       </form>
+      ${importSectionHtml("specs-import", "/api/specs/import-template")}
     </div>
 
     <div class="card">
@@ -2112,6 +2113,8 @@ async function viewSpecs() {
     () => (specMaterialSelect.value ? `spec/${encodeURIComponent(specMaterialSelect.value)}` : null),
     { withPeriod: false, filenamePrefix: "spec" }
   );
+
+  wireImportSection("specs-import", "/api/specs/import", viewSpecs);
 
   document.getElementById("spec-add-param").addEventListener("click", () => addParamRow({}));
 

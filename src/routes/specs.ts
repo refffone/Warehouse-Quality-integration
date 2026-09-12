@@ -1,8 +1,13 @@
 import { fetchByIds } from "../db";
 import { error, json } from "../http";
+import { buildTemplateXlsx, parseXlsxRows, templateResponse } from "../xlsxImport";
+import { isUploadedFile } from "./attachments";
 import type {
   Env,
+  ImportRowResult,
+  ImportSummary,
   NewSpecInput,
+  ParamType,
   ParameterInput,
   Spec,
   SpecParameter,
@@ -10,19 +15,29 @@ import type {
   SubtypeSpecTemplateInput,
 } from "../types";
 
+const PARAM_TYPES: ParamType[] = ["numeric_range", "pass_fail", "time_range", "text_value"];
+
 /** Enforces the same shape the DB CHECK constraint requires, so a bad
- *  request comes back as a clear 400 instead of a raw SQLite error. */
+ *  request comes back as a clear 400 instead of a raw SQLite error.
+ *  Exported so importSpecs can attribute the same check to individual
+ *  Excel rows instead of duplicating the bounds logic. */
+export function validateParameter(p: ParameterInput): string | null {
+  if (!p.parameter_name || !p.param_type) return "Each parameter needs parameter_name and param_type";
+  const needsBounds = p.param_type === "numeric_range" || p.param_type === "time_range";
+  const hasBounds = p.min_value != null && p.max_value != null;
+  if (needsBounds && !hasBounds) {
+    return `${p.parameter_name}: ${p.param_type} requires min_value and max_value`;
+  }
+  if (!needsBounds && hasBounds) {
+    return `${p.parameter_name}: ${p.param_type} must not have min_value/max_value`;
+  }
+  return null;
+}
+
 function validateParameters(params: ParameterInput[]): string | null {
   for (const p of params) {
-    if (!p.parameter_name || !p.param_type) return "Each parameter needs parameter_name and param_type";
-    const needsBounds = p.param_type === "numeric_range" || p.param_type === "time_range";
-    const hasBounds = p.min_value != null && p.max_value != null;
-    if (needsBounds && !hasBounds) {
-      return `${p.parameter_name}: ${p.param_type} requires min_value and max_value`;
-    }
-    if (!needsBounds && hasBounds) {
-      return `${p.parameter_name}: ${p.param_type} must not have min_value/max_value`;
-    }
+    const err = validateParameter(p);
+    if (err) return err;
   }
   return null;
 }
@@ -238,4 +253,151 @@ export async function setSubtypeSpecTemplate(
   }
 
   return getSubtypeSpecTemplate(env, subtypeCode);
+}
+
+const SPEC_IMPORT_COLUMNS = [
+  { key: "material_code", header: "Material Code" },
+  { key: "title", header: "Title" },
+  { key: "notes", header: "Notes" },
+  { key: "created_by", header: "Created By" },
+  { key: "parameter_name", header: "Parameter Name" },
+  { key: "param_type", header: "Param Type" },
+  { key: "method", header: "Method" },
+  { key: "min_value", header: "Min Value" },
+  { key: "max_value", header: "Max Value" },
+  { key: "unit", header: "Unit" },
+];
+
+/** One row per parameter of each material's currently *active* spec — the
+ *  editable snapshot a client re-imports as a brand-new version (specs are
+ *  append-only history, so import never edits a row in place, it always
+ *  creates the next version). A material with no active spec yet simply
+ *  has no rows here; add one manually to create its first spec. */
+export async function specsImportTemplate(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `SELECT s.material_code, s.title, s.notes, s.created_by,
+            sp.parameter_name, sp.param_type, sp.method, sp.min_value, sp.max_value, sp.unit
+     FROM specs s
+     JOIN spec_parameters sp ON sp.spec_id = s.id
+     WHERE s.status = 'active'
+     ORDER BY s.material_code, sp.sort_order`
+  ).all<Record<string, unknown>>();
+  const bytes = buildTemplateXlsx(SPEC_IMPORT_COLUMNS, rows.results ?? []);
+  return templateResponse(bytes, "specs-import-template.xlsx");
+}
+
+/** Unlike Suppliers/Materials (upsert by code), a spec import can never
+ *  "update" an existing row — every commit creates a brand-new version via
+ *  the same `createSpecVersion` the manual "new spec version" form uses,
+ *  so a material with an active spec already just gets superseded, same as
+ *  usual. Rows are grouped into one new spec per distinct Material Code
+ *  (all its parameter rows), so this only supports one new spec per
+ *  material per import file — a second block for the same material in one
+ *  file merges into the first rather than creating two versions. */
+export async function importSpecs(request: Request, env: Env, commit: boolean): Promise<Response> {
+  const form = await request.formData();
+  const file = form.get("file");
+  if (!isUploadedFile(file)) return error("file is required", 400);
+
+  let parsedRows: Record<string, string>[];
+  try {
+    parsedRows = parseXlsxRows(await file.arrayBuffer());
+  } catch {
+    return error("Couldn't read that file — make sure it's a valid .xlsx export", 400);
+  }
+
+  const materialRows = await env.DB.prepare("SELECT code FROM materials").all<{ code: string }>();
+  const validMaterials = new Set((materialRows.results ?? []).map((r) => r.code));
+
+  interface Group {
+    materialCode: string;
+    title: string;
+    notes: string | null;
+    createdBy: string;
+    parameters: ParameterInput[];
+  }
+  const groups = new Map<string, Group>();
+  const results: ImportRowResult[] = [];
+  const rowErrors = new Map<number, string>();
+  const materialsWithRowError = new Set<string>();
+
+  parsedRows.forEach((row, i) => {
+    const rowNum = i + 1;
+    const materialCode = (row["Material Code"] ?? "").trim();
+    const title = (row["Title"] ?? "").trim();
+    const createdBy = (row["Created By"] ?? "").trim();
+    const notes = (row["Notes"] ?? "").trim() || null;
+    const method = (row["Method"] ?? "").trim() || null;
+    const unit = (row["Unit"] ?? "").trim() || null;
+    const minStr = (row["Min Value"] ?? "").trim();
+    const maxStr = (row["Max Value"] ?? "").trim();
+
+    results.push({ row: rowNum, code: materialCode || "(blank)", action: "insert" });
+
+    const fail = (message: string) => {
+      rowErrors.set(rowNum, message);
+      if (materialCode) materialsWithRowError.add(materialCode);
+    };
+
+    if (!materialCode) return fail("Material Code is required");
+    if (!validMaterials.has(materialCode)) return fail(`Unknown material code: ${materialCode}`);
+    if (!title) return fail("Title is required");
+    if (!createdBy) return fail("Created By is required");
+
+    const parameter: ParameterInput = {
+      parameter_name: (row["Parameter Name"] ?? "").trim(),
+      param_type: (row["Param Type"] ?? "").trim() as ParamType,
+      method,
+      unit,
+      min_value: minStr === "" ? null : Number(minStr),
+      max_value: maxStr === "" ? null : Number(maxStr),
+    };
+    if (!PARAM_TYPES.includes(parameter.param_type)) {
+      return fail(`Unknown Param Type: ${parameter.param_type || "(blank)"}`);
+    }
+    if (minStr !== "" && Number.isNaN(parameter.min_value)) return fail(`Min Value isn't a number: ${minStr}`);
+    if (maxStr !== "" && Number.isNaN(parameter.max_value)) return fail(`Max Value isn't a number: ${maxStr}`);
+    const paramError = validateParameter(parameter);
+    if (paramError) return fail(paramError);
+
+    if (!groups.has(materialCode)) {
+      groups.set(materialCode, { materialCode, title, notes, createdBy, parameters: [] });
+    }
+    parameter.sort_order = groups.get(materialCode)!.parameters.length;
+    groups.get(materialCode)!.parameters.push(parameter);
+  });
+
+  results.forEach((r, idx) => {
+    const rowNum = idx + 1;
+    if (rowErrors.has(rowNum)) {
+      results[idx] = { ...r, action: "error", message: rowErrors.get(rowNum) };
+    } else if (materialsWithRowError.has(r.code)) {
+      results[idx] = { ...r, action: "error", message: "Not created — another row for this material has an error" };
+    }
+  });
+
+  const errors = results.filter((r) => r.action === "error").length;
+  if (commit && errors > 0) return error("Fix the rows with errors before importing", 400);
+
+  if (commit) {
+    for (const group of groups.values()) {
+      if (materialsWithRowError.has(group.materialCode)) continue;
+      const created = await createSpecVersion(env, group.materialCode, {
+        title: group.title,
+        notes: group.notes,
+        created_by: group.createdBy,
+        parameters: group.parameters,
+      });
+      if (!created.ok) return error(created.message, created.status);
+    }
+  }
+
+  const summary: ImportSummary = {
+    rows: results,
+    inserts: results.filter((r) => r.action === "insert").length,
+    updates: 0,
+    errors,
+    committed: commit,
+  };
+  return json(summary);
 }
