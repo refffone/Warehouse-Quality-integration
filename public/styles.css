@@ -602,6 +602,20 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
 
   .card { padding: 14px 16px; }
   .view, #codes-section, #masterdata-section, #dossier-body, #supplier-body { gap: 16px; }
+
+  /* iOS Safari auto-zooms the whole page in when focusing any text input,
+     select or textarea whose *computed* font-size is under 16px — every
+     field in the app is well under that (0.84–0.86rem), so tapping the
+     very first thing on a page (e.g. Master Data's material/supplier
+     search box) zoomed in and never zoomed back out on its own. 16px is
+     the documented threshold; this only needs to apply on mobile, since
+     desktop never triggers it and the smaller size fits the density
+     established there. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
   .receipt-card-top, .line-head { flex-direction: column; align-items: flex-start; }
   .batch-row { flex-direction: column; align-items: flex-start; gap: 6px; }
   .batch-row .hstack { width: 100%; }

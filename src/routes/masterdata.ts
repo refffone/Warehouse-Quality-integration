@@ -222,9 +222,14 @@ export async function setImportCodeScheme(request: Request, env: Env, kind: stri
   return json({ kind, pattern_template: input.pattern_template });
 }
 
-function passRate(approved: number, rejected: number): number | null {
-  const decided = approved + rejected;
-  return decided === 0 ? null : approved / decided;
+/** Weighted by accepted/rejected quantity rather than a flat per-batch
+ *  count, so a partial approval counts proportionally to how much of it
+ *  actually passed instead of being ignored (or crudely counted as half a
+ *  batch regardless of whether 90% or 10% of it was accepted). Pending
+ *  batches contribute 0/0 to both sums and drop out on their own. */
+function passRate(qtyAccepted: number, qtyRejected: number): number | null {
+  const decided = qtyAccepted + qtyRejected;
+  return decided === 0 ? null : qtyAccepted / decided;
 }
 
 /** Everything Quality knows about one material code: every name it's been
@@ -267,13 +272,15 @@ export async function getMaterialDossierData(env: Env, materialCode: string) {
        SUM(CASE WHEN rb.status = 'approved' THEN 1 ELSE 0 END) as approved,
        SUM(CASE WHEN rb.status = 'rejected' THEN 1 ELSE 0 END) as rejected,
        SUM(CASE WHEN rb.status = 'partial' THEN 1 ELSE 0 END) as partial,
-       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending
+       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending,
+       SUM(COALESCE(rb.qty_accepted, 0)) as qty_accepted,
+       SUM(COALESCE(rb.qty_rejected, 0)) as qty_rejected
      FROM receipt_lines rl
      LEFT JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
      WHERE rl.material_code = ?`
   )
     .bind(materialCode)
-    .first<Omit<DossierStatusCounts, "pass_rate">>();
+    .first<Omit<DossierStatusCounts, "pass_rate"> & { qty_accepted: number; qty_rejected: number }>();
 
   const overall: DossierStatusCounts = {
     imports: overallRow?.imports ?? 0,
@@ -281,7 +288,7 @@ export async function getMaterialDossierData(env: Env, materialCode: string) {
     rejected: overallRow?.rejected ?? 0,
     partial: overallRow?.partial ?? 0,
     pending: overallRow?.pending ?? 0,
-    pass_rate: passRate(overallRow?.approved ?? 0, overallRow?.rejected ?? 0),
+    pass_rate: passRate(overallRow?.qty_accepted ?? 0, overallRow?.qty_rejected ?? 0),
   };
 
   const bySupplierRows = await env.DB.prepare(
@@ -290,7 +297,9 @@ export async function getMaterialDossierData(env: Env, materialCode: string) {
        SUM(CASE WHEN rb.status = 'approved' THEN 1 ELSE 0 END) as approved,
        SUM(CASE WHEN rb.status = 'rejected' THEN 1 ELSE 0 END) as rejected,
        SUM(CASE WHEN rb.status = 'partial' THEN 1 ELSE 0 END) as partial,
-       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending
+       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending,
+       SUM(COALESCE(rb.qty_accepted, 0)) as qty_accepted,
+       SUM(COALESCE(rb.qty_rejected, 0)) as qty_rejected
      FROM receipt_lines rl
      JOIN receipts r ON r.id = rl.receipt_id
      JOIN suppliers s ON s.id = r.supplier_id
@@ -300,12 +309,14 @@ export async function getMaterialDossierData(env: Env, materialCode: string) {
      ORDER BY imports DESC`
   )
     .bind(materialCode)
-    .all<Omit<DossierSupplierMetrics, "pass_rate">>();
+    .all<Omit<DossierSupplierMetrics, "pass_rate"> & { qty_accepted: number; qty_rejected: number }>();
 
-  const bySupplier: DossierSupplierMetrics[] = (bySupplierRows.results ?? []).map((row) => ({
-    ...row,
-    pass_rate: passRate(row.approved, row.rejected),
-  }));
+  const bySupplier: DossierSupplierMetrics[] = (bySupplierRows.results ?? []).map(
+    ({ qty_accepted, qty_rejected, ...row }) => ({
+      ...row,
+      pass_rate: passRate(qty_accepted, qty_rejected),
+    })
+  );
 
   return {
     material,
@@ -379,11 +390,16 @@ const RATING_LABELS: SupplierRating["label"][] = ["Unrated", "Very Poor", "Poor"
  *  transparent, not a hidden weighted score. Flagged low-volume under 5
  *  decided batches so a single lucky/unlucky batch doesn't read as proven
  *  performance. */
-function rateSupplier(approved: number, rejected: number): SupplierRating {
-  const decided = approved + rejected;
-  if (decided === 0) return { stars: 0, label: "Unrated", low_volume: true };
-  const stars = Math.round((approved / decided) * 5);
-  return { stars, label: RATING_LABELS[stars], low_volume: decided < 5 };
+/** decidedBatches is a batch *count* (approved + rejected + partial) — used
+ *  only for the low-volume-history caveat, since that's about how many
+ *  independent decisions back the rating, not how much material they
+ *  covered. The stars themselves come from the same quantity-weighted
+ *  pass_rate shown elsewhere, so the badge never disagrees with the number
+ *  next to it. */
+function rateSupplier(passRateValue: number | null, decidedBatches: number): SupplierRating {
+  if (passRateValue === null) return { stars: 0, label: "Unrated", low_volume: true };
+  const stars = Math.round(passRateValue * 5);
+  return { stars, label: RATING_LABELS[stars], low_volume: decidedBatches < 5 };
 }
 
 /** Quality's read on one supplier: overall pass rate, a simple star rating,
@@ -401,14 +417,16 @@ export async function getSupplierAssessment(env: Env, supplierCode: string): Pro
        SUM(CASE WHEN rb.status = 'approved' THEN 1 ELSE 0 END) as approved,
        SUM(CASE WHEN rb.status = 'rejected' THEN 1 ELSE 0 END) as rejected,
        SUM(CASE WHEN rb.status = 'partial' THEN 1 ELSE 0 END) as partial,
-       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending
+       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending,
+       SUM(COALESCE(rb.qty_accepted, 0)) as qty_accepted,
+       SUM(COALESCE(rb.qty_rejected, 0)) as qty_rejected
      FROM receipts r
      JOIN receipt_lines rl ON rl.receipt_id = r.id
      LEFT JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
      WHERE r.supplier_id = ?`
   )
     .bind(supplier.id)
-    .first<Omit<DossierStatusCounts, "pass_rate"> & { distinct_codes: number }>();
+    .first<Omit<DossierStatusCounts, "pass_rate"> & { distinct_codes: number; qty_accepted: number; qty_rejected: number }>();
 
   const overall = {
     imports: overallRow?.imports ?? 0,
@@ -417,7 +435,7 @@ export async function getSupplierAssessment(env: Env, supplierCode: string): Pro
     rejected: overallRow?.rejected ?? 0,
     partial: overallRow?.partial ?? 0,
     pending: overallRow?.pending ?? 0,
-    pass_rate: passRate(overallRow?.approved ?? 0, overallRow?.rejected ?? 0),
+    pass_rate: passRate(overallRow?.qty_accepted ?? 0, overallRow?.qty_rejected ?? 0),
   };
 
   const codeRows = await env.DB.prepare(
@@ -426,7 +444,9 @@ export async function getSupplierAssessment(env: Env, supplierCode: string): Pro
        SUM(CASE WHEN rb.status = 'approved' THEN 1 ELSE 0 END) as approved,
        SUM(CASE WHEN rb.status = 'rejected' THEN 1 ELSE 0 END) as rejected,
        SUM(CASE WHEN rb.status = 'partial' THEN 1 ELSE 0 END) as partial,
-       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending
+       SUM(CASE WHEN rb.status = 'pending' THEN 1 ELSE 0 END) as pending,
+       SUM(COALESCE(rb.qty_accepted, 0)) as qty_accepted,
+       SUM(COALESCE(rb.qty_rejected, 0)) as qty_rejected
      FROM receipts r
      JOIN receipt_lines rl ON rl.receipt_id = r.id
      LEFT JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
@@ -436,22 +456,22 @@ export async function getSupplierAssessment(env: Env, supplierCode: string): Pro
      ORDER BY imports DESC`
   )
     .bind(supplier.id)
-    .all<Omit<SupplierCodeMetrics, "pass_rate">>();
+    .all<Omit<SupplierCodeMetrics, "pass_rate"> & { qty_accepted: number; qty_rejected: number }>();
 
-  const codes: SupplierCodeMetrics[] = (codeRows.results ?? []).map((row) => ({
+  const codes: SupplierCodeMetrics[] = (codeRows.results ?? []).map(({ qty_accepted, qty_rejected, ...row }) => ({
     ...row,
-    pass_rate: passRate(row.approved, row.rejected),
+    pass_rate: passRate(qty_accepted, qty_rejected),
   }));
 
   const ranked = [...codes]
-    .filter((c) => c.approved + c.rejected > 0)
+    .filter((c) => c.approved + c.rejected + c.partial > 0)
     .sort((a, b) => (b.pass_rate ?? 0) - (a.pass_rate ?? 0) || b.imports - a.imports);
   const bestCode = ranked[0] ?? null;
 
   return json({
     supplier,
     overall,
-    rating: rateSupplier(overall.approved, overall.rejected),
+    rating: rateSupplier(overall.pass_rate, overall.approved + overall.rejected + overall.partial),
     codes,
     best_code: bestCode,
   });
