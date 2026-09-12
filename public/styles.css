@@ -251,6 +251,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ---------- layout helpers ---------- */
 .view { display: flex; flex-direction: column; gap: 22px; }
 
+/* Sub-views that stack multiple .card elements one level below .view
+   (Codes' subtabs, Master Data's two subtabs) need the same gap — .view's
+   flex gap only reaches its own direct children, and without this these
+   cards render edge-to-edge with nothing but their own box-shadow (barely
+   visible on a narrow screen) implying any separation between them. */
+#codes-section, #masterdata-section, #dossier-body, #supplier-body {
+  display: flex; flex-direction: column; gap: 22px;
+}
+
 .view-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .view-head h1 { font-size: 1.5rem; }
 .view-head p { color: var(--ink-muted); font-size: 0.88rem; margin: 4px 0 0; }
@@ -563,7 +572,19 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
 @media (max-width: 640px) {
   body { font-size: 14.5px; }
 
-  .app-frame { flex-direction: column; padding: 16px 16px 40px; gap: 14px; }
+  /* .app-frame's align-items:flex-start (needed on desktop so the sticky
+     sidebar doesn't stretch to the main column's full height) becomes a
+     problem once the frame switches to a column here: on the cross axis
+     of a column flex container that's *horizontal* sizing, so every child
+     — .main-col included — shrinks to its own max-content width instead of
+     filling the screen. That let wide content (the six-tile stat grid,
+     `minmax(140px, 1fr)` columns) balloon the whole page out to whatever
+     width it wanted instead of wrapping, pushing whatever wouldn't fit off
+     to the right as invisible horizontal overflow — the "seam" was simply
+     the edge of the actual (narrow) viewport against that much wider,
+     off-screen page. Forcing both children to the full width fixes it for
+     .main-col the same way .sidebar's own width:100% below already does. */
+  .app-frame { flex-direction: column; align-items: stretch; padding: 16px 16px 40px; gap: 14px; }
   .sidebar {
     width: 100%; flex-direction: column; align-items: stretch; gap: 10px;
     position: static; padding: 10px 12px;
@@ -580,6 +601,7 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
   .role-switch span { display: none; }
 
   .card { padding: 14px 16px; }
+  .view, #codes-section, #masterdata-section, #dossier-body, #supplier-body { gap: 16px; }
   .receipt-card-top, .line-head { flex-direction: column; align-items: flex-start; }
   .batch-row { flex-direction: column; align-items: flex-start; gap: 6px; }
   .batch-row .hstack { width: 100%; }
