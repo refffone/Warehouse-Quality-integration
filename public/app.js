@@ -32,6 +32,25 @@ function esc(str) {
   }[c]));
 }
 
+/** Wraps free-text/user data (names, codes, titles) in a <bdi> element —
+ *  isolates its bidi direction from the surrounding text instead of
+ *  letting it merge into one paragraph. Without this, a UI string that
+ *  concatenates an Arabic label with a Latin supplier/material name (e.g.
+ *  "إيصال رقم 1 · Greif Packaging Solutions") gets its word order jumbled
+ *  by the Unicode Bidi Algorithm the moment that line wraps — the numeral
+ *  or a trailing word can end up visually stranded on the wrong line. Safe
+ *  to use everywhere, including English-only text, where <bdi> is a no-op. */
+function bdi(str) {
+  return `<bdi>${esc(str)}</bdi>`;
+}
+
+/** Same isolation as bdi(), but for a caller that already built (and
+ *  escaped) its own HTML — e.g. supplierName()'s "name (code)" markup —
+ *  rather than a single plain-text value. */
+function bdiHtml(html) {
+  return `<bdi>${html}</bdi>`;
+}
+
 function fmtDate(iso) {
   if (!iso) return "—";
   const d = new Date(iso.includes("T") ? iso : iso.replace(" ", "T") + "Z");
@@ -102,7 +121,7 @@ async function getSuppliers(force = false) {
 }
 function supplierName(id) {
   const s = (suppliersCache || []).find((x) => x.id === id);
-  return s ? `${s.name} (${s.code})` : `#${id}`;
+  return s ? `${esc(s.name)} <span class="mono small muted">(${esc(s.code)})</span>` : `#${id}`;
 }
 
 let materialsCache = null;
@@ -501,7 +520,7 @@ function renderReceiveStep2() {
     <div class="view-head"><div><h1>${esc(t("receive.title"))}</h1><p>${esc(t("receive.subtitle"))}</p></div></div>
     ${wizardStepsHtml(2)}
     <div class="card small muted" style="display:flex; justify-content:space-between; align-items:center;">
-      <span>${w.type === "sample" ? esc(t("receive.typeSample")) : esc(t("receive.typeImport"))} · ${esc(w.supplier_code)} · ${fmtDateTime(new Date(w.received_at).toISOString())} · ${esc(w.created_by)}</span>
+      <span>${w.type === "sample" ? esc(t("receive.typeSample")) : esc(t("receive.typeImport"))} · <bdi class="mono">${esc(w.supplier_code)}</bdi> · ${fmtDateTime(new Date(w.received_at).toISOString())} · ${bdi(w.created_by)}</span>
       <button type="button" class="btn ghost sm" id="rf-back">${esc(t("receive.editDetails"))}</button>
     </div>
     <form class="card form-grid" id="receive-step2-form">
@@ -1018,7 +1037,7 @@ function buildReceiptCard(receipt, { role, type }) {
   const senderHtml =
     type === "sample"
       ? `<div class="small muted" data-sender-block>
-          ${esc(t("receipt.sentBy"))} <span data-sender-value>${receipt.sample_sent_by ? esc(receipt.sample_sent_by) : esc(t("receipt.notRecorded"))}</span>
+          ${esc(t("receipt.sentBy"))} <span data-sender-value>${receipt.sample_sent_by ? bdi(receipt.sample_sent_by) : esc(t("receipt.notRecorded"))}</span>
           <button class="btn ghost sm" data-edit-sender style="margin-inline-start:6px">${esc(t("common.edit"))}</button>
         </div>`
       : "";
@@ -1029,8 +1048,8 @@ function buildReceiptCard(receipt, { role, type }) {
   card.innerHTML = `
     <div class="receipt-card-top">
       <div>
-        <div class="receipt-title">${esc(t("receipt.receiptNumber", { id: receipt.id }))} · ${supplierName(receipt.supplier_id)}</div>
-        <div class="receipt-meta">${fmtDateTime(receipt.received_at)} · ${esc(t("receipt.loggedBy"))} ${esc(receipt.created_by)}</div>
+        <div class="receipt-title">${esc(t("receipt.receiptNumber", { id: receipt.id }))} · ${bdiHtml(supplierName(receipt.supplier_id))}</div>
+        <div class="receipt-meta">${fmtDateTime(receipt.received_at)} · ${esc(t("receipt.loggedBy"))} ${bdi(receipt.created_by)}</div>
       </div>
       <div class="hstack">
         ${role === "quality" || type !== "sample" ? statusPill(receipt.status) : ""}
@@ -2235,7 +2254,7 @@ function dossierImportEntryHtml(entry) {
     .map(
       (a) => `
       <div class="attachment-row">
-        <span><span class="badge neutral">${esc(t(`masterdata.kind${a.kind.charAt(0).toUpperCase()}${a.kind.slice(1)}`))}</span> ${esc(a.filename)} <span class="muted">${esc(t("masterdata.attachmentBy", { name: a.uploaded_by, date: fmtDate(a.uploaded_at) }))}</span></span>
+        <span><span class="badge neutral">${esc(t(`masterdata.kind${a.kind.charAt(0).toUpperCase()}${a.kind.slice(1)}`))}</span> ${bdi(a.filename)} <span class="muted">${t("masterdata.attachmentBy", { name: bdi(a.uploaded_by), date: esc(fmtDate(a.uploaded_at)) })}</span></span>
         <span class="hstack">
           <button class="btn sm ghost" data-attachment-download="${a.id}" data-filename="${esc(a.filename)}">${esc(t("common.download"))}</button>
           <button class="btn sm ghost" data-attachment-delete="${a.id}">${esc(t("common.remove"))}</button>
@@ -2249,7 +2268,7 @@ function dossierImportEntryHtml(entry) {
       <div class="line-head">
         <div>
           <bdi class="mono"><b>${esc(entry.import_code)}</b></bdi> ${scenarioBadge}
-          <div class="small muted">${esc(entry.material_name_text)} · ${esc(entry.supplier_name)} (${esc(entry.supplier_code)}) · ${esc(t("masterdata.receivedOn", { date: fmtDate(entry.received_at) }))}</div>
+          <div class="small muted">${bdi(entry.material_name_text)} · ${bdi(entry.supplier_name)} <span class="mono">(${esc(entry.supplier_code)})</span> · ${esc(t("masterdata.receivedOn", { date: fmtDate(entry.received_at) }))}</div>
         </div>
       </div>
       <div style="margin-top:6px">${batchRows}</div>
@@ -2629,7 +2648,7 @@ async function renderSupplierAssessmentSection(section) {
         </div>
         ${
           a.best_code
-            ? `<div class="small muted" style="margin-top:8px">${esc(t("suppliers.bestCodeProvided", { code: a.best_code.material_code, name: a.best_code.material_name || "—", rate: fmtPct(a.best_code.pass_rate) }))}</div>`
+            ? `<div class="small muted" style="margin-top:8px">${t("suppliers.bestCodeProvided", { code: bdi(a.best_code.material_code), name: bdi(a.best_code.material_name || "—"), rate: esc(fmtPct(a.best_code.pass_rate)) })}</div>`
             : `<div class="small muted" style="margin-top:8px">${esc(t("suppliers.noDecidedYet"))}</div>`
         }
       </div>

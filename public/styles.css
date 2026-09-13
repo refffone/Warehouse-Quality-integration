@@ -385,7 +385,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding-block: 8px; border-top: 1px solid var(--rule); font-size: 0.82rem;
 }
 .batch-row:first-of-type { border-top: none; }
-.batch-id { font-family: var(--font-mono); color: var(--ink-muted); }
+/* Codes/identifiers contain hyphens ("SUP-007", "GRF-9020"), which the
+   default line-breaking algorithm treats as a valid wrap point — so a
+   code embedded inline in longer wrapping text (a receipt title, an entry
+   line) can visually split mid-token right at the hyphen. Codes should
+   never break internally. */
+.batch-id { font-family: var(--font-mono); color: var(--ink-muted); white-space: nowrap; }
 .batch-qty { color: var(--ink); }
 
 /* ---------- badges / status (panel indicator lights) ---------- */
@@ -566,7 +571,7 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
 .spinner { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid var(--rule-strong); border-top-color: var(--accent); animation: spin 0.7s linear infinite; }
 
 .muted { color: var(--ink-muted); }
-.mono { font-family: var(--font-mono); }
+.mono { font-family: var(--font-mono); white-space: nowrap; }
 .small { font-size: 0.78rem; }
 
 @media (max-width: 640px) {

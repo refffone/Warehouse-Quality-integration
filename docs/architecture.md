@@ -1310,7 +1310,54 @@ block (and only wires it) when `getRole() === "quality"` — Warehouse's
 own Suppliers list keeps just its Suppliers import, matching what
 Warehouse could actually use `/api/specs/import` for (nothing).
 
-## 20. Next Step
+## 20. Two Arabic mobile card-wrapping bugs, and why bdi() alone wasn't enough
+
+Reported as "weird stacking" — a receipt card's title (an Arabic label
+concatenated with a Latin supplier name, e.g. "إيصال رقم 1 · Greif
+Packaging Solutions (SUP-007)") wrapped onto a second line with its
+supplier code visibly split in half: "(SUP-" on one line, "007)" on the
+next. Two distinct bugs turned out to be layered on top of each other:
+
+1. **Bidi word-order jumbling.** Concatenating a translated Arabic phrase
+   with an embedded Latin name in one paragraph, under `dir="rtl"`, lets
+   the Unicode Bidi Algorithm reorder pieces relative to each other once
+   the line wraps — this codebase already had the right instinct for it
+   (`<bdi>` around batch numbers and quantity values, from the earlier
+   Arabic/RTL work), just not applied to supplier/material names and
+   people's names. Added a shared `bdi(str)` helper (escapes, then wraps
+   in `<bdi>`) and a `bdiHtml(html)` variant for a caller that already
+   built its own markup (`supplierName()`), and applied both wherever a
+   name or free-text value sits inline with translated UI text: receipt
+   titles, the "logged by"/"sent by" lines, the Receive wizard's recent-
+   receipts list, Master Data's RMF/RMS entry lines, and the two `t(...,
+   {name/code: ...})` substitution call sites (attachment "uploaded by",
+   supplier assessment's "best code") — those needed their outer `esc()`
+   removed and pushed onto each substituted value individually, since
+   escaping the *whole* templated result after substitution would have
+   turned the inserted `<bdi>` tags into literal escaped text.
+
+2. **Codes splitting mid-hyphen — the actual cause of the split "(SUP-
+   007)".** This one turned out to have nothing to do with bidi or
+   Arabic at all: `<bdi>` isolates word *order*, it doesn't stop normal
+   line-wrapping, and standard line-breaking treats a hyphen as a valid
+   wrap point — so any code containing one (`SUP-007`, `GRF-9020`,
+   `DRM-200L`, ...) can break internally wherever it happens to fall
+   across a line, in English too, just far less noticeable at desktop
+   widths and with English's narrower font metrics than Cairo's. Fixed
+   at the two class definitions every code in the app already renders
+   through (`.mono`, `.batch-id`) — one `white-space: nowrap` on each —
+   rather than hunting down every call site individually.
+   `supplierName()` (used in the receipt title) didn't wrap its `(code)`
+   suffix in either class before this, so it also picked up a `<span
+   class="mono small muted">` around just that part.
+
+Verified by reproducing the exact reported layout locally (a supplier
+named "Greif Packaging Solutions" with code "SUP-007", at 412px width,
+Arabic), confirming the split before the fix and its absence after, then
+spot-checking English at both mobile and desktop width to confirm
+`<bdi>`/`nowrap` are no-ops there.
+
+## 21. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Two things
