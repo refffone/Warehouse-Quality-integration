@@ -194,8 +194,29 @@ trigger declared in `wrangler.toml`. On success it prints your Worker's
 URL — something like:
 
 ```
-https://warehouse-quality-integration.<your-subdomain>.workers.dev
+https://qualitycheck.<your-subdomain>.workers.dev
 ```
+
+## 7b. Automatic deploys via GitHub Actions
+
+`.github/workflows/deploy.yml` runs `npm run typecheck` then
+`wrangler deploy` on every push to this repo's deploy branch (also
+runnable manually via the Actions tab's "Run workflow" button) — so from
+here on you shouldn't need to run step 7 by hand for routine changes.
+
+It needs one repository secret, which isn't set up automatically:
+
+1. Cloudflare dashboard → profile icon → **My Profile** → **API Tokens**
+   → **Create Token** → **Edit Cloudflare Workers** template (scope it to
+   the account this Worker lives in).
+2. GitHub repo → **Settings → Secrets and variables → Actions** → **New
+   repository secret** → name it `CLOUDFLARE_API_TOKEN`, paste the token
+   value.
+
+Without that secret the workflow will run and fail at the deploy step
+(typecheck still runs, so a broken build is still caught) — everything
+up to step 6 above still needs doing by hand first, same as a manual
+deploy.
 
 ## 8. Create the first accounts
 

@@ -1,0 +1,30 @@
+name: Deploy to Cloudflare Workers
+
+# This repo's default branch doubles as its deploy branch — every push
+# here should go live. If that branch is ever renamed, update the trigger
+# below to match.
+on:
+  push:
+    branches:
+      - claude/warehouse-quality-integration-1o96qv
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      # Fails the deploy on a type error instead of shipping broken code.
+      - run: npm run typecheck
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
