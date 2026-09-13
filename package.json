@@ -7,10 +7,14 @@
     "deploy": "wrangler deploy",
     "db:migrate:local": "for f in migrations/*.sql; do wrangler d1 execute warehouse-quality-db --local --file=\"$f\"; done",
     "db:migrate:remote": "for f in migrations/*.sql; do wrangler d1 execute warehouse-quality-db --remote --file=\"$f\"; done",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250901.0",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.5.1",
     "typescript": "^5.6.0",
     "wrangler": "^3.90.0"
   },

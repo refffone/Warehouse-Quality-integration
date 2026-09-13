@@ -1402,7 +1402,77 @@ document silently fails (`getElementById` returns `null`). Fixed by
 moving the `appendChild` earlier, right after building the item's static
 markup and before calling `wireCodeSearch` on it.
 
-## 22. Next Step
+## 22. A real Playwright E2E suite — and three bugs it caught along the way
+
+`tests/e2e/` drives the actual app through a real browser, click by click —
+no API shortcuts for the transaction under test — against a real
+`wrangler dev` + freshly-migrated local D1, not a mock of either. See
+`tests/e2e/README.md` for how to run it and what each spec covers; the
+short version: `warehouse-receiving.spec.ts` covers receiving (one
+material/one batch, one material/several batches, multiple materials
+each with multiple batches, a sample receipt, and the full
+receive→approve→finalize-weight cycle), `quality-decisions.spec.ts`
+covers approve/partial/reject, associating a code (both to an existing
+material and creating a brand-new one), creating a material directly,
+and creating a spec version.
+
+`tests/e2e/global-setup.ts` wipes local D1, re-applies every migration,
+boots `wrangler dev` as a detached background process, and creates two
+fixed test accounts through the real admin API — `global-teardown.ts`
+kills it again (by process group, not just the top `npx` pid, since
+`wrangler dev` spawns further child processes under it). Tests share that
+one backend serially (`workers: 1`) rather than each getting an isolated
+database, so every spec namespaces its own supplier/material codes
+(`WH1-`, `QA1-`, ...) to avoid colliding with earlier tests' leftover
+data in the same run.
+
+Getting this suite green surfaced three real bugs — two in the tests,
+one a genuine (if narrow) gap in test coverage of an app behavior that
+turned out to already be correct:
+
+1. **A hung network request outside the test's control was silently
+   stalling unrelated `page.goto` calls.** This sandbox's outbound
+   network policy blocks the app's Google Fonts `<link>` at the proxy
+   level, but as a *hung* connection rather than a fast failure — so
+   Chromium's own request queue backed up over the course of the run,
+   and by several tests in, a completely unrelated later `page.goto`
+   would time out waiting on CDP round-trips stuck behind that backlog,
+   even though the target page had already rendered by the time the
+   error fired. Fixed in `tests/e2e/fixtures.ts` by aborting requests to
+   `fonts.googleapis.com`/`fonts.gstatic.com` outright before the
+   browser ever attempts them — the same thing a real CI runner with
+   restricted internet access would need. Cut the suite's runtime from
+   ~9 minutes to under 4.
+2. **A stale-suggestion race in every search-and-select combo.**
+   `wireCodeSearch` (`public/app.js`) re-renders its results synchronously
+   on focus, using whatever value the field already had — and several of
+   these combos (the Receive wizard's supplier field, Associate-a-Code's
+   existing-material field, the Specs tab's material field) start
+   pre-filled with a default. A test that fills in its *own* value and
+   then blindly clicks the first `.search-result-item` can end up
+   clicking a match for that stale default instead, if it wins the race
+   against the real query's 150ms debounce. Every affected click in
+   `tests/e2e/helpers.ts` and the specs now filters by the intended
+   code/text (`.filter({ hasText: ... })`) instead of trusting
+   `.first()`, so Playwright's auto-waiting retries until the *correct*
+   suggestion exists rather than grabbing whatever's already there.
+3. **Confirmed, rather than assumed, exactly when a receipt moves
+   between To Do and History for each role.** `fetchReceiptsBucket`
+   (`public/app.js`) tracks two separate conditions — "still needs a
+   decision" and, for Warehouse specifically, "still needs a weigh-in"
+   (`receiptNeedsWeighIn`) — so an approved-but-unweighed import receipt
+   already left Quality's To Do but is still sitting in Warehouse's,
+   only moving to History once *both* are satisfied. The full
+   receive→approve→finalize-weight test needed to check the right
+   bucket at each of those three points rather than assuming "decided"
+   alone was the cutoff for both roles.
+
+The stale-supplier race (bug 2) is also why the suite asserts each
+receipt card shows the *correct* supplier code, not just the material/
+batch details it originally checked — without that assertion, a test
+could click the wrong supplier silently and still pass.
+
+## 23. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Two things

@@ -2,3 +2,9 @@ node_modules/
 .wrangler/
 .dev.vars
 *.log
+.e2e-wrangler.pid
+.e2e-wrangler.log
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
