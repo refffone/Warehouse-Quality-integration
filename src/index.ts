@@ -127,11 +127,14 @@ export default {
       const session = await getSession(request, env);
       const role = session?.role ?? null;
 
-      // Master data — Warehouse's only legitimate reason to touch this
-      // section is picking/adding a supplier while receiving; everything
-      // else here (codes, types, subtypes, functions, specs, schemes) is
-      // Quality's catalog and Warehouse's own screens never call it, so
-      // it's read *and* write, Quality-only.
+      // Master data — Warehouse's only legitimate reasons to touch this
+      // section are picking/adding a supplier while receiving, and now
+      // searching existing material codes on the same screen (so a typo'd
+      // code can't reach receipt_lines' foreign key and 500 at submit
+      // time) — reading materials, like suppliers, is open to both roles;
+      // everything else here (codes, types, subtypes, functions, specs,
+      // schemes, and *writing* materials) stays Quality's catalog, read
+      // *and* write, Quality-only.
       if (pathname === "/api/suppliers" && method === "GET") {
         if (!role) return error("Not signed in", 401);
         return listSuppliers(request, env);
@@ -149,7 +152,7 @@ export default {
         return importSuppliers(request, env, url.searchParams.get("commit") === "true");
       }
       if (pathname === "/api/materials" && method === "GET") {
-        if (role !== "quality") return error("Material codes are a quality-only view", 403);
+        if (!role) return error("Not signed in", 401);
         return listMaterials(request, env);
       }
       if (pathname === "/api/materials" && method === "PUT") {

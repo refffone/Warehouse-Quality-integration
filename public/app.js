@@ -421,7 +421,7 @@ function wizardStepsHtml(current) {
 async function viewReceive() {
   const suppliers = await getSuppliers();
   if (!receiveWizard.supplier_code && suppliers.length) receiveWizard.supplier_code = suppliers[0].code;
-  if (receiveWizard.step === 2) renderReceiveStep2();
+  if (receiveWizard.step === 2) await renderReceiveStep2();
   else renderReceiveStep1(suppliers);
 }
 
@@ -513,9 +513,14 @@ function renderReceiveStep1(suppliers) {
   });
 }
 
-function renderReceiveStep2() {
+async function renderReceiveStep2() {
   const view = document.getElementById("view");
   const w = receiveWizard;
+  const materials = await getMaterials();
+  const materialNamesHtml = [...new Set(materials.map((m) => m.name))]
+    .map((name) => `<option value="${esc(name)}"></option>`)
+    .join("");
+
   view.innerHTML = `
     <div class="view-head"><div><h1>${esc(t("receive.title"))}</h1><p>${esc(t("receive.subtitle"))}</p></div></div>
     ${wizardStepsHtml(2)}
@@ -533,6 +538,7 @@ function renderReceiveStep2() {
         <button type="submit" class="btn primary">${esc(t("receive.registerReceipt"))}</button>
       </div>
     </form>
+    <datalist id="rf-material-names">${materialNamesHtml}</datalist>
   `;
 
   document.getElementById("rf-back").addEventListener("click", () => {
@@ -541,24 +547,40 @@ function renderReceiveStep2() {
   });
 
   const linesEl = document.getElementById("rf-lines");
+  let lineSeq = 0;
 
   function addLine() {
     const item = document.createElement("div");
     item.className = "repeatable-item line-item";
+    const codeInputId = `rf-line-code-${lineSeq++}`;
     item.innerHTML = `
       <div class="repeatable-item-head">
         <b class="small">${esc(t("receive.materialLine"))}</b>
         <button type="button" class="btn ghost sm" data-remove-line>${esc(t("receive.removeLine"))}</button>
       </div>
       <div class="field-row">
-        <div class="field"><label>${esc(t("receive.materialCodeIfKnown"))}</label><input type="text" data-f="material_code" /></div>
-        <div class="field"><label>${esc(t("receive.materialNameAsOnPaperwork"))}</label><input type="text" data-f="material_name_text" required /></div>
+        <div class="field"><label>${esc(t("receive.materialCodeIfKnown"))}</label>${codeSearchHtml(codeInputId, t("receive.materialCodeSearchPlaceholder"))}</div>
+        <div class="field"><label>${esc(t("receive.materialNameAsOnPaperwork"))}</label><input type="text" data-f="material_name_text" list="rf-material-names" required /></div>
         <div class="field" style="max-width:120px"><label>${esc(t("common.unit"))}</label><input type="text" data-f="unit" placeholder="KG" required /></div>
       </div>
       <div class="batches"></div>
       <button type="button" class="btn ghost sm" data-add-batch>${esc(t("receive.addSupplierBatch"))}</button>
     `;
     item.querySelector("[data-remove-line]").addEventListener("click", () => item.remove());
+    linesEl.appendChild(item); // wireCodeSearch looks the input up by id via document.getElementById, so it needs to be in the live DOM first
+
+    // Material code is a search-and-select over existing codes only (the
+    // DB has a foreign key from receipt_lines.material_code to
+    // materials.code, so a typo'd/nonexistent code here used to 500 at
+    // submit time) — selecting one also prefills the name below, if the
+    // warehouse user hasn't already typed something of their own.
+    const nameInput = item.querySelector('[data-f="material_name_text"]');
+    const codeInput = wireCodeSearch(codeInputId, materials, (code) => {
+      const material = materials.find((m) => m.code === code);
+      if (material && !nameInput.value.trim()) nameInput.value = material.name;
+    });
+    codeInput.dataset.f = "material_code";
+
     const batchesEl = item.querySelector(".batches");
     function addBatch() {
       const row = document.createElement("div");
@@ -573,7 +595,6 @@ function renderReceiveStep2() {
     }
     item.querySelector("[data-add-batch]").addEventListener("click", addBatch);
     addBatch();
-    linesEl.appendChild(item);
   }
 
   document.getElementById("rf-add-line").addEventListener("click", addLine);
@@ -595,6 +616,10 @@ function renderReceiveStep2() {
         batches,
       };
     });
+
+    const knownCodes = new Set(materials.map((m) => m.code));
+    const badCode = lines.find((l) => l.material_code && !knownCodes.has(l.material_code));
+    if (badCode) return toast(t("receive.unknownMaterialCode", { code: badCode.material_code }), true);
 
     const body = {
       type: w.type,

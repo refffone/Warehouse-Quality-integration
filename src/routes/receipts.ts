@@ -78,6 +78,18 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
   const supplier = await getSupplierByCode(env, input.supplier_code);
   if (!supplier) return error(`Unknown supplier code: ${input.supplier_code}`, 404);
 
+  // receipt_lines.material_code is a foreign key into materials — check
+  // every line up front (before writing anything) rather than letting an
+  // unknown code surface as a raw constraint-violation 500 partway
+  // through inserting the lines.
+  for (const line of input.lines) {
+    if (!line.material_code) continue;
+    const material = await env.DB.prepare("SELECT code FROM materials WHERE code = ?")
+      .bind(line.material_code)
+      .first();
+    if (!material) return error(`Unknown material code: ${line.material_code}`, 404);
+  }
+
   const receiptRow = await env.DB.prepare(
     `INSERT INTO receipts (type, received_at, supplier_id, created_by, status, sample_sent_by)
      VALUES (?, ?, ?, ?, 'pending', ?)

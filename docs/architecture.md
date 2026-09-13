@@ -1357,7 +1357,52 @@ Arabic), confirming the split before the fix and its absence after, then
 spot-checking English at both mobile and desktop width to confirm
 `<bdi>`/`nowrap` are no-ops there.
 
-## 21. Next Step
+## 21. Receive wizard's material code became a real search-and-select, not free text
+
+Reported as a 500 on submitting a receipt: `receipt_lines.material_code`
+is a foreign key into `materials`, but the Receive wizard's "Material
+code (if known)" field was a plain text box — a typo'd or not-yet-coded
+code hit an unhandled SQLite constraint violation on insert (the
+top-level `catch` in `src/index.ts` turns that into a raw 500).
+
+Two layers of fix:
+
+- **Backend** (`createReceipt`, `src/routes/receipts.ts`): every line's
+  material code is checked against `materials` up front, before any row
+  is written, returning a clean `404 Unknown material code: ...` instead
+  of letting the constraint violation surface as a 500 partway through
+  writing the receipt.
+- **Frontend** (`renderReceiveStep2`, `public/app.js`): the material code
+  field is now `codeSearchHtml`/`wireCodeSearch` — the same live-search
+  component Master Data/Specs/Suppliers already use — so a Warehouse user
+  picks from real codes instead of typing one freehand; selecting a
+  result also prefills the material name below (only if it's still
+  blank, so it stays an override, never clobbering something the user
+  already typed). The material name field itself gained a `<datalist>`
+  of existing material names for autocomplete-as-you-type, while staying
+  a free-text input — Warehouse's whole reason to write the name
+  separately from the code is recording an uncoded material exactly as
+  its paperwork spells it, so suggestions had to stay optional, never a
+  hard constraint. The submit handler also gets a matching client-side
+  check (unknown code → toast, no request sent) so the common case never
+  even reaches the backend's own check.
+
+This needed one permission change: `GET /api/materials` was quality-only
+(a Warehouse screen had never needed the materials list before). Loosened
+to any signed-in role, matching `GET /api/suppliers`'s existing precedent
+— reading materials for this search is a legitimate Warehouse need now;
+writing them (`PUT /api/materials`) stays Quality-only, unchanged.
+
+One implementation pitfall worth flagging for future repeatable/dynamic
+form sections: `wireCodeSearch` looks its input up via
+`document.getElementById`, which only resolves once that element is
+actually in the live DOM — building a `.line-item`'s full innerHTML
+(including the search markup) and wiring it *before* appending it to the
+document silently fails (`getElementById` returns `null`). Fixed by
+moving the `appendChild` earlier, right after building the item's static
+markup and before calling `wireCodeSearch` on it.
+
+## 22. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Two things
