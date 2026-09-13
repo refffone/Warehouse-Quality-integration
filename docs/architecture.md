@@ -1295,6 +1295,13 @@ Specifications use), so the import result panel stays visible instead of
 being wiped by the refresh — showing the confirmation alongside the
 now-updated Specifications card underneath.
 
+Same pair again in Codes → Materials (`renderMaterialsSection`), stacked
+right under that tab's own Materials import section with a one-line label
+between them ("Import specifications for these materials") so the two
+template-download/preview rows aren't mistaken for one — since creating a
+batch of new materials there and then giving them specs is the same
+workflow split across two imports otherwise.
+
 ## 20. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now

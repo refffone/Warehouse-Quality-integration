@@ -1628,6 +1628,8 @@ function renderMaterialsSection(section, { types, subtypes, functions, materials
         </div>
       </form>
       ${importSectionHtml("materials-import", "/api/materials/import-template")}
+      <div class="small muted" style="margin-top:14px;">${esc(t("codes.importSpecsHeading"))}</div>
+      ${importSectionHtml("materials-specs-import", "/api/specs/import-template")}
     </div>
   `;
 
@@ -1652,6 +1654,7 @@ function renderMaterialsSection(section, { types, subtypes, functions, materials
   });
 
   wireImportSection("materials-import", "/api/materials/import", viewCodes);
+  wireImportSection("materials-specs-import", "/api/specs/import", viewCodes);
 }
 
 const codesListState = { sortKey: "code", sortDir: "asc", query: "", filterType: "", filterSubtype: "", filterFunction: "" };
