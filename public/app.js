@@ -1894,6 +1894,7 @@ function collectParams(container) {
 async function viewSuppliers() {
   const view = document.getElementById("view");
   const suppliers = await getSuppliers(true);
+  const role = getRole();
 
   const rows = suppliers
     .map(
@@ -1923,11 +1924,18 @@ async function viewSuppliers() {
         </div>
       </form>
       ${importSectionHtml("suppliers-import", "/api/suppliers/import-template")}
+      ${
+        role === "quality"
+          ? `<div class="small muted" style="margin-top:14px;">${esc(t("suppliersList.importSpecsHeading"))}</div>
+             ${importSectionHtml("suppliers-specs-import", "/api/specs/import-template")}`
+          : ""
+      }
     </div>
   `;
 
   wireExportBar("suppliers-list-export", "suppliers", { withPeriod: false, filenamePrefix: "suppliers" });
   wireImportSection("suppliers-import", "/api/suppliers/import", viewSuppliers);
+  if (role === "quality") wireImportSection("suppliers-specs-import", "/api/specs/import", viewSuppliers);
 
   document.getElementById("new-supplier-form").addEventListener("submit", async (e) => {
     e.preventDefault();

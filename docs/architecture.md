@@ -1302,6 +1302,14 @@ template-download/preview rows aren't mistaken for one — since creating a
 batch of new materials there and then giving them specs is the same
 workflow split across two imports otherwise.
 
+Suppliers list needed one more consideration the other two placements
+didn't: unlike Codes and Master Data (already quality-only screens),
+Suppliers list is shared with Warehouse. Specs import stays quality-only
+on the backend regardless, so the frontend only renders the specs import
+block (and only wires it) when `getRole() === "quality"` — Warehouse's
+own Suppliers list keeps just its Suppliers import, matching what
+Warehouse could actually use `/api/specs/import` for (nothing).
+
 ## 20. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
