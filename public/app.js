@@ -562,6 +562,16 @@ async function renderReceiveStep2() {
         <div class="field"><label>${esc(t("receive.materialCodeIfKnown"))}</label>${codeSearchHtml(codeInputId, t("receive.materialCodeSearchPlaceholder"))}</div>
         <div class="field"><label>${esc(t("receive.materialNameAsOnPaperwork"))}</label><input type="text" data-f="material_name_text" list="rf-material-names" required /></div>
         <div class="field" style="max-width:120px"><label>${esc(t("common.unit"))}</label><input type="text" data-f="unit" placeholder="KG" required /></div>
+        <div class="field" style="max-width:180px">
+          <label>${esc(t("receive.packagingType"))}</label>
+          <select data-f="packaging_type">
+            <option value="drum">${esc(t("receive.packagingDrum"))}</option>
+            <option value="ibc">${esc(t("receive.packagingIbc"))}</option>
+            <option value="tank">${esc(t("receive.packagingTank"))}</option>
+            <option value="bags_pallet">${esc(t("receive.packagingBagsPallet"))}</option>
+            <option value="pallets">${esc(t("receive.packagingPallets"))}</option>
+          </select>
+        </div>
       </div>
       <div class="batches"></div>
       <button type="button" class="btn ghost sm" data-add-batch>${esc(t("receive.addSupplierBatch"))}</button>
@@ -581,17 +591,60 @@ async function renderReceiveStep2() {
     });
     codeInput.dataset.f = "material_code";
 
+    // Which packaging types show which extra quantity fields, and what to
+    // relabel the always-present qty_as_received field to — it stays the
+    // one required "primary quantity" for every type (count, tank weight,
+    // or pallet count) so weigh-in/variance/report code downstream doesn't
+    // need to know about packaging type at all.
+    const PACKAGING_FIELDS = {
+      drum: { qtyLabel: "receive.countLabel", perUnitWeight: true, qtySecondary: false, totalUnits: false },
+      ibc: { qtyLabel: "receive.countLabel", perUnitWeight: true, qtySecondary: false, totalUnits: false },
+      tank: { qtyLabel: "receive.tankWeightLabel", perUnitWeight: false, qtySecondary: false, totalUnits: false },
+      bags_pallet: {
+        qtyLabel: "receive.palletCountLabel",
+        perUnitWeight: false,
+        qtySecondary: true,
+        totalUnitsLabel: "receive.totalBags",
+      },
+      pallets: {
+        qtyLabel: "receive.palletCountLabel",
+        perUnitWeight: false,
+        qtySecondary: false,
+        totalUnitsLabel: "receive.totalUnits",
+      },
+    };
+
+    const packagingSelect = item.querySelector('[data-f="packaging_type"]');
     const batchesEl = item.querySelector(".batches");
+
+    function applyPackagingToRow(row) {
+      const cfg = PACKAGING_FIELDS[packagingSelect.value] || PACKAGING_FIELDS.drum;
+      row.querySelector("[data-qty-label]").textContent = t(cfg.qtyLabel);
+      row.querySelector("[data-field-per-unit-weight]").hidden = !cfg.perUnitWeight;
+      row.querySelector("[data-field-qty-secondary]").hidden = !cfg.qtySecondary;
+      const totalUnitsField = row.querySelector("[data-field-total-units]");
+      totalUnitsField.hidden = !cfg.totalUnitsLabel;
+      if (cfg.totalUnitsLabel) row.querySelector("[data-total-units-label]").textContent = t(cfg.totalUnitsLabel);
+    }
+
+    packagingSelect.addEventListener("change", () => {
+      batchesEl.querySelectorAll(".batch-item").forEach(applyPackagingToRow);
+    });
+
     function addBatch() {
       const row = document.createElement("div");
       row.className = "field-row batch-item";
       row.innerHTML = `
         <div class="field"><label>${esc(t("receive.supplierBatchNo"))}</label><input type="text" data-f="supplier_batch_no" required /></div>
-        <div class="field" style="max-width:140px"><label>${esc(t("receive.qtyAsReceived"))}</label><input type="number" step="any" data-f="qty_as_received" required /></div>
+        <div class="field" style="max-width:140px"><label data-qty-label>${esc(t("receive.qtyAsReceived"))}</label><input type="number" step="any" data-f="qty_as_received" required /></div>
+        <div class="field" style="max-width:140px" data-field-per-unit-weight><label>${esc(t("receive.perUnitWeight"))}</label><input type="number" step="any" data-f="per_unit_weight" /></div>
+        <div class="field" style="max-width:140px" data-field-qty-secondary><label>${esc(t("receive.bagsPerPallet"))}</label><input type="number" step="any" data-f="qty_secondary" /></div>
+        <div class="field" style="max-width:160px" data-field-total-units><label data-total-units-label></label><input type="number" step="any" data-f="total_units" /></div>
         <div style="align-self:flex-end"><button type="button" class="btn ghost sm" data-remove-batch>✕</button></div>
       `;
       row.querySelector("[data-remove-batch]").addEventListener("click", () => row.remove());
       batchesEl.appendChild(row);
+      applyPackagingToRow(row);
     }
     item.querySelector("[data-add-batch]").addEventListener("click", addBatch);
     addBatch();
@@ -605,14 +658,26 @@ async function renderReceiveStep2() {
 
     const lines = [...linesEl.querySelectorAll(".line-item")].map((item) => {
       const get = (f) => item.querySelector(`[data-f="${f}"]`)?.value || "";
+      // Only the fields visible for this line's packaging type are ever
+      // meaningful — a hidden field's leftover/blank value never gets sent.
+      const numOrNull = (b, wrapperSelector, f) => {
+        const wrapper = b.querySelector(wrapperSelector);
+        if (wrapper.hidden) return null;
+        const raw = b.querySelector(`[data-f="${f}"]`).value;
+        return raw === "" ? null : Number(raw);
+      };
       const batches = [...item.querySelectorAll(".batch-item")].map((b) => ({
         supplier_batch_no: b.querySelector('[data-f="supplier_batch_no"]').value,
         qty_as_received: Number(b.querySelector('[data-f="qty_as_received"]').value),
+        per_unit_weight: numOrNull(b, "[data-field-per-unit-weight]", "per_unit_weight"),
+        qty_secondary: numOrNull(b, "[data-field-qty-secondary]", "qty_secondary"),
+        total_units: numOrNull(b, "[data-field-total-units]", "total_units"),
       }));
       return {
         material_code: get("material_code") || null,
         material_name_text: get("material_name_text"),
         unit: get("unit"),
+        packaging_type: get("packaging_type") || null,
         batches,
       };
     });
@@ -936,8 +1001,19 @@ function wireImportSection(prefix, importPath, onImported) {
   previewBtn.addEventListener("click", () => runImport(false));
 }
 
+const PACKAGING_LABEL_KEYS = {
+  drum: "receive.packagingDrum",
+  ibc: "receive.packagingIbc",
+  tank: "receive.packagingTank",
+  bags_pallet: "receive.packagingBagsPallet",
+  pallets: "receive.packagingPallets",
+};
+
 function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
   const spec = line.spec;
+  const packagingBadge = line.packaging_type
+    ? `<span class="badge neutral">${esc(t(PACKAGING_LABEL_KEYS[line.packaging_type]))}</span>`
+    : "";
   const specHtml = spec
     ? `<span class="spec-chip">${esc(t("line.specVersion", {
         version: spec.version,
@@ -978,10 +1054,19 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
         b.qty_actual_weighed != null
           ? `${qtyValue(b.qty_as_received, line.unit)} ${esc(t("line.asReceivedLabel"))} · ${qtyValue(b.qty_actual_weighed, line.unit)} ${esc(t("line.actualLabel"))}`
           : `${qtyValue(b.qty_as_received, line.unit)} ${esc(t("line.asReceivedLabel"))}`;
+      // Packaging-type-specific extras (weight per drum/IBC, bags per
+      // pallet, total bag/unit count) — only ever set for the packaging
+      // types they apply to, so this is naturally empty otherwise.
+      const packagingExtras = [];
+      if (b.per_unit_weight != null)
+        packagingExtras.push(t("line.perUnitWeightSuffix", { weight: b.per_unit_weight, unit: line.unit }));
+      if (b.qty_secondary != null) packagingExtras.push(t("line.bagsPerPalletSuffix", { count: b.qty_secondary }));
+      if (b.total_units != null) packagingExtras.push(t("line.totalUnitsSuffix", { count: b.total_units }));
+      const qtyLineWithExtras = packagingExtras.length ? `${qtyLine} · ${packagingExtras.join(" · ")}` : qtyLine;
       const resultsBadge = resultsSummaryBadge(b.test_results);
       return `
         <div class="batch-row">
-          <div><bdi class="batch-id">${esc(b.supplier_batch_no)}</bdi> <span class="batch-qty">${qtyLine}</span></div>
+          <div><bdi class="batch-id">${esc(b.supplier_batch_no)}</bdi> <span class="batch-qty">${qtyLineWithExtras}</span></div>
           <div class="hstack">
             ${b.expiry_date ? `<span class="small muted">${esc(t("line.exp", { date: fmtDate(b.expiry_date) }))}</span>` : ""}
             ${batchStatusInline(b)}
@@ -1000,6 +1085,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
           ${line.material_code ? `<span class="code">${esc(line.material_code)}</span>` : `<span class="badge neutral">${esc(t("line.uncoded"))}</span>`}
         </div>
         <div class="hstack">
+          ${packagingBadge}
           ${importBadge}
           ${specHtml}
           ${role === "quality" && !line.material_code ? `<button class="btn sm ghost" data-associate="${line.id}">${esc(t("line.associateACode"))}</button>` : ""}

@@ -139,12 +139,20 @@ export interface Receipt {
 
 export type ImportScenario = "new_material" | "new_supplier" | "new_name_variant" | "repeat";
 
+/** How the material physically arrived. Drives which optional batch
+ *  fields (per_unit_weight, qty_secondary, total_units) are meaningful —
+ *  qty_as_received itself stays the one required "primary quantity" for
+ *  every type (count for drum/ibc, tank weight for tank, pallet count for
+ *  bags_pallet/pallets). */
+export type PackagingType = "drum" | "ibc" | "tank" | "bags_pallet" | "pallets";
+
 export interface ReceiptLine {
   id: number;
   receipt_id: number;
   material_code: string | null;
   material_name_text: string;
   unit: string;
+  packaging_type: PackagingType | null;
   import_code: string | null;
   import_scenario: ImportScenario | null;
 }
@@ -154,6 +162,12 @@ export interface ReceiptBatch {
   receipt_line_id: number;
   supplier_batch_no: string;
   qty_as_received: number;
+  /** Weight per drum/IBC (drum/ibc packaging only). */
+  per_unit_weight: number | null;
+  /** Bags per pallet (bags_pallet packaging only). */
+  qty_secondary: number | null;
+  /** Total bag/unit count (bags_pallet/pallets packaging only). */
+  total_units: number | null;
   qty_accepted: number | null;
   qty_rejected: number | null;
   qty_actual_weighed: number | null;
@@ -171,12 +185,16 @@ export interface ReceiptBatch {
 export interface NewReceiptBatchInput {
   supplier_batch_no: string;
   qty_as_received: number;
+  per_unit_weight?: number | null;
+  qty_secondary?: number | null;
+  total_units?: number | null;
 }
 
 export interface NewReceiptLineInput {
   material_code?: string | null;
   material_name_text: string;
   unit: string;
+  packaging_type?: PackagingType | null;
   batches: NewReceiptBatchInput[];
 }
 

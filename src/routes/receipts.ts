@@ -103,20 +103,27 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
     if (!line.batches?.length) return error("Each line needs at least one batch");
 
     const lineRow = await env.DB.prepare(
-      `INSERT INTO receipt_lines (receipt_id, material_code, material_name_text, unit)
-       VALUES (?, ?, ?, ?)
+      `INSERT INTO receipt_lines (receipt_id, material_code, material_name_text, unit, packaging_type)
+       VALUES (?, ?, ?, ?, ?)
        RETURNING id`
     )
-      .bind(receiptId, line.material_code ?? null, line.material_name_text, line.unit)
+      .bind(receiptId, line.material_code ?? null, line.material_name_text, line.unit, line.packaging_type ?? null)
       .first<{ id: number }>();
     const lineId = lineRow!.id;
 
     for (const batch of line.batches) {
       await env.DB.prepare(
-        `INSERT INTO receipt_batches (receipt_line_id, supplier_batch_no, qty_as_received, status)
-         VALUES (?, ?, ?, 'pending')`
+        `INSERT INTO receipt_batches (receipt_line_id, supplier_batch_no, qty_as_received, per_unit_weight, qty_secondary, total_units, status)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending')`
       )
-        .bind(lineId, batch.supplier_batch_no, batch.qty_as_received)
+        .bind(
+          lineId,
+          batch.supplier_batch_no,
+          batch.qty_as_received,
+          batch.per_unit_weight ?? null,
+          batch.qty_secondary ?? null,
+          batch.total_units ?? null
+        )
         .run();
     }
   }
