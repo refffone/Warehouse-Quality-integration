@@ -2,6 +2,7 @@ import { expect, test } from "./fixtures";
 import {
   associateCode,
   decideBatch,
+  finalizeWeight,
   goToNav,
   login,
   openReceiptCard,
@@ -206,5 +207,49 @@ test.describe("Quality: decisions and master data", () => {
     await expect(page.locator(".toast").last()).toBeVisible();
     await expect(page.locator("#spec-history")).toContainText("First Real Spec");
     await expect(page.locator("#spec-history")).toContainText("Moisture Content");
+  });
+
+  test("finalizes actual count (not weight) for a count-basis packaging material", async ({ page }) => {
+    // "Pallets" packaging always forces qty_basis to "count" — warehouse
+    // verifies these by how many actually arrived, never by weight, so
+    // Finalize should read/say "count" throughout, not "weight".
+    await login(page, "quality");
+    await seedMaterial(page, { code: "QA8-MAT", name: "Count-Basis Packaging Material", unit: "pcs" });
+
+    await login(page, "warehouse");
+    await seedSupplier(page, "QA8-SUP", "Quality Test Supplier Eight");
+    const receiptId = await receiveMaterial(
+      page,
+      { supplierCode: "QA8-SUP", createdBy: "E2E Warehouse" },
+      [
+        {
+          code: "QA8-MAT",
+          name: "Count-Basis Packaging Material",
+          unit: "pcs",
+          packagingType: "pallets",
+          batches: [{ batchNo: "QA8-B1", containerQty: 2, qtySecondary: 1197 }],
+        },
+      ]
+    );
+
+    await login(page, "quality");
+    let card = await openReceiptCard(page, "todo", receiptId);
+    await decideBatch(card, "[data-decide]", { decision: "approve", decidedBy: "E2E Quality" });
+
+    // Same Warehouse-specific "still needs a weigh-in" (here: count-in)
+    // bucket behavior as warehouse-receiving.spec.ts's finalize test —
+    // an approved-but-unfinalized batch stays in Warehouse's own To Do
+    // even after leaving Quality's.
+    await login(page, "warehouse");
+    card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card).toContainText("QA8-SUP");
+    const finalizeBtn = card.locator("[data-finalize]");
+    await expect(finalizeBtn).toHaveText(/count/i);
+    await expect(finalizeBtn).not.toHaveText(/weight/i);
+    await finalizeWeight(card, "[data-finalize]", 2390); // a couple of units short on the actual count
+
+    card = await openReceiptCard(page, "history", receiptId);
+    await expect(card.locator(".batch-row")).toContainText("2390 pcs");
+    await expect(card.locator('[data-finalize]')).toHaveCount(0);
   });
 });

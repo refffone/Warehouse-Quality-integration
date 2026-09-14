@@ -32,13 +32,17 @@ every spec namespaces its own supplier/material codes (`WH1-`, `QA1-`,
 - **`warehouse-receiving.spec.ts`** — the Receive wizard, end to end:
   one material/one batch, one material/several batches, multiple
   materials each with multiple batches, a sample receipt (including who
-  sent it), and the full receive → Quality approves → Warehouse
-  finalizes-weight cycle.
+  sent it), the full receive → Quality approves → Warehouse
+  finalizes-weight cycle, and packaging-type breakdown: bags-on-pallets
+  verified by count vs. by weight (auto-calculated totals), pallets of
+  packaging-material units (basis forced to count), and a manual
+  override of the auto-calculated total.
 - **`quality-decisions.spec.ts`** — approve, partially approve, and
   reject a batch; associate a code to an uncoded receipt line (both
   linking an existing material and creating a brand-new one inline);
   create a material code directly from the Codes tab; create a new spec
-  version for a material.
+  version for a material; finalize actual count (not weight) for a
+  count-basis packaging material.
 
 Not covered (out of scope for this pass, not because they're low-risk —
 worth adding if this suite grows): Excel import/export, the Suppliers

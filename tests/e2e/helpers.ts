@@ -48,12 +48,31 @@ async function currentToastText(page: Page): Promise<string> {
 
 export interface BatchInput {
   batchNo: string;
-  qty: number;
+  /** Filled directly into qty_as_received — for a plain batch this is the
+   *  only quantity there is; for a packaging-breakdown batch (see below),
+   *  omit it and let auto-calc produce the total, or set it to also
+   *  exercise the manual-override path (a typed total always wins over
+   *  auto-calc, exactly like a real user editing it). */
+   qty?: number;
+  /** Physically counted containers (drums/IBCs/pallets) — only used when
+   *  the line sets a packagingType other than the default. */
+  containerQty?: number;
+  /** Sub-units per container (bags/units per pallet) — bags_pallet/pallets only. */
+  qtySecondary?: number;
+  /** Weight per drum/IBC/bag — only meaningful when the line's qtyBasis is "weight". */
+  perUnitWeight?: number;
 }
+export type PackagingType = "drum" | "ibc" | "tank" | "bags_pallet" | "pallets";
+export type QtyBasis = "weight" | "count";
 export interface MaterialLineInput {
   code?: string; // pick an existing code via the search combo
   name: string;
   unit: string;
+  /** Defaults to the wizard's own default (drum). */
+  packagingType?: PackagingType;
+  /** Only meaningful for drum/ibc/bags_pallet — tank/pallets force their
+   *  own basis regardless of what's passed here. */
+  qtyBasis?: QtyBasis;
   batches: BatchInput[];
 }
 export interface ReceiveDetails {
@@ -128,11 +147,36 @@ export async function receiveMaterial(
     await item.locator('[data-f="material_name_text"]').fill(line.name);
     await item.locator('[data-f="unit"]').fill(line.unit);
 
+    // Packaging type/basis first — each batch row's field visibility
+    // (container_qty/qty_secondary/per_unit_weight) reacts to these via a
+    // change listener, so later fills below land on visible fields.
+    if (line.packagingType) {
+      await item.locator('select[data-f="packaging_type"]').selectOption(line.packagingType);
+    }
+    if (line.qtyBasis) {
+      await item.locator('select[data-f="qty_basis"]').selectOption(line.qtyBasis);
+    }
+
     for (let b = 0; b < line.batches.length; b++) {
       if (b > 0) await item.locator("[data-add-batch]").click();
       const batchRow = item.locator(".batch-item").nth(b);
-      await batchRow.locator('[data-f="supplier_batch_no"]').fill(line.batches[b].batchNo);
-      await batchRow.locator('[data-f="qty_as_received"]').fill(String(line.batches[b].qty));
+      const batch = line.batches[b];
+      await batchRow.locator('[data-f="supplier_batch_no"]').fill(batch.batchNo);
+      if (batch.containerQty != null) {
+        await batchRow.locator('[data-f="container_qty"]').fill(String(batch.containerQty));
+      }
+      if (batch.qtySecondary != null) {
+        await batchRow.locator('[data-f="qty_secondary"]').fill(String(batch.qtySecondary));
+      }
+      if (batch.perUnitWeight != null) {
+        await batchRow.locator('[data-f="per_unit_weight"]').fill(String(batch.perUnitWeight));
+      }
+      // A typed qty always wins — mirrors the real "auto-calc until you
+      // touch the total field yourself" behavior. Omit it on a packaging
+      // batch to assert on the auto-calculated total instead.
+      if (batch.qty != null) {
+        await batchRow.locator('[data-f="qty_as_received"]').fill(String(batch.qty));
+      }
     }
   }
 
@@ -203,9 +247,10 @@ export async function recordTestResults(
   await expect(modal).toBeHidden();
 }
 
-/** Opens Finalize Weight for one batch and submits the actual weighed
- *  quantity — Warehouse's own action, only available once Quality has
- *  approved/partially-approved an import batch. */
+/** Opens Finalize (weight or count, depending on the line's qty_basis —
+ *  same modal/field either way, just relabeled) for one batch and submits
+ *  the actual quantity — Warehouse's own action, only available once
+ *  Quality has approved/partially-approved an import batch. */
 export async function finalizeWeight(card: ReturnType<Page["locator"]>, batchButtonSelector: string, qty: number) {
   await card.locator(batchButtonSelector).click();
   const modal = card.page().locator("#finalize-form");

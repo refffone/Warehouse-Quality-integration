@@ -118,6 +118,107 @@ test.describe("Warehouse: receiving", () => {
     await expect(card).toContainText("Sample Courier Co.");
   });
 
+  test("receives bags-on-pallets material verified by count (auto-calculated total)", async ({ page }) => {
+    await seedSupplier(page, "WH6-SUP", "Warehouse Test Supplier Six");
+
+    const receiptId = await receiveMaterial(
+      page,
+      { supplierCode: "WH6-SUP", createdBy: "E2E Warehouse" },
+      [
+        {
+          name: "Bagged Resin (count basis)",
+          unit: "bags",
+          packagingType: "bags_pallet",
+          qtyBasis: "count",
+          // No qty given — the wizard should auto-calculate
+          // 10 pallets x 40 bags/pallet = 400 bags.
+          batches: [{ batchNo: "WH6-B1", containerQty: 10, qtySecondary: 40 }],
+        },
+      ]
+    );
+
+    const card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card).toContainText("WH6-SUP");
+    await expect(card.locator(".batch-row")).toContainText("400 bags");
+    await expect(card.locator(".batch-row")).toContainText("10 pallets");
+    await expect(card.locator(".batch-row")).toContainText("40 bags/pallet");
+  });
+
+  test("receives bags-on-pallets material verified by weight (auto-calculated total)", async ({ page }) => {
+    await seedSupplier(page, "WH7-SUP", "Warehouse Test Supplier Seven");
+
+    const receiptId = await receiveMaterial(
+      page,
+      { supplierCode: "WH7-SUP", createdBy: "E2E Warehouse" },
+      [
+        {
+          name: "Bagged Resin (weight basis)",
+          unit: "KG",
+          packagingType: "bags_pallet",
+          qtyBasis: "weight",
+          // 10 pallets x 40 bags/pallet x 10 kg/bag = 4,000 kg.
+          batches: [{ batchNo: "WH7-B1", containerQty: 10, qtySecondary: 40, perUnitWeight: 10 }],
+        },
+      ]
+    );
+
+    const card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card).toContainText("WH7-SUP");
+    await expect(card.locator(".batch-row")).toContainText("4000 KG");
+    await expect(card.locator(".batch-row")).toContainText("10 pallets");
+    await expect(card.locator(".batch-row")).toContainText("40 bags/pallet");
+    await expect(card.locator(".batch-row")).toContainText("10 KG each");
+  });
+
+  test("receives pallets of packaging-material units (basis forced to count)", async ({ page }) => {
+    await seedSupplier(page, "WH8-SUP", "Warehouse Test Supplier Eight");
+
+    const receiptId = await receiveMaterial(
+      page,
+      { supplierCode: "WH8-SUP", createdBy: "E2E Warehouse" },
+      [
+        {
+          name: "Packaging Caps",
+          unit: "pcs",
+          packagingType: "pallets", // no qtyBasis passed — always forced to "count"
+          // 2 pallets x 1,197 units/pallet = 2,394 units.
+          batches: [{ batchNo: "WH8-B1", containerQty: 2, qtySecondary: 1197 }],
+        },
+      ]
+    );
+
+    const card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card).toContainText("WH8-SUP");
+    await expect(card.locator(".batch-row")).toContainText("2394 pcs");
+    await expect(card.locator(".batch-row")).toContainText("2 pallets");
+    await expect(card.locator(".batch-row")).toContainText("1197 units/pallet");
+  });
+
+  test("lets warehouse override the auto-calculated total for bags on pallets", async ({ page }) => {
+    await seedSupplier(page, "WH9-SUP", "Warehouse Test Supplier Nine");
+
+    const receiptId = await receiveMaterial(
+      page,
+      { supplierCode: "WH9-SUP", createdBy: "E2E Warehouse" },
+      [
+        {
+          name: "Bagged Resin (manual override)",
+          unit: "bags",
+          packagingType: "bags_pallet",
+          qtyBasis: "count",
+          // Breakdown multiplies out to 400, but the supplier's paperwork
+          // actually said 395 (a short pallet) — the typed qty should win.
+          batches: [{ batchNo: "WH9-B1", containerQty: 10, qtySecondary: 40, qty: 395 }],
+        },
+      ]
+    );
+
+    const card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card).toContainText("WH9-SUP");
+    await expect(card.locator(".batch-row")).toContainText("395 bags");
+    await expect(card.locator(".batch-row")).not.toContainText("400 bags");
+  });
+
   test("finalizes actual weight once Quality has approved an import batch", async ({ page }) => {
     // Deciding a batch requires its line to already have a material code
     // (src/routes/receipts.ts's decideBatch 400s otherwise), so Quality
