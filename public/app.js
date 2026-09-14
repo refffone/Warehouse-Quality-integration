@@ -549,6 +549,14 @@ async function renderReceiveStep2() {
   const linesEl = document.getElementById("rf-lines");
   let lineSeq = 0;
 
+  // tank is always a direct weight entry (no containers to count); pallets
+  // (of discrete packaging-material units, e.g. caps/labels) are always a
+  // unit count, never weighed. drum/ibc/bags_pallet are a real choice —
+  // the same shipment can be declared by the supplier as "40 drums" or as
+  // "1,000 kg", and warehouse verifies against whichever the paperwork
+  // used, so those show the "Verify by" toggle.
+  const FORCED_BASIS = { tank: "weight", pallets: "count" };
+
   function addLine() {
     const item = document.createElement("div");
     item.className = "repeatable-item line-item";
@@ -572,6 +580,13 @@ async function renderReceiveStep2() {
             <option value="pallets">${esc(t("receive.packagingPallets"))}</option>
           </select>
         </div>
+        <div class="field" style="max-width:160px" data-field-qty-basis>
+          <label>${esc(t("receive.verifyBy"))}</label>
+          <select data-f="qty_basis">
+            <option value="weight">${esc(t("receive.verifyByWeight"))}</option>
+            <option value="count">${esc(t("receive.verifyByCount"))}</option>
+          </select>
+        </div>
       </div>
       <div class="batches"></div>
       <button type="button" class="btn ghost sm" data-add-batch>${esc(t("receive.addSupplierBatch"))}</button>
@@ -591,60 +606,118 @@ async function renderReceiveStep2() {
     });
     codeInput.dataset.f = "material_code";
 
-    // Which packaging types show which extra quantity fields, and what to
-    // relabel the always-present qty_as_received field to — it stays the
-    // one required "primary quantity" for every type (count, tank weight,
-    // or pallet count) so weigh-in/variance/report code downstream doesn't
-    // need to know about packaging type at all.
-    const PACKAGING_FIELDS = {
-      drum: { qtyLabel: "receive.countLabel", perUnitWeight: true, qtySecondary: false, totalUnits: false },
-      ibc: { qtyLabel: "receive.countLabel", perUnitWeight: true, qtySecondary: false, totalUnits: false },
-      tank: { qtyLabel: "receive.tankWeightLabel", perUnitWeight: false, qtySecondary: false, totalUnits: false },
-      bags_pallet: {
-        qtyLabel: "receive.palletCountLabel",
-        perUnitWeight: false,
-        qtySecondary: true,
-        totalUnitsLabel: "receive.totalBags",
-      },
-      pallets: {
-        qtyLabel: "receive.palletCountLabel",
-        perUnitWeight: false,
-        qtySecondary: false,
-        totalUnitsLabel: "receive.totalUnits",
-      },
-    };
-
     const packagingSelect = item.querySelector('[data-f="packaging_type"]');
+    const basisSelect = item.querySelector('[data-f="qty_basis"]');
+    const basisField = item.querySelector("[data-field-qty-basis]");
     const batchesEl = item.querySelector(".batches");
 
-    function applyPackagingToRow(row) {
-      const cfg = PACKAGING_FIELDS[packagingSelect.value] || PACKAGING_FIELDS.drum;
-      row.querySelector("[data-qty-label]").textContent = t(cfg.qtyLabel);
-      row.querySelector("[data-field-per-unit-weight]").hidden = !cfg.perUnitWeight;
-      row.querySelector("[data-field-qty-secondary]").hidden = !cfg.qtySecondary;
-      const totalUnitsField = row.querySelector("[data-field-total-units]");
-      totalUnitsField.hidden = !cfg.totalUnitsLabel;
-      if (cfg.totalUnitsLabel) row.querySelector("[data-total-units-label]").textContent = t(cfg.totalUnitsLabel);
+    function currentBasis() {
+      return FORCED_BASIS[packagingSelect.value] || basisSelect.value;
+    }
+
+    function packagingConfig() {
+      const packaging = packagingSelect.value;
+      const basis = currentBasis();
+      const hasSecondary = packaging === "bags_pallet" || packaging === "pallets";
+      const showContainerQty = packaging !== "tank";
+      const containerQtyLabel = packaging === "drum" || packaging === "ibc" ? "receive.countLabel" : "receive.palletCountLabel";
+      const secondaryLabel = packaging === "bags_pallet" ? "receive.bagsPerPallet" : "receive.unitsPerPallet";
+      const showPerUnitWeight = basis === "weight" && packaging !== "tank" && packaging !== "pallets";
+      let totalLabel;
+      if (packaging === "tank") totalLabel = "receive.tankWeightLabel";
+      else if (basis === "weight") totalLabel = "receive.totalWeightLabel";
+      else if (packaging === "bags_pallet") totalLabel = "receive.totalBagsLabel";
+      else if (packaging === "pallets") totalLabel = "receive.totalUnitsCountLabel";
+      else totalLabel = "receive.totalCountLabel";
+      return { packaging, basis, showContainerQty, containerQtyLabel, hasSecondary, secondaryLabel, showPerUnitWeight, totalLabel };
+    }
+
+    // Computes the total from the breakdown fields — null when a required
+    // input for the current config isn't filled in yet, in which case the
+    // caller leaves whatever's already in the total field alone.
+    function computeTotal(cfg, containerQty, secondary, perUnitWeight) {
+      if (cfg.packaging === "tank" || !Number.isFinite(containerQty)) return null;
+      const multiplier = cfg.hasSecondary ? secondary : 1;
+      if (!Number.isFinite(multiplier)) return null;
+      if (cfg.showPerUnitWeight) {
+        if (!Number.isFinite(perUnitWeight)) return null;
+        return containerQty * multiplier * perUnitWeight;
+      }
+      return containerQty * multiplier;
+    }
+
+    function updateBasisVisibility() {
+      const forced = FORCED_BASIS[packagingSelect.value];
+      basisField.hidden = !!forced;
+      if (forced) basisSelect.value = forced;
+    }
+
+    function refreshAllRows() {
+      batchesEl.querySelectorAll(".batch-item").forEach((row) => row._applyPackaging());
     }
 
     packagingSelect.addEventListener("change", () => {
-      batchesEl.querySelectorAll(".batch-item").forEach(applyPackagingToRow);
+      updateBasisVisibility();
+      refreshAllRows();
     });
+    basisSelect.addEventListener("change", refreshAllRows);
+    updateBasisVisibility();
 
     function addBatch() {
       const row = document.createElement("div");
       row.className = "field-row batch-item";
       row.innerHTML = `
         <div class="field"><label>${esc(t("receive.supplierBatchNo"))}</label><input type="text" data-f="supplier_batch_no" required /></div>
-        <div class="field" style="max-width:140px"><label data-qty-label>${esc(t("receive.qtyAsReceived"))}</label><input type="number" step="any" data-f="qty_as_received" required /></div>
-        <div class="field" style="max-width:140px" data-field-per-unit-weight><label>${esc(t("receive.perUnitWeight"))}</label><input type="number" step="any" data-f="per_unit_weight" /></div>
-        <div class="field" style="max-width:140px" data-field-qty-secondary><label>${esc(t("receive.bagsPerPallet"))}</label><input type="number" step="any" data-f="qty_secondary" /></div>
-        <div class="field" style="max-width:160px" data-field-total-units><label data-total-units-label></label><input type="number" step="any" data-f="total_units" /></div>
+        <div class="field" style="max-width:130px" data-field-container-qty><label data-container-qty-label></label><input type="number" step="any" data-f="container_qty" /></div>
+        <div class="field" style="max-width:150px" data-field-qty-secondary><label data-qty-secondary-label></label><input type="number" step="any" data-f="qty_secondary" /></div>
+        <div class="field" style="max-width:150px" data-field-per-unit-weight><label>${esc(t("receive.perUnitWeight"))}</label><input type="number" step="any" data-f="per_unit_weight" /></div>
+        <div class="field" style="max-width:150px"><label data-total-label></label><input type="number" step="any" data-f="qty_as_received" required /></div>
         <div style="align-self:flex-end"><button type="button" class="btn ghost sm" data-remove-batch>✕</button></div>
       `;
       row.querySelector("[data-remove-batch]").addEventListener("click", () => row.remove());
       batchesEl.appendChild(row);
-      applyPackagingToRow(row);
+
+      const containerQtyInput = row.querySelector('[data-f="container_qty"]');
+      const secondaryInput = row.querySelector('[data-f="qty_secondary"]');
+      const perUnitWeightInput = row.querySelector('[data-f="per_unit_weight"]');
+      const totalInput = row.querySelector('[data-f="qty_as_received"]');
+
+      // The computed total stays editable — pallets don't always carry the
+      // same count (a partial pallet, a supplier's round-number paperwork
+      // that doesn't multiply out cleanly), so once the user touches it
+      // directly, auto-calc backs off until the packaging/basis choice
+      // actually changes again (at which point the old total no longer
+      // means anything anyway).
+      let totalEdited = false;
+      totalInput.addEventListener("input", () => {
+        totalEdited = true;
+      });
+
+      function recalc() {
+        if (totalEdited) return;
+        const cfg = packagingConfig();
+        const total = computeTotal(
+          cfg,
+          parseFloat(containerQtyInput.value),
+          parseFloat(secondaryInput.value),
+          parseFloat(perUnitWeightInput.value)
+        );
+        if (total != null) totalInput.value = Math.round(total * 1000) / 1000;
+      }
+      [containerQtyInput, secondaryInput, perUnitWeightInput].forEach((el) => el.addEventListener("input", recalc));
+
+      row._applyPackaging = () => {
+        const cfg = packagingConfig();
+        row.querySelector("[data-field-container-qty]").hidden = !cfg.showContainerQty;
+        if (cfg.showContainerQty) row.querySelector("[data-container-qty-label]").textContent = t(cfg.containerQtyLabel);
+        row.querySelector("[data-field-qty-secondary]").hidden = !cfg.hasSecondary;
+        if (cfg.hasSecondary) row.querySelector("[data-qty-secondary-label]").textContent = t(cfg.secondaryLabel);
+        row.querySelector("[data-field-per-unit-weight]").hidden = !cfg.showPerUnitWeight;
+        row.querySelector("[data-total-label]").textContent = t(cfg.totalLabel);
+        totalEdited = false; // field meanings just changed — a stale total isn't trustworthy anymore
+        recalc();
+      };
+      row._applyPackaging();
     }
     item.querySelector("[data-add-batch]").addEventListener("click", addBatch);
     addBatch();
@@ -669,15 +742,16 @@ async function renderReceiveStep2() {
       const batches = [...item.querySelectorAll(".batch-item")].map((b) => ({
         supplier_batch_no: b.querySelector('[data-f="supplier_batch_no"]').value,
         qty_as_received: Number(b.querySelector('[data-f="qty_as_received"]').value),
-        per_unit_weight: numOrNull(b, "[data-field-per-unit-weight]", "per_unit_weight"),
+        container_qty: numOrNull(b, "[data-field-container-qty]", "container_qty"),
         qty_secondary: numOrNull(b, "[data-field-qty-secondary]", "qty_secondary"),
-        total_units: numOrNull(b, "[data-field-total-units]", "total_units"),
+        per_unit_weight: numOrNull(b, "[data-field-per-unit-weight]", "per_unit_weight"),
       }));
       return {
         material_code: get("material_code") || null,
         material_name_text: get("material_name_text"),
         unit: get("unit"),
         packaging_type: get("packaging_type") || null,
+        qty_basis: get("qty_basis") || null,
         batches,
       };
     });
@@ -1009,21 +1083,16 @@ const PACKAGING_LABEL_KEYS = {
   pallets: "receive.packagingPallets",
 };
 
-// qty_as_received/qty_actual_weighed are a *count* for drum/ibc/bags_pallet/
-// pallets (drums, IBCs, pallets — not a weight in the line's unit), and
-// only genuinely a weight-in-line.unit for tank (or a legacy line with no
-// packaging_type at all, from before this field existed).
-const PACKAGING_QTY_UNIT_KEYS = {
+// Noun for the container_qty breakdown figure (10 "pallets", 40 "drums",
+// ...) — qty_as_received/qty_actual_weighed themselves are always in
+// line.unit now (they're the computed total in the line's qty_basis, the
+// same role qty_as_received had before packaging types existed).
+const PACKAGING_CONTAINER_UNIT_KEYS = {
   drum: "line.unitDrums",
   ibc: "line.unitIbc",
   bags_pallet: "line.unitPallets",
   pallets: "line.unitPallets",
 };
-
-function packagingQtyUnitLabel(line) {
-  const key = line.packaging_type && PACKAGING_QTY_UNIT_KEYS[line.packaging_type];
-  return key ? t(key) : line.unit;
-}
 
 function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
   const spec = line.spec;
@@ -1055,7 +1124,8 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
         actions.push(`<button class="btn sm primary" data-decide="${b.id}">${esc(t("line.decide"))}</button>`);
       }
       if (canFinalize && b.status !== "pending" && b.status !== "rejected" && b.qty_actual_weighed == null) {
-        actions.push(`<button class="btn sm ghost" data-finalize="${b.id}">${esc(t("line.finalizeWeight"))}</button>`);
+        const finalizeLabel = (line.qty_basis || "weight") === "count" ? t("line.finalizeCount") : t("line.finalizeWeight");
+        actions.push(`<button class="btn sm ghost" data-finalize="${b.id}">${esc(finalizeLabel)}</button>`);
       }
       if (decided && role === "quality") {
         actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="pdf">${esc(t("line.coaPdf"))}</button>`);
@@ -1066,22 +1136,22 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       // the Arabic connector words around it (e.g. "100 kg" splitting away
       // from "as received"/"كما استُلمت" mid-sentence).
       const qtyValue = (qty, unit) => `<bdi>${esc(qty)} ${esc(unit)}</bdi>`;
-      const qtyUnit = packagingQtyUnitLabel(line);
       const qtyLine =
         b.qty_actual_weighed != null
-          ? `${qtyValue(b.qty_as_received, qtyUnit)} ${esc(t("line.asReceivedLabel"))} · ${qtyValue(b.qty_actual_weighed, qtyUnit)} ${esc(t("line.actualLabel"))}`
-          : `${qtyValue(b.qty_as_received, qtyUnit)} ${esc(t("line.asReceivedLabel"))}`;
-      // Packaging-type-specific extras (weight per drum/IBC, bags per
-      // pallet, total bag/unit count) — only ever set for the packaging
-      // types they apply to, so this is naturally empty otherwise.
+          ? `${qtyValue(b.qty_as_received, line.unit)} ${esc(t("line.asReceivedLabel"))} · ${qtyValue(b.qty_actual_weighed, line.unit)} ${esc(t("line.actualLabel"))}`
+          : `${qtyValue(b.qty_as_received, line.unit)} ${esc(t("line.asReceivedLabel"))}`;
+      // The physical breakdown behind that total (containers, sub-units
+      // per container, weight per unit) — shown for reference, only ever
+      // set for the fields the packaging type/basis actually asked for.
       const packagingExtras = [];
+      const containerUnitKey = PACKAGING_CONTAINER_UNIT_KEYS[line.packaging_type];
+      if (b.container_qty != null && containerUnitKey) packagingExtras.push(qtyValue(b.container_qty, t(containerUnitKey)));
+      if (b.qty_secondary != null) {
+        const secondaryKey = line.packaging_type === "pallets" ? "line.unitsPerPalletSuffix" : "line.bagsPerPalletSuffix";
+        packagingExtras.push(t(secondaryKey, { count: b.qty_secondary }));
+      }
       if (b.per_unit_weight != null)
         packagingExtras.push(t("line.perUnitWeightSuffix", { weight: b.per_unit_weight, unit: line.unit }));
-      if (b.qty_secondary != null) packagingExtras.push(t("line.bagsPerPalletSuffix", { count: b.qty_secondary }));
-      if (b.total_units != null) {
-        const totalKey = line.packaging_type === "bags_pallet" ? "line.totalBagsSuffix" : "line.totalUnitsSuffix";
-        packagingExtras.push(t(totalKey, { count: b.total_units }));
-      }
       const qtyLineWithExtras = packagingExtras.length ? `${qtyLine} · ${packagingExtras.join(" · ")}` : qtyLine;
       const resultsBadge = resultsSummaryBadge(b.test_results);
       return `
@@ -1213,13 +1283,17 @@ function buildReceiptCard(receipt, { role, type }) {
     });
   }
 
-  // Per-batch spec/results lookups, for buttons wired below.
+  // Per-batch spec/results/basis lookups, for buttons wired below.
   const specByBatch = {};
   const resultsByBatch = {};
+  const qtyBasisByBatch = {};
   for (const line of receipt.lines) {
     for (const b of line.batches) {
       specByBatch[b.id] = line.spec;
       resultsByBatch[b.id] = b.test_results;
+      // Legacy lines predating packaging types have no qty_basis — they
+      // were always weighed, so "weight" matches their actual behavior.
+      qtyBasisByBatch[b.id] = line.qty_basis || "weight";
     }
   }
 
@@ -1242,7 +1316,9 @@ function buildReceiptCard(receipt, { role, type }) {
   );
   // finalize
   card.querySelectorAll("[data-finalize]").forEach((btn) =>
-    btn.addEventListener("click", () => openFinalizeModal(btn.dataset.finalize, () => refreshCurrentView()))
+    btn.addEventListener("click", () =>
+      openFinalizeModal(btn.dataset.finalize, qtyBasisByBatch[btn.dataset.finalize], () => refreshCurrentView())
+    )
   );
   // associate code
   card.querySelectorAll("[data-associate]").forEach((btn) =>
@@ -1463,11 +1539,12 @@ async function openDecideModal(batchId, results, onDone) {
   });
 }
 
-function openFinalizeModal(batchId, onDone) {
+function openFinalizeModal(batchId, qtyBasis, onDone) {
+  const isCount = qtyBasis === "count";
   openModal(
-    esc(t("finalize.title")),
+    esc(isCount ? t("finalize.titleCount") : t("finalize.title")),
     `<form class="form-grid" id="finalize-form">
-      <div class="field"><label>${esc(t("finalize.actualQty"))}</label><input type="number" step="any" name="qty_actual_weighed" required /></div>
+      <div class="field"><label>${esc(isCount ? t("finalize.actualCount") : t("finalize.actualQty"))}</label><input type="number" step="any" name="qty_actual_weighed" required /></div>
       <button type="submit" class="btn primary">${esc(t("finalize.save"))}</button>
     </form>`
   );

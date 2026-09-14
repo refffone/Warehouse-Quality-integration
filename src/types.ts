@@ -139,12 +139,18 @@ export interface Receipt {
 
 export type ImportScenario = "new_material" | "new_supplier" | "new_name_variant" | "repeat";
 
-/** How the material physically arrived. Drives which optional batch
- *  fields (per_unit_weight, qty_secondary, total_units) are meaningful —
- *  qty_as_received itself stays the one required "primary quantity" for
- *  every type (count for drum/ibc, tank weight for tank, pallet count for
- *  bags_pallet/pallets). */
+/** How the material physically arrived. Drives which breakdown fields
+ *  (container_qty, per_unit_weight, qty_secondary) the wizard asks for. */
 export type PackagingType = "drum" | "ibc" | "tank" | "bags_pallet" | "pallets";
+
+/** Whether this line's supplier paperwork — and therefore its
+ *  qty_as_received/qty_actual_weighed and every downstream weigh-in,
+ *  variance, report, and COA figure — is a weight or a unit count.
+ *  Fixed by packaging_type for tank (always "weight") and pallets
+ *  (always "count"); a real choice for drum/ibc/bags_pallet, since a
+ *  supplier can declare either "40 drums" or "1,000 kg" for the same
+ *  shipment. */
+export type QtyBasis = "weight" | "count";
 
 export interface ReceiptLine {
   id: number;
@@ -153,6 +159,7 @@ export interface ReceiptLine {
   material_name_text: string;
   unit: string;
   packaging_type: PackagingType | null;
+  qty_basis: QtyBasis | null;
   import_code: string | null;
   import_scenario: ImportScenario | null;
 }
@@ -161,13 +168,19 @@ export interface ReceiptBatch {
   id: number;
   receipt_line_id: number;
   supplier_batch_no: string;
+  /** The computed, warehouse-editable total in the line's qty_basis
+   *  (e.g. containers × weight/unit, or containers × units/container) —
+   *  the one figure every downstream weigh-in/variance/report/COA
+   *  calculation reads, unchanged from before packaging types existed. */
   qty_as_received: number;
-  /** Weight per drum/IBC (drum/ibc packaging only). */
+  /** Physically counted containers (drums/IBCs/pallets) — the raw
+   *  breakdown behind qty_as_received, kept for reference only; not
+   *  every batch fills it in (e.g. tank has none). */
+  container_qty: number | null;
+  /** Weight per drum/IBC/bag (only meaningful when qty_basis is "weight"). */
   per_unit_weight: number | null;
-  /** Bags per pallet (bags_pallet packaging only). */
+  /** Sub-units per container — bags per pallet, or units per pallet. */
   qty_secondary: number | null;
-  /** Total bag/unit count (bags_pallet/pallets packaging only). */
-  total_units: number | null;
   qty_accepted: number | null;
   qty_rejected: number | null;
   qty_actual_weighed: number | null;
@@ -185,9 +198,9 @@ export interface ReceiptBatch {
 export interface NewReceiptBatchInput {
   supplier_batch_no: string;
   qty_as_received: number;
+  container_qty?: number | null;
   per_unit_weight?: number | null;
   qty_secondary?: number | null;
-  total_units?: number | null;
 }
 
 export interface NewReceiptLineInput {
@@ -195,6 +208,7 @@ export interface NewReceiptLineInput {
   material_name_text: string;
   unit: string;
   packaging_type?: PackagingType | null;
+  qty_basis?: QtyBasis | null;
   batches: NewReceiptBatchInput[];
 }
 
