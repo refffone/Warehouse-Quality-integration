@@ -1009,6 +1009,22 @@ const PACKAGING_LABEL_KEYS = {
   pallets: "receive.packagingPallets",
 };
 
+// qty_as_received/qty_actual_weighed are a *count* for drum/ibc/bags_pallet/
+// pallets (drums, IBCs, pallets — not a weight in the line's unit), and
+// only genuinely a weight-in-line.unit for tank (or a legacy line with no
+// packaging_type at all, from before this field existed).
+const PACKAGING_QTY_UNIT_KEYS = {
+  drum: "line.unitDrums",
+  ibc: "line.unitIbc",
+  bags_pallet: "line.unitPallets",
+  pallets: "line.unitPallets",
+};
+
+function packagingQtyUnitLabel(line) {
+  const key = line.packaging_type && PACKAGING_QTY_UNIT_KEYS[line.packaging_type];
+  return key ? t(key) : line.unit;
+}
+
 function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
   const spec = line.spec;
   const packagingBadge = line.packaging_type
@@ -1050,10 +1066,11 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       // the Arabic connector words around it (e.g. "100 kg" splitting away
       // from "as received"/"كما استُلمت" mid-sentence).
       const qtyValue = (qty, unit) => `<bdi>${esc(qty)} ${esc(unit)}</bdi>`;
+      const qtyUnit = packagingQtyUnitLabel(line);
       const qtyLine =
         b.qty_actual_weighed != null
-          ? `${qtyValue(b.qty_as_received, line.unit)} ${esc(t("line.asReceivedLabel"))} · ${qtyValue(b.qty_actual_weighed, line.unit)} ${esc(t("line.actualLabel"))}`
-          : `${qtyValue(b.qty_as_received, line.unit)} ${esc(t("line.asReceivedLabel"))}`;
+          ? `${qtyValue(b.qty_as_received, qtyUnit)} ${esc(t("line.asReceivedLabel"))} · ${qtyValue(b.qty_actual_weighed, qtyUnit)} ${esc(t("line.actualLabel"))}`
+          : `${qtyValue(b.qty_as_received, qtyUnit)} ${esc(t("line.asReceivedLabel"))}`;
       // Packaging-type-specific extras (weight per drum/IBC, bags per
       // pallet, total bag/unit count) — only ever set for the packaging
       // types they apply to, so this is naturally empty otherwise.
@@ -1061,7 +1078,10 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       if (b.per_unit_weight != null)
         packagingExtras.push(t("line.perUnitWeightSuffix", { weight: b.per_unit_weight, unit: line.unit }));
       if (b.qty_secondary != null) packagingExtras.push(t("line.bagsPerPalletSuffix", { count: b.qty_secondary }));
-      if (b.total_units != null) packagingExtras.push(t("line.totalUnitsSuffix", { count: b.total_units }));
+      if (b.total_units != null) {
+        const totalKey = line.packaging_type === "bags_pallet" ? "line.totalBagsSuffix" : "line.totalUnitsSuffix";
+        packagingExtras.push(t(totalKey, { count: b.total_units }));
+      }
       const qtyLineWithExtras = packagingExtras.length ? `${qtyLine} · ${packagingExtras.join(" · ")}` : qtyLine;
       const resultsBadge = resultsSummaryBadge(b.test_results);
       return `
