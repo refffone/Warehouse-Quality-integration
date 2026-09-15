@@ -60,7 +60,7 @@ export async function uploadAttachment(request: Request, env: Env, receiptLineId
 
 export async function listAttachmentsForLine(env: Env, receiptLineId: number): Promise<Response> {
   const rows = await env.DB.prepare(
-    "SELECT * FROM attachments WHERE receipt_line_id = ? ORDER BY uploaded_at DESC"
+    "SELECT * FROM attachments WHERE receipt_line_id = ? AND deleted_at IS NULL ORDER BY uploaded_at DESC"
   )
     .bind(receiptLineId)
     .all<Attachment>();
@@ -68,7 +68,7 @@ export async function listAttachmentsForLine(env: Env, receiptLineId: number): P
 }
 
 export async function downloadAttachment(env: Env, attachmentId: number): Promise<Response> {
-  const row = await env.DB.prepare("SELECT * FROM attachments WHERE id = ?")
+  const row = await env.DB.prepare("SELECT * FROM attachments WHERE id = ? AND deleted_at IS NULL")
     .bind(attachmentId)
     .first<Attachment>();
   if (!row) return error("Attachment not found", 404);
@@ -84,14 +84,17 @@ export async function downloadAttachment(env: Env, attachmentId: number): Promis
   });
 }
 
+/** Soft delete only — R2 has no native object versioning, so actually
+ *  removing the object would make an accidental (or malicious) delete
+ *  unrecoverable. The object and row both stay; this just hides it from
+ *  normal listings/downloads. */
 export async function deleteAttachment(env: Env, attachmentId: number): Promise<Response> {
-  const row = await env.DB.prepare("SELECT * FROM attachments WHERE id = ?")
+  const result = await env.DB.prepare(
+    "UPDATE attachments SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL"
+  )
     .bind(attachmentId)
-    .first<Attachment>();
-  if (!row) return error("Attachment not found", 404);
-
-  await env.ATTACHMENTS.delete(row.r2_key);
-  await env.DB.prepare("DELETE FROM attachments WHERE id = ?").bind(attachmentId).run();
+    .run();
+  if (result.meta.changes === 0) return error("Attachment not found", 404);
 
   return json({ id: attachmentId, deleted: true });
 }

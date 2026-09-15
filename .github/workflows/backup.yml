@@ -1,0 +1,59 @@
+name: Nightly backup
+
+# A second, independent copy of the data alongside Cloudflare D1's own
+# 30-day point-in-time recovery (Time Travel) — this one lives in the repo
+# itself on a dedicated `backups` branch, so it survives even an account-
+# level Cloudflare incident, not just an accidental bad write. Free: no new
+# service or account needed, just this repo's own free GitHub Actions
+# minutes.
+on:
+  schedule:
+    # 03:15 UTC daily — a few minutes after the existing D1 cron
+    # (wrangler.toml's expiry-check job, 03:00 UTC) so they don't overlap.
+    - cron: "15 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out (or create) the backups branch
+        run: |
+          git fetch origin backups || true
+          if git show-ref --verify --quiet refs/remotes/origin/backups; then
+            git checkout backups
+          else
+            git checkout --orphan backups
+            git rm -rf . > /dev/null 2>&1 || true
+          fi
+
+      - name: Fetch today's backup dump
+        env:
+          BACKUP_TOKEN: ${{ secrets.BACKUP_TOKEN }}
+          WORKER_URL: ${{ secrets.WORKER_URL }}
+        run: |
+          mkdir -p backups
+          date="$(date -u +%Y-%m-%d)"
+          curl -sS -f -H "Authorization: Bearer ${BACKUP_TOKEN}" \
+            "${WORKER_URL}/admin/api/backup" -o "backups/backup-${date}.json"
+
+      - name: Prune old backups (keep the most recent 90)
+        run: |
+          cd backups
+          ls -1t backup-*.json 2>/dev/null | tail -n +91 | xargs -r rm --
+
+      - name: Commit and push
+        run: |
+          git config user.name "backup-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add backups/
+          if git diff --cached --quiet; then
+            echo "No changes to back up today"
+            exit 0
+          fi
+          git commit -m "Nightly backup $(date -u +%Y-%m-%d)"
+          git push origin HEAD:backups

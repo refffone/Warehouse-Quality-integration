@@ -585,7 +585,7 @@ async function getImportEntries(
     ),
     fetchByIds<Attachment & { receipt_line_id: number }>(
       env,
-      (ph) => `SELECT * FROM attachments WHERE receipt_line_id IN (${ph}) ORDER BY uploaded_at DESC`,
+      (ph) => `SELECT * FROM attachments WHERE receipt_line_id IN (${ph}) AND deleted_at IS NULL ORDER BY uploaded_at DESC`,
       lineIds
     ),
   ]);

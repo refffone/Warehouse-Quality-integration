@@ -1472,13 +1472,81 @@ receipt card shows the *correct* supplier code, not just the material/
 batch details it originally checked — without that assertion, a test
 could click the wrong supplier silently and still pass.
 
-## 23. Next Step
+## 23. Hardening pass: concurrency, backup, and a retest link
+
+A gap analysis of the receiving/QC flow (scoped to "incoming log + testing
+log" — no stock/export tracking) turned up a handful of real correctness
+and data-safety issues, fixed together:
+
+- **`decideBatch`/`finalizeWeight` race conditions.** Both read the
+  batch's status, checked it, then wrote — with no guard on the write
+  itself. Two near-simultaneous requests (a double-click, two reviewers)
+  could both pass the check before either write landed, silently
+  overwriting one decision with another (and, for `decideBatch`,
+  generating a second, unused internal batch number in the process).
+  Fixed by adding `AND status = 'pending'` / `AND qty_actual_weighed IS
+  NULL` to the UPDATE itself and checking `meta.changes` — a losing
+  request now gets a clean 409 instead of silently losing.
+- **No bound validation on a partial decision.** `qty_accepted +
+  qty_rejected` could exceed `qty_as_received`, or go negative, with
+  nothing stopping it. Now rejected with a 400 before the write.
+- **`createReceipt` wasn't transactional.** It looped `.prepare().run()`
+  per line/batch — a failure partway through a multi-line, multi-batch
+  receipt could leave an orphaned partial one. Rewritten as one atomic
+  `env.DB.batch()`. Getting this right took two attempts: the first used
+  `last_insert_rowid()` to chain each batch to its line, which works for
+  a line's *first* batch but silently drifts to point at the *previous
+  batch's own row* once a line has a second batch — caught by the
+  existing E2E suite (`warehouse-receiving.spec.ts`'s several-batches and
+  multiple-materials tests both started 500ing). Fixed with a correlated
+  subquery instead (`SELECT id FROM receipt_lines WHERE receipt_id = ?
+  ORDER BY id DESC LIMIT 1`), which stays correct regardless of how many
+  batches get inserted in between.
+- **Login brute-forcing.** Neither the portal login nor the admin Basic
+  Auth had any attempt limit. Migration 0018 adds `login_attempts`
+  (keyed by username for the portal, by IP for the admin panel, which has
+  no username of its own) — 5 failures locks that key out for 15 minutes.
+- **Hard-deleted attachments were unrecoverable** (R2 has no built-in
+  object versioning, unlike S3 — a claim worth double-checking before
+  trusting a "just enable versioning" suggestion for R2 specifically).
+  `deleteAttachment` now soft-deletes (migration 0019's `deleted_at`),
+  keeping the R2 object and DB row.
+- **Retest link.** A rejected batch's resend/rework had no connection
+  back to the original — migration 0020 adds
+  `receipt_batches.retest_of_batch_id`. The Receive wizard shows a
+  "Retest of" picker (searching that material's rejected batches) once a
+  material code is selected; the receipt card resolves it into the
+  original's real batch number after the card renders (a rare field, not
+  worth joining into every list load).
+- **Nightly backup to GitHub.** Cloudflare D1 already keeps 30 days of
+  point-in-time recovery automatically, but that's a single point of
+  failure tied to one Cloudflare account. `src/routes/backup.ts` exports
+  every table as JSON (redacting password hashes and push keys) behind
+  its own `BACKUP_TOKEN` bearer secret — deliberately separate from
+  `ADMIN_PASSWORD`, so a leaked CI secret can only ever read a dump, never
+  reach the admin panel. `.github/workflows/backup.yml` fetches it nightly
+  and commits to a dedicated `backups` branch — free, since it's just
+  this repo's own GitHub Actions minutes, and independent of Cloudflare.
+
+Explicitly out of scope for this pass (noted, not silently dropped): a
+four-eyes rule on approvals, a structured non-conformance/corrective-
+action workflow for rejections, barcode scanning for batch numbers, an
+email fallback for missed push notifications, and converting the admin
+panel from one shared password to individual accounts — that last one is
+a real auth redesign (a new login flow, not just a guard clause) rather
+than a small fix, so it's flagged for a deliberate follow-up rather than
+rushed in alongside everything else here.
+
+## 24. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
-real accounts with case-insensitive usernames (migration 0014). Two things
+real accounts with case-insensitive usernames (migration 0014). Things
 still worth following up: the Arabic translations are a best-effort
 business/QC vocabulary, not a certified translation, worth a native
-speaker's review before more staff rely on them day to day; and Web Push
-(previous section) needs the three `VAPID_*` secrets set before it does
+speaker's review before more staff rely on them day to day; Web Push
+(section 15) needs the three `VAPID_*` secrets set before it does
 anything beyond the in-app bell + polling refresh, which already work
-without them.
+without them; the nightly backup (previous section) needs `BACKUP_TOKEN`
+set as both a Worker secret and a GitHub Actions secret before it runs;
+and the deferred items listed at the end of the previous section are
+worth a deliberate look before they're needed under pressure.

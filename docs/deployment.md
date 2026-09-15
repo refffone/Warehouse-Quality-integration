@@ -218,6 +218,45 @@ Without that secret the workflow will run and fail at the deploy step
 up to step 6 above still needs doing by hand first, same as a manual
 deploy.
 
+## 7c. Nightly backup to GitHub (free, second copy of the data)
+
+Cloudflare D1 already keeps a 30-day point-in-time recovery window for
+this database automatically (Time Travel — no setup needed; see
+`wrangler d1 time-travel --help`), but that lives entirely inside your
+Cloudflare account. `.github/workflows/backup.yml` adds a second,
+independent copy: every night it fetches a full JSON export of every
+table and commits it to this repo's own `backups` branch — free, since
+it's just this repo's GitHub Actions minutes, and it survives even an
+account-level Cloudflare problem, not just an accidental bad write.
+
+Setup (two secrets, once):
+
+1. Generate a random token, e.g. `openssl rand -hex 32`.
+2. Set it as a Worker secret: `wrangler secret put BACKUP_TOKEN` (paste
+   the same value).
+3. GitHub repo → **Settings → Secrets and variables → Actions** → add
+   two repository secrets:
+   - `BACKUP_TOKEN` — the same value as step 2.
+   - `WORKER_URL` — your live Worker URL, e.g.
+     `https://qualitycheck.<your-subdomain>.workers.dev`.
+
+That's it — the workflow runs on its own from then on (also runnable
+manually via the Actions tab). It keeps the most recent 90 days of
+backup files and prunes older ones automatically.
+
+**Restoring from it:** `git fetch origin backups && git show
+backups:backups/backup-YYYY-MM-DD.json` gives you that day's full JSON
+dump (every table, as a `{table_name: [rows...]}` object) — good enough
+to inspect or hand-restore specific rows. For restoring the *whole*
+database to a point in time, Cloudflare's own Time Travel (30-day
+window) is the faster path; this GitHub copy is the fallback for
+anything older than that, or if the Cloudflare account itself is the
+problem.
+
+`BACKUP_TOKEN` is deliberately separate from `ADMIN_PASSWORD` — it can
+only ever read this one export endpoint, so a leaked CI secret can't
+reach the admin panel.
+
 ## 8. Create the first accounts
 
 There's no public sign-up — every Warehouse/Quality account is created

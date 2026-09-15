@@ -1,9 +1,12 @@
 import {
+  checkNotLocked,
+  clearFailedAttempts,
   clearSessionCookieHeader,
   createSession,
   destroySession,
   getSession,
   getSessionToken,
+  recordFailedAttempt,
   sessionCookieHeader,
   verifyPassword,
 } from "../auth";
@@ -29,6 +32,16 @@ export async function login(request: Request, env: Env): Promise<Response> {
   if (role !== "warehouse" && role !== "quality") return error("Invalid portal", 400);
   if (!username || !password) return error("Username and password are required", 400);
 
+  // Keyed by username (not IP) — a handful of known accounts, so the
+  // threat this guards against is someone repeatedly guessing one
+  // person's password, not a broad distributed attack.
+  const lockKey = `portal:${username.toLowerCase()}`;
+  const lockStatus = await checkNotLocked(env, lockKey);
+  if (lockStatus.locked) {
+    const minutes = Math.ceil((lockStatus.retryAfterSeconds ?? 0) / 60);
+    return error(`Too many failed attempts — try again in ${minutes} minute(s)`, 429);
+  }
+
   const user = await env.DB.prepare(
     "SELECT id, password_hash, password_salt, role, display_name, active FROM users WHERE username = ?"
   )
@@ -39,10 +52,16 @@ export async function login(request: Request, env: Env): Promise<Response> {
   // is wrong, the account is deactivated, or it belongs to the other
   // portal — never confirm which, so a guesser learns nothing.
   const genericError = "Invalid username or password";
-  if (!user || !user.active) return error(genericError, 401);
-  if (user.role !== role) return error(genericError, 401);
+  if (!user || !user.active || user.role !== role) {
+    await recordFailedAttempt(env, lockKey);
+    return error(genericError, 401);
+  }
   const ok = await verifyPassword(password, user.password_salt, user.password_hash);
-  if (!ok) return error(genericError, 401);
+  if (!ok) {
+    await recordFailedAttempt(env, lockKey);
+    return error(genericError, 401);
+  }
+  await clearFailedAttempts(env, lockKey);
 
   const { token, maxAge } = await createSession(env, user.id, user.role);
   const res = json({ role: user.role, name: user.display_name });

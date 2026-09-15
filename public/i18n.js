@@ -155,6 +155,9 @@ const translations = {
     "receive.totalBagsLabel": "Total bags",
     "receive.totalUnitsCountLabel": "Total units",
     "receive.supplierBatchNo": "Supplier batch #",
+    "receive.retestOf": "Retest of (optional)",
+    "receive.retestNone": "— Not a retest —",
+    "receive.retestRejectedOn": "rejected {date}",
     "receive.addSupplierBatch": "+ Add supplier batch",
     "receive.receiptRegistered": "Receipt #{id} registered",
 
@@ -185,6 +188,8 @@ const translations = {
     "line.unitIbc": "IBC",
     "line.unitPallets": "pallets",
     "line.exp": "exp {date}",
+    "line.retestOfFallback": "Retest of batch #{id}",
+    "line.retestOf": "Retest of {batchNo} (receipt #{receiptId})",
     "line.awaitingDecision": "awaiting decision",
     "line.withQuality": "with Quality",
 
@@ -545,6 +550,9 @@ const translations = {
     "receive.totalBagsLabel": "إجمالي عدد الأكياس",
     "receive.totalUnitsCountLabel": "إجمالي عدد الوحدات",
     "receive.supplierBatchNo": "رقم دفعة المورّد",
+    "receive.retestOf": "إعادة اختبار لـ (اختياري)",
+    "receive.retestNone": "— ليست إعادة اختبار —",
+    "receive.retestRejectedOn": "رُفضت في {date}",
     "receive.addSupplierBatch": "+ إضافة دفعة مورّد",
     "receive.receiptRegistered": "تم تسجيل الإيصال رقم {id}",
 
@@ -575,6 +583,8 @@ const translations = {
     "line.unitIbc": "IBC",
     "line.unitPallets": "بالتات",
     "line.exp": "تنتهي في {date}",
+    "line.retestOfFallback": "إعادة اختبار للدفعة رقم {id}",
+    "line.retestOf": "إعادة اختبار لـ {batchNo} (الإيصال رقم {receiptId})",
     "line.awaitingDecision": "بانتظار القرار",
     "line.withQuality": "لدى الجودة",
 

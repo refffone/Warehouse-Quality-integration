@@ -48,6 +48,53 @@ export async function verifyPassword(password: string, salt: string, expectedHas
   return timingSafeEqual(actual, expectedHash);
 }
 
+// ---------------------------------------------------------------- login rate limiting
+
+const MAX_FAILED_ATTEMPTS = 5;
+const LOCKOUT_MINUTES = 15;
+
+export interface LockStatus {
+  locked: boolean;
+  retryAfterSeconds?: number;
+}
+
+/** Checks (without recording anything) whether `key` is currently locked
+ *  out from too many recent failed attempts. */
+export async function checkNotLocked(env: Env, key: string): Promise<LockStatus> {
+  const row = await env.DB.prepare("SELECT locked_until FROM login_attempts WHERE key = ?")
+    .bind(key)
+    .first<{ locked_until: string | null }>();
+  if (!row?.locked_until) return { locked: false };
+  const lockedUntilMs = new Date(row.locked_until).getTime();
+  const remainingMs = lockedUntilMs - Date.now();
+  if (remainingMs > 0) return { locked: true, retryAfterSeconds: Math.ceil(remainingMs / 1000) };
+  return { locked: false };
+}
+
+/** Records one failed attempt for `key`, locking it out once
+ *  MAX_FAILED_ATTEMPTS is reached. */
+export async function recordFailedAttempt(env: Env, key: string): Promise<void> {
+  const row = await env.DB.prepare("SELECT failed_count FROM login_attempts WHERE key = ?")
+    .bind(key)
+    .first<{ failed_count: number }>();
+  const failedCount = (row?.failed_count ?? 0) + 1;
+  const lockedUntil =
+    failedCount >= MAX_FAILED_ATTEMPTS ? new Date(Date.now() + LOCKOUT_MINUTES * 60_000).toISOString() : null;
+  await env.DB.prepare(
+    `INSERT INTO login_attempts (key, failed_count, locked_until, last_attempt_at)
+     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(key) DO UPDATE SET failed_count = excluded.failed_count, locked_until = excluded.locked_until, last_attempt_at = CURRENT_TIMESTAMP`
+  )
+    .bind(key, failedCount, lockedUntil)
+    .run();
+}
+
+/** Clears any tracked failures for `key` — called after a successful login
+ *  so a real account holder isn't stuck behind an old lockout window. */
+export async function clearFailedAttempts(env: Env, key: string): Promise<void> {
+  await env.DB.prepare("DELETE FROM login_attempts WHERE key = ?").bind(key).run();
+}
+
 // ---------------------------------------------------------------- sessions
 
 const SESSION_COOKIE = "wq_session";

@@ -6,6 +6,12 @@ export interface Env {
   /** Owner-only Admin panel password (Worker secret, never in source —
    *  see src/routes/admin.ts). Local dev value lives in .dev.vars. */
   ADMIN_PASSWORD: string;
+  /** Bearer token for the nightly backup export (see
+   *  src/routes/backup.ts and .github/workflows/backup.yml) — deliberately
+   *  separate from ADMIN_PASSWORD so a leaked CI secret can only ever read
+   *  a data dump, never reach the admin panel. Worker secret, never in
+   *  source. Backup is unreachable (401) when unset. */
+  BACKUP_TOKEN?: string;
   /** VAPID keypair for Web Push (see src/push.ts). Worker secrets — never
    *  in source. Push is silently skipped when these are unset, so local
    *  dev works fine without them. */
@@ -193,6 +199,9 @@ export interface ReceiptBatch {
   decided_at: string | null;
   tested_by: string | null;
   tested_at: string | null;
+  /** Set when this batch is a resend/rework of a specific earlier
+   *  rejected batch — e.g. the supplier fixed and resent the material. */
+  retest_of_batch_id: number | null;
 }
 
 export interface NewReceiptBatchInput {
@@ -201,6 +210,7 @@ export interface NewReceiptBatchInput {
   container_qty?: number | null;
   per_unit_weight?: number | null;
   qty_secondary?: number | null;
+  retest_of_batch_id?: number | null;
 }
 
 export interface NewReceiptLineInput {
@@ -320,6 +330,7 @@ export interface Attachment {
   r2_key: string;
   uploaded_by: string;
   uploaded_at: string;
+  deleted_at: string | null;
 }
 
 export interface DossierName {

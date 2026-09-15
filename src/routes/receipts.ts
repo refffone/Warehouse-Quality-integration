@@ -90,6 +90,33 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
     if (!material) return error(`Unknown material code: ${line.material_code}`, 404);
   }
 
+  for (const line of input.lines) {
+    if (!line.batches?.length) return error("Each line needs at least one batch");
+  }
+
+  // A batch flagged as a retest must point at a real, previously
+  // *rejected* batch — checked up front for the same reason material
+  // codes are: a bad id here shouldn't surface as a raw FK-constraint 500
+  // partway through the insert below.
+  for (const line of input.lines) {
+    for (const batch of line.batches) {
+      if (batch.retest_of_batch_id == null) continue;
+      const original = await env.DB.prepare("SELECT id, status FROM receipt_batches WHERE id = ?")
+        .bind(batch.retest_of_batch_id)
+        .first<{ id: number; status: string }>();
+      if (!original) return error(`Unknown batch to retest: #${batch.retest_of_batch_id}`, 404);
+      if (original.status !== "rejected") {
+        return error(`Batch #${batch.retest_of_batch_id} isn't rejected, so it isn't something to retest`, 400);
+      }
+    }
+  }
+
+  // The receipt itself is inserted first, on its own — a single INSERT
+  // essentially can't "partially" fail, and doing it this way gives every
+  // line/batch insert below a real numeric receipt_id to bind, instead of
+  // relying on last_insert_rowid() across multiple lines (which would
+  // break: by the second line, last_insert_rowid() would point at the
+  // first line's last *batch* row, not the receipt).
   const receiptRow = await env.DB.prepare(
     `INSERT INTO receipts (type, received_at, supplier_id, created_by, status, sample_sent_by)
      VALUES (?, ?, ?, ?, 'pending', ?)
@@ -99,15 +126,22 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
     .first<{ id: number }>();
   const receiptId = receiptRow!.id;
 
+  // Every line and batch insert lands in one atomic D1 batch (a single
+  // transaction — all commit together or none do) instead of the previous
+  // sequential .run() calls, so a failure partway through a multi-line,
+  // multi-batch receipt can no longer leave an orphaned partial receipt
+  // behind. Each batch insert looks its line's id up via a correlated
+  // subquery ("the most recently inserted line for this receipt") rather
+  // than last_insert_rowid() — that connection-level value drifts to point
+  // at whichever *batch* row was just inserted once a line has more than
+  // one batch, silently misattaching every batch after the first.
+  const statements = [];
   for (const line of input.lines) {
-    if (!line.batches?.length) return error("Each line needs at least one batch");
-
-    const lineRow = await env.DB.prepare(
-      `INSERT INTO receipt_lines (receipt_id, material_code, material_name_text, unit, packaging_type, qty_basis)
-       VALUES (?, ?, ?, ?, ?, ?)
-       RETURNING id`
-    )
-      .bind(
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO receipt_lines (receipt_id, material_code, material_name_text, unit, packaging_type, qty_basis)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).bind(
         receiptId,
         line.material_code ?? null,
         line.material_name_text,
@@ -115,25 +149,25 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
         line.packaging_type ?? null,
         line.qty_basis ?? null
       )
-      .first<{ id: number }>();
-    const lineId = lineRow!.id;
-
+    );
     for (const batch of line.batches) {
-      await env.DB.prepare(
-        `INSERT INTO receipt_batches (receipt_line_id, supplier_batch_no, qty_as_received, container_qty, per_unit_weight, qty_secondary, status)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending')`
-      )
-        .bind(
-          lineId,
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO receipt_batches (receipt_line_id, supplier_batch_no, qty_as_received, container_qty, per_unit_weight, qty_secondary, retest_of_batch_id, status)
+           VALUES ((SELECT id FROM receipt_lines WHERE receipt_id = ? ORDER BY id DESC LIMIT 1), ?, ?, ?, ?, ?, ?, 'pending')`
+        ).bind(
+          receiptId,
           batch.supplier_batch_no,
           batch.qty_as_received,
           batch.container_qty ?? null,
           batch.per_unit_weight ?? null,
-          batch.qty_secondary ?? null
+          batch.qty_secondary ?? null,
+          batch.retest_of_batch_id ?? null
         )
-        .run();
+      );
     }
   }
+  await env.DB.batch(statements);
 
   await notify(
     env,
@@ -144,6 +178,38 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
   );
 
   return json({ id: receiptId }, 201);
+}
+
+/** Rejected batches for one material code, for the Receive wizard's
+ *  "Retest of" picker — only rejected batches make sense to retest. */
+export async function listRejectedBatchesForMaterial(env: Env, materialCode: string): Promise<Response> {
+  const rows = await env.DB.prepare(
+    `SELECT rb.id, rb.supplier_batch_no, rb.internal_batch_no, rb.decided_at, rl.receipt_id
+     FROM receipt_batches rb
+     JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
+     WHERE rl.material_code = ? AND rb.status = 'rejected'
+     ORDER BY rb.decided_at DESC
+     LIMIT 50`
+  )
+    .bind(materialCode)
+    .all();
+  return json(rows.results ?? []);
+}
+
+/** Resolves a batch id into just enough human-readable info to show on a
+ *  "Retest of ..." label — called once per batch that actually has a
+ *  retest link set (rare), rather than joined into every list load. */
+export async function getBatchSummary(env: Env, batchId: number): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT rb.id, rb.supplier_batch_no, rb.internal_batch_no, rl.receipt_id, rl.material_name_text
+     FROM receipt_batches rb
+     JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
+     WHERE rb.id = ?`
+  )
+    .bind(batchId)
+    .first();
+  if (!row) return error("Batch not found", 404);
+  return json(row);
 }
 
 /** `type` is how Quality's two tabs (Imports / Samples) are implemented —
@@ -378,15 +444,34 @@ export async function decideBatch(
     qtyAccepted = input.qty_accepted ?? batch.qty_as_received;
     qtyRejected = input.qty_rejected ?? Math.max(0, batch.qty_as_received - qtyAccepted);
 
+    // A typo'd or made-up split shouldn't silently corrupt the batch's own
+    // received quantity — accepted/rejected can't be negative, and can't
+    // add up to more than what was actually received.
+    if (qtyAccepted < 0 || qtyRejected < 0) {
+      return error("Accepted and rejected quantities can't be negative", 400);
+    }
+    if (qtyAccepted + qtyRejected > batch.qty_as_received) {
+      return error(
+        `Accepted (${qtyAccepted}) + rejected (${qtyRejected}) can't exceed the received quantity (${batch.qty_as_received})`,
+        400
+      );
+    }
+
     internalBatchNo =
       input.internal_batch_no ?? (await generateInternalBatchNo(env, supplier!, new Date()));
   }
 
-  await env.DB.prepare(
+  // Guarding the UPDATE itself with "AND status = 'pending'" (not just the
+  // earlier SELECT-time check) closes a real race: two near-simultaneous
+  // decide requests on the same batch could otherwise both pass the check
+  // above before either UPDATE lands, and the second would silently
+  // overwrite the first's decision (including generating a second, unused
+  // internal batch number).
+  const result = await env.DB.prepare(
     `UPDATE receipt_batches
      SET status = ?, qty_accepted = ?, qty_rejected = ?, internal_batch_no = ?,
          expiry_date = ?, production_date = ?, coa_remarks = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
-     WHERE id = ?`
+     WHERE id = ? AND status = 'pending'`
   )
     .bind(
       status,
@@ -400,6 +485,9 @@ export async function decideBatch(
       batchId
     )
     .run();
+  if (result.meta.changes === 0) {
+    return error("This batch was just decided by someone else — refresh and check its current status", 409);
+  }
 
   await env.DB.prepare(
     `UPDATE receipts SET status = 'decided' WHERE id = ? AND NOT EXISTS (
@@ -502,9 +590,16 @@ export async function finalizeWeight(request: Request, env: Env, batchId: number
     return error("Actual weight has already been recorded for this batch", 409);
   }
 
-  await env.DB.prepare("UPDATE receipt_batches SET qty_actual_weighed = ? WHERE id = ?")
+  // Same race as decideBatch: guard the UPDATE itself, not just the read
+  // above, so two near-simultaneous finalize requests can't both "win".
+  const result = await env.DB.prepare(
+    "UPDATE receipt_batches SET qty_actual_weighed = ? WHERE id = ? AND qty_actual_weighed IS NULL"
+  )
     .bind(input.qty_actual_weighed, batchId)
     .run();
+  if (result.meta.changes === 0) {
+    return error("Actual weight was just recorded by someone else — refresh and check its current value", 409);
+  }
 
   return json({ id: batchId, qty_actual_weighed: input.qty_actual_weighed });
 }

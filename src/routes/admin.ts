@@ -1,4 +1,4 @@
-import { hashPassword } from "../auth";
+import { checkNotLocked, clearFailedAttempts, hashPassword, recordFailedAttempt } from "../auth";
 import { error, json } from "../http";
 import type { Env, Role } from "../types";
 
@@ -35,16 +35,30 @@ function parseBasicAuth(request: Request): { user: string; pass: string } | null
   }
 }
 
-/** Returns a 401 challenge if the caller isn't authenticated as the owner,
- *  or null if they are — call at the top of every /admin* handler. */
-export function requireAdminAuth(request: Request, env: Env): Response | null {
+/** Returns a 401/429 response if the caller isn't authenticated as the
+ *  owner (or is currently locked out from too many wrong guesses), or null
+ *  if they're in — call at the top of every /admin* handler. Basic Auth
+ *  has no username of its own, so lockout is keyed by requester IP rather
+ *  than by account. */
+export async function requireAdminAuth(request: Request, env: Env): Promise<Response | null> {
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  const lockKey = `admin:${ip}`;
+
+  const lockStatus = await checkNotLocked(env, lockKey);
+  if (lockStatus.locked) {
+    const minutes = Math.ceil((lockStatus.retryAfterSeconds ?? 0) / 60);
+    return new Response(`Too many failed attempts — try again in ${minutes} minute(s)`, { status: 429 });
+  }
+
   const creds = parseBasicAuth(request);
   if (!creds || !env.ADMIN_PASSWORD || creds.pass !== env.ADMIN_PASSWORD) {
+    await recordFailedAttempt(env, lockKey);
     return new Response("Admin access required", {
       status: 401,
       headers: { "WWW-Authenticate": 'Basic realm="Admin"' },
     });
   }
+  await clearFailedAttempts(env, lockKey);
   return null;
 }
 
@@ -67,13 +81,13 @@ async function setServiceStatus(env: Env, status: ServiceStatus): Promise<void> 
 }
 
 export async function adminGetStatus(request: Request, env: Env): Promise<Response> {
-  const authError = requireAdminAuth(request, env);
+  const authError = await requireAdminAuth(request, env);
   if (authError) return authError;
   return json({ status: await getServiceStatus(env) });
 }
 
 export async function adminSetStatus(request: Request, env: Env): Promise<Response> {
-  const authError = requireAdminAuth(request, env);
+  const authError = await requireAdminAuth(request, env);
   if (authError) return authError;
   const input = await request.json<{ status?: string }>();
   if (input.status !== "active" && input.status !== "suspended") {
@@ -119,13 +133,13 @@ async function setSetting(env: Env, key: string, value: string): Promise<void> {
 }
 
 export async function adminGetBranding(request: Request, env: Env): Promise<Response> {
-  const authError = requireAdminAuth(request, env);
+  const authError = await requireAdminAuth(request, env);
   if (authError) return authError;
   return json(await getBranding(env));
 }
 
 export async function adminSetBranding(request: Request, env: Env): Promise<Response> {
-  const authError = requireAdminAuth(request, env);
+  const authError = await requireAdminAuth(request, env);
   if (authError) return authError;
   const input = await request.json<{ company_name?: string; logo_data_url?: string | null }>();
 
@@ -165,7 +179,7 @@ interface UserListRow {
 }
 
 export async function adminListUsers(request: Request, env: Env): Promise<Response> {
-  const authError = requireAdminAuth(request, env);
+  const authError = await requireAdminAuth(request, env);
   if (authError) return authError;
   const rows = await env.DB.prepare(
     "SELECT id, username, role, display_name, active, created_at FROM users ORDER BY role, username"
@@ -174,7 +188,7 @@ export async function adminListUsers(request: Request, env: Env): Promise<Respon
 }
 
 export async function adminCreateUser(request: Request, env: Env): Promise<Response> {
-  const authError = requireAdminAuth(request, env);
+  const authError = await requireAdminAuth(request, env);
   if (authError) return authError;
   const input = await request.json<{ username?: string; password?: string; role?: string; display_name?: string }>();
   const username = (input.username ?? "").trim();
@@ -199,7 +213,7 @@ export async function adminCreateUser(request: Request, env: Env): Promise<Respo
 }
 
 export async function adminResetPassword(request: Request, env: Env, userId: number): Promise<Response> {
-  const authError = requireAdminAuth(request, env);
+  const authError = await requireAdminAuth(request, env);
   if (authError) return authError;
   const input = await request.json<{ password?: string }>();
   const password = input.password ?? "";
@@ -213,7 +227,7 @@ export async function adminResetPassword(request: Request, env: Env, userId: num
 }
 
 export async function adminSetUserActive(request: Request, env: Env, userId: number, active: boolean): Promise<Response> {
-  const authError = requireAdminAuth(request, env);
+  const authError = await requireAdminAuth(request, env);
   if (authError) return authError;
   const res = await env.DB.prepare("UPDATE users SET active = ? WHERE id = ?")
     .bind(active ? 1 : 0, userId)
@@ -259,8 +273,8 @@ const SUSPENDED_HTML = `<!doctype html>
 /** Owner-only control page: current status + a toggle. Deliberately not
  *  part of the app's own frontend (no shared JS/CSS, no role system) —
  *  this must keep working even if the rest of the app is broken. */
-export function adminPage(request: Request, env: Env): Response {
-  const authError = requireAdminAuth(request, env);
+export async function adminPage(request: Request, env: Env): Promise<Response> {
+  const authError = await requireAdminAuth(request, env);
   if (authError) return authError;
   return new Response(ADMIN_HTML, { headers: { "content-type": "text/html;charset=utf-8" } });
 }

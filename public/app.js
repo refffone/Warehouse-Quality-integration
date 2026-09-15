@@ -600,9 +600,34 @@ async function renderReceiveStep2() {
     // submit time) — selecting one also prefills the name below, if the
     // warehouse user hasn't already typed something of their own.
     const nameInput = item.querySelector('[data-f="material_name_text"]');
+    // Rejected batches for whichever material code is currently selected —
+    // powers each batch row's "Retest of" picker below. Only meaningful
+    // once a real material code is chosen (rejected-batches are looked up
+    // by code), so an uncoded line just has nothing to offer here.
+    let rejectedBatches = [];
+    function populateRetestOptions(row) {
+      const select = row.querySelector('[data-f="retest_of_batch_id"]');
+      const field = row.querySelector("[data-field-retest]");
+      const previousValue = select.value;
+      field.hidden = rejectedBatches.length === 0;
+      select.innerHTML =
+        `<option value="">${esc(t("receive.retestNone"))}</option>` +
+        rejectedBatches
+          .map(
+            (b) =>
+              `<option value="${b.id}">${esc(b.supplier_batch_no)} (${esc(t("receive.retestRejectedOn", { date: fmtDate(b.decided_at) }))})</option>`
+          )
+          .join("");
+      if (rejectedBatches.some((b) => String(b.id) === previousValue)) select.value = previousValue;
+    }
+    async function refreshRejectedBatches(code) {
+      rejectedBatches = code ? await api.get(`/api/materials/${encodeURIComponent(code)}/rejected-batches`) : [];
+      batchesEl.querySelectorAll(".batch-item").forEach(populateRetestOptions);
+    }
     const codeInput = wireCodeSearch(codeInputId, materials, (code) => {
       const material = materials.find((m) => m.code === code);
       if (material && !nameInput.value.trim()) nameInput.value = material.name;
+      refreshRejectedBatches(code);
     });
     codeInput.dataset.f = "material_code";
 
@@ -672,10 +697,15 @@ async function renderReceiveStep2() {
         <div class="field" style="max-width:150px" data-field-qty-secondary><label data-qty-secondary-label></label><input type="number" step="any" data-f="qty_secondary" /></div>
         <div class="field" style="max-width:150px" data-field-per-unit-weight><label>${esc(t("receive.perUnitWeight"))}</label><input type="number" step="any" data-f="per_unit_weight" /></div>
         <div class="field" style="max-width:150px"><label data-total-label></label><input type="number" step="any" data-f="qty_as_received" required /></div>
+        <div class="field" style="max-width:220px" data-field-retest hidden>
+          <label>${esc(t("receive.retestOf"))}</label>
+          <select data-f="retest_of_batch_id"></select>
+        </div>
         <div style="align-self:flex-end"><button type="button" class="btn ghost sm" data-remove-batch>✕</button></div>
       `;
       row.querySelector("[data-remove-batch]").addEventListener("click", () => row.remove());
       batchesEl.appendChild(row);
+      populateRetestOptions(row);
 
       const containerQtyInput = row.querySelector('[data-f="container_qty"]');
       const secondaryInput = row.querySelector('[data-f="qty_secondary"]');
@@ -739,13 +769,17 @@ async function renderReceiveStep2() {
         const raw = b.querySelector(`[data-f="${f}"]`).value;
         return raw === "" ? null : Number(raw);
       };
-      const batches = [...item.querySelectorAll(".batch-item")].map((b) => ({
-        supplier_batch_no: b.querySelector('[data-f="supplier_batch_no"]').value,
-        qty_as_received: Number(b.querySelector('[data-f="qty_as_received"]').value),
-        container_qty: numOrNull(b, "[data-field-container-qty]", "container_qty"),
-        qty_secondary: numOrNull(b, "[data-field-qty-secondary]", "qty_secondary"),
-        per_unit_weight: numOrNull(b, "[data-field-per-unit-weight]", "per_unit_weight"),
-      }));
+      const batches = [...item.querySelectorAll(".batch-item")].map((b) => {
+        const retestValue = b.querySelector('[data-f="retest_of_batch_id"]').value;
+        return {
+          supplier_batch_no: b.querySelector('[data-f="supplier_batch_no"]').value,
+          qty_as_received: Number(b.querySelector('[data-f="qty_as_received"]').value),
+          container_qty: numOrNull(b, "[data-field-container-qty]", "container_qty"),
+          qty_secondary: numOrNull(b, "[data-field-qty-secondary]", "qty_secondary"),
+          per_unit_weight: numOrNull(b, "[data-field-per-unit-weight]", "per_unit_weight"),
+          retest_of_batch_id: retestValue ? Number(retestValue) : null,
+        };
+      });
       return {
         material_code: get("material_code") || null,
         material_name_text: get("material_name_text"),
@@ -1159,6 +1193,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
           <div><bdi class="batch-id">${esc(b.supplier_batch_no)}</bdi> <span class="batch-qty">${qtyLineWithExtras}</span></div>
           <div class="hstack">
             ${b.expiry_date ? `<span class="small muted">${esc(t("line.exp", { date: fmtDate(b.expiry_date) }))}</span>` : ""}
+            ${b.retest_of_batch_id != null ? `<span class="small muted" data-retest-of="${b.retest_of_batch_id}">${esc(t("line.retestOfFallback", { id: b.retest_of_batch_id }))}</span>` : ""}
             ${batchStatusInline(b)}
             ${resultsBadge ? `<button class="btn sm ghost" data-view-results="${b.id}">${resultsBadge}</button>` : ""}
             ${actions.join("")}
@@ -1358,6 +1393,29 @@ async function renderReceiptsInto(container, { role, type, bucket, query }) {
   for (const r of matches) {
     container.appendChild(buildReceiptCard(r, { role, type }));
   }
+  enrichRetestLabels(container);
+}
+
+/** A batch marked as a retest only carries the raw id of the batch it
+ *  retests (renderLineDetail renders a plain "batch #<id>" fallback
+ *  immediately) — this resolves each into its real supplier batch number
+ *  once the card is already on screen, since it's a rare field and not
+ *  worth holding up the whole list render for. */
+async function enrichRetestLabels(container) {
+  const spans = [...container.querySelectorAll("[data-retest-of]")];
+  const uniqueIds = [...new Set(spans.map((el) => el.dataset.retestOf))];
+  await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        const summary = await api.get(`/api/batches/${id}/summary`);
+        const label = t("line.retestOf", { batchNo: summary.supplier_batch_no, receiptId: summary.receipt_id });
+        spans.filter((el) => el.dataset.retestOf === id).forEach((el) => (el.textContent = label));
+      } catch {
+        // Leave the "batch #<id>" fallback in place — not worth surfacing
+        // an error toast for a purely informational label.
+      }
+    })
+  );
 }
 
 // ---------------------------------------------------------------- decide / finalize / associate modals

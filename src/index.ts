@@ -13,6 +13,7 @@ import {
   getServiceStatus,
   suspendedResponse,
 } from "./routes/admin";
+import { exportBackup } from "./routes/backup";
 import { login, logout, me } from "./routes/auth";
 import { landingPage, loginPage, requireAppSession } from "./routes/pages";
 import {
@@ -51,10 +52,12 @@ import {
   createReceipt,
   decideBatch,
   finalizeWeight,
+  getBatchSummary,
   getReceipt,
   getTodoCount,
   listReceipts,
   listReceiptsDetailed,
+  listRejectedBatchesForMaterial,
   recordTestResults,
   setSampleSender,
 } from "./routes/receipts";
@@ -90,6 +93,9 @@ export default {
       // is suspended (the owner still needs to be able to turn it back
       // on). Everything else checks the kill switch first.
       if (pathname === "/admin" && method === "GET") return adminPage(request, env);
+      // Its own bearer-token auth (BACKUP_TOKEN), not ADMIN_PASSWORD or a
+      // session — a nightly CI job calls this unattended.
+      if (pathname === "/admin/api/backup" && method === "GET") return exportBackup(request, env);
       if (pathname === "/admin/api/status" && method === "GET") return adminGetStatus(request, env);
       if (pathname === "/admin/api/status" && method === "POST") return adminSetStatus(request, env);
       if (pathname === "/admin/api/branding" && method === "GET") return adminGetBranding(request, env);
@@ -166,6 +172,11 @@ export default {
       if (pathname === "/api/materials/import" && method === "POST") {
         if (role !== "quality") return error("Only quality can create/edit material codes", 403);
         return importMaterials(request, env, url.searchParams.get("commit") === "true");
+      }
+      const rejectedBatchesMatch = pathname.match(/^\/api\/materials\/([^/]+)\/rejected-batches$/);
+      if (rejectedBatchesMatch && method === "GET") {
+        if (!role) return error("Not signed in", 401);
+        return listRejectedBatchesForMaterial(env, decodeURIComponent(rejectedBatchesMatch[1]));
       }
       if (pathname === "/api/material-types" && method === "GET") {
         if (role !== "quality") return error("Material types are a quality-only view", 403);
@@ -307,6 +318,12 @@ export default {
       if (sampleSenderMatch && method === "PATCH") {
         if (!role) return error("Not signed in", 401);
         return setSampleSender(request, env, role, Number(sampleSenderMatch[1]));
+      }
+
+      const batchSummaryMatch = pathname.match(/^\/api\/batches\/(\d+)\/summary$/);
+      if (batchSummaryMatch && method === "GET") {
+        if (!role) return error("Not signed in", 401);
+        return getBatchSummary(env, Number(batchSummaryMatch[1]));
       }
 
       // Test Incomings — Quality's third core function.
