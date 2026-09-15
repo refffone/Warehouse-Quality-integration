@@ -554,18 +554,25 @@ export async function getMaterialDossierData(env: Env, materialCode: string) {
 async function getImportEntries(
   env: Env,
   materialCode: string,
-  prefix: "RMF" | "RMS"
+  kind: "RMF" | "RMS"
 ): Promise<DossierImportEntry[]> {
+  // Classify by the real import_scenario column, not by pattern-matching
+  // the generated import_code's text prefix — the RMS/RMF code format is
+  // user-configurable (Codes > Numbering Schemes), so a code no longer
+  // starting with the literal text "RMS"/"RMF" used to make a real repeat
+  // import silently vanish from this count, even though import_scenario
+  // was still classified correctly all along.
+  const scenarioFilter = kind === "RMS" ? "rl.import_scenario = 'repeat'" : "rl.import_scenario IN ('new_material', 'new_supplier', 'new_name_variant')";
   const lines = await env.DB.prepare(
     `SELECT rl.id as receipt_line_id, rl.import_code, rl.import_scenario, rl.material_name_text,
             r.id as receipt_id, r.received_at, s.id as supplier_id, s.code as supplier_code, s.name as supplier_name
      FROM receipt_lines rl
      JOIN receipts r ON r.id = rl.receipt_id
      JOIN suppliers s ON s.id = r.supplier_id
-     WHERE rl.material_code = ? AND rl.import_code LIKE ?
+     WHERE rl.material_code = ? AND ${scenarioFilter}
      ORDER BY r.received_at DESC`
   )
-    .bind(materialCode, `${prefix}%`)
+    .bind(materialCode)
     .all<Omit<DossierImportEntry, "batches" | "attachments">>();
 
   const lineRows = lines.results ?? [];
