@@ -24,6 +24,28 @@ jobs:
       # Fails the deploy on a type error instead of shipping broken code.
       - run: npm run typecheck
 
+      # This step didn't exist before commit bf2a6e0 — the deploy pipeline
+      # only ever pushed code, never the schema it depends on, so every
+      # migration since 0015 sat applied locally (this session's own dev
+      # testing) but never on production. That's a real outage class: a
+      # migration merges and typechecks clean, the deploy "succeeds," and
+      # the first request touching the new column/table 500s in prod.
+      # `wrangler d1 execute --file` isn't idempotent (CREATE TABLE/ALTER
+      # TABLE both error if already applied), so each file's failure is
+      # logged but doesn't fail the job — the already-applied migrations
+      # (0001-0014 as of this fix) are expected to error every run. A
+      # genuinely new, broken migration's error will show here too; watch
+      # this step's log after adding one, don't assume silence means success.
+      - name: Apply D1 migrations (remote)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          for f in migrations/*.sql; do
+            echo "::group::$f"
+            npx wrangler d1 execute warehouse-quality-db --remote --file="$f" || echo "($f may already be applied — see output above)"
+            echo "::endgroup::"
+          done
+
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
