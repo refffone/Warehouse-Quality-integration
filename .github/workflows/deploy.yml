@@ -39,6 +39,12 @@ jobs:
       - name: Apply D1 migrations (remote)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # A scoped custom token still can't call Cloudflare's /memberships
+          # endpoint, which wrangler otherwise uses to auto-resolve the
+          # account — that call needs broader access than the token grants.
+          # Setting the account id directly skips that lookup. Not a
+          # secret (it's visible in the dashboard URL), so it's fine inline.
+          CLOUDFLARE_ACCOUNT_ID: b7bd5f5cc893306ff1bcc06daed8dc74
         run: |
           for f in migrations/*.sql; do
             echo "::group::$f"
@@ -50,3 +56,4 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: b7bd5f5cc893306ff1bcc06daed8dc74
