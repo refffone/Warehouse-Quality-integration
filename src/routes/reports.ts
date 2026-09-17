@@ -1,6 +1,7 @@
 import { getBranding } from "./admin";
 import { getMaterialDossierData } from "./masterdata";
-import { getActiveSpec } from "./specs";
+import { formatLimit } from "../../public/specLimits.js";
+import { getActiveSpec, listSpecsForMaterial } from "./specs";
 import { error } from "../http";
 import { ReportPdf, buildReportXlsx, reportFilename, reportResponse, type ReportColumn } from "../reportBuilders";
 import type { Env } from "../types";
@@ -94,7 +95,7 @@ export async function exportReceivedLog(request: Request, env: Env): Promise<Res
 
   const shaped = (rows.results ?? []).map((r) => ({
     ...r,
-    received_at: fmtDateTime(r.received_at as string),
+    received_at: receivedLabel(r.received_at as string, fmtDateTime),
     material: r.material_code ? `${r.material} (${r.material_code})` : `${r.material} (uncoded)`,
     qty: `${r.qty} ${r.unit}`,
   }));
@@ -144,7 +145,7 @@ export async function exportTodos(request: Request, env: Env): Promise<Response>
 
   const shaped = (rows.results ?? []).map((r) => ({
     ...r,
-    received_at: fmtDateTime(r.received_at as string),
+    received_at: receivedLabel(r.received_at as string, fmtDateTime),
     material: r.material_code ? `${r.material} (${r.material_code})` : "Uncoded — needs Associate a Code",
     task: r.material_code ? (Number(r.test_count) > 0 ? "Decision" : "Testing") : "Coding",
   }));
@@ -174,7 +175,9 @@ export async function exportHistory(request: Request, env: Env): Promise<Respons
 
   const rows = await env.DB.prepare(
     `SELECT r.id as receipt_id, r.type, COALESCE(m.name, rl.material_name_text) as material, rl.material_code,
-            rb.supplier_batch_no as batch_no, rb.status, rb.internal_batch_no, rl.import_code, rb.decided_at
+            rb.supplier_batch_no as batch_no,
+            CASE WHEN rb.concession = 1 THEN 'approved (concession)' ELSE rb.status END as status,
+            rb.internal_batch_no, rl.import_code, rb.decided_at
      FROM receipts r
      JOIN receipt_lines rl ON rl.receipt_id = r.id
      JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
@@ -202,6 +205,11 @@ export async function exportHistory(request: Request, env: Env): Promise<Respons
   );
 }
 
+/** Access records with no date carry a 1970 placeholder (receipts.received_at_unknown). */
+function receivedLabel(value: string, format: (v: string) => string): string {
+  return String(value ?? "").startsWith("1970-01-01") ? "date unknown" : format(value);
+}
+
 // ---------------------------------------------------------------- Quality: code spec
 
 export async function exportCodeSpec(request: Request, env: Env, materialCode: string): Promise<Response> {
@@ -216,60 +224,70 @@ export async function exportCodeSpec(request: Request, env: Env, materialCode: s
   }>();
   if (!material) return error("Material not found", 404);
 
-  const spec = await getActiveSpec(env, materialCode);
+  // Only a real sample spec counts here — getActiveSpec's fallback to the
+  // supply spec is for testing, not for printing the same sheet twice.
+  const supplySpec = await getActiveSpec(env, materialCode, "supply");
+  const sampleCandidate = await getActiveSpec(env, materialCode, "sample");
+  const sampleSpec = sampleCandidate?.scope === "sample" ? sampleCandidate : null;
   const branding = await getBranding(env);
   const subtitle = `${material.name} (${material.code})`;
   const columns: ReportColumn[] = [
-    { key: "parameter_name", header: "Parameter", width: 130 },
-    { key: "method", header: "Method", width: 90 },
-    { key: "spec", header: "Spec", width: 110 },
-    { key: "unit", header: "Unit", width: 60 },
+    { key: "parameter_name", header: "Test", width: 90 },
+    { key: "method", header: "Method", width: 65 },
+    { key: "limit", header: "Limit", width: 110 },
+    { key: "conditions", header: "Conditions", width: 105 },
+    { key: "remarks", header: "Remarks", width: 70 },
   ];
-  const rows = (spec?.parameters ?? []).map((p) => ({
-    parameter_name: p.parameter_name,
-    method: p.method ?? "—",
-    spec: paramSpecText(p),
-    unit: p.unit ?? "—",
-  }));
+  // Named variants (e.g. per manufacturer) print after the normal specs.
+  const variantSpecs = (await listSpecsForMaterial(env, materialCode)).filter((s) => s.status === "active" && s.variant);
+  const sections = [
+    { label: "Supply specification", spec: supplySpec },
+    { label: "Sample specification", spec: sampleSpec },
+    ...variantSpecs.map((v) => ({
+      label: `${v.scope === "sample" ? "Sample" : "Supply"} specification — ${v.variant}`,
+      spec: v as typeof supplySpec,
+    })),
+  ].filter((s) => s.spec);
+  const describe = (spec: NonNullable<typeof supplySpec>): Array<[string, string]> => [
+    ["Version", String(spec.version)],
+    ["Title", spec.title],
+    ["Created by", `${spec.created_by}, ${fmtDate(spec.created_at)}`],
+    ...(spec.change_reason ? ([["Reason for change", spec.change_reason]] as Array<[string, string]>) : []),
+    ...(spec.notes ? ([["Notes", spec.notes]] as Array<[string, string]>) : []),
+  ];
+  const rowsFor = (spec: NonNullable<typeof supplySpec>) =>
+    spec.parameters.map((p) => ({
+      parameter_name: p.parameter_name,
+      method: p.method ?? "—",
+      limit: formatLimit(p),
+      conditions: p.conditions ?? "—",
+      remarks: p.remarks ?? "—",
+    }));
 
   if (format === "pdf") {
     const pdf = await ReportPdf.create(branding, "Specification Sheet", subtitle);
-    if (!spec) {
-      pdf.emptyNote("No active specification for this material.");
-    } else {
-      pdf.keyValue([
-        ["Version", String(spec.version)],
-        ["Title", spec.title],
-        ["Created by", spec.created_by],
-        ["Created", fmtDate(spec.created_at)],
-      ]);
-      pdf.table(columns, rows);
+    if (!sections.length) pdf.emptyNote("No active specification for this material.");
+    for (const { label, spec } of sections) {
+      pdf.heading(label);
+      pdf.keyValue(describe(spec!));
+      pdf.table(columns, rowsFor(spec!));
     }
     return reportResponse(await pdf.save(), reportFilename(`spec-${materialCode}`, "pdf"), "pdf");
   }
 
-  const xlsx = buildReportXlsx(branding, "Specification Sheet", subtitle, [
-    spec
-      ? {
-          keyValue: [
-            ["Version", String(spec.version)],
-            ["Title", spec.title],
-            ["Created by", spec.created_by],
-            ["Created", fmtDate(spec.created_at)],
-          ],
-          table: { columns, rows },
-        }
-      : { keyValue: [["Status", "No active specification for this material."]] },
-  ]);
+  const xlsx = buildReportXlsx(
+    branding,
+    "Specification Sheet",
+    subtitle,
+    sections.length
+      ? sections.map(({ label, spec }) => ({
+          heading: label,
+          keyValue: describe(spec!),
+          table: { columns, rows: rowsFor(spec!) },
+        }))
+      : [{ keyValue: [["Status", "No active specification for this material."]] }]
+  );
   return reportResponse(xlsx, reportFilename(`spec-${materialCode}`, "xlsx"), "xlsx");
-}
-
-function paramSpecText(p: { param_type: string; min_value: number | null; max_value: number | null; unit: string | null }): string {
-  if (p.param_type === "numeric_range" || p.param_type === "time_range") {
-    return `${p.min_value ?? ""}–${p.max_value ?? ""}${p.unit ? ` ${p.unit}` : ""}`;
-  }
-  if (p.param_type === "pass_fail") return "Pass/Fail";
-  return p.unit ?? "—";
 }
 
 // ---------------------------------------------------------------- Quality: master data for a code
@@ -306,6 +324,7 @@ export async function exportMasterData(request: Request, env: Env, materialCode:
     { key: "batches", header: "Batches", width: 200 },
   ];
   const rmfRows = dossier.rmf.map(formatImportEntryRow);
+  const rmpRows = dossier.rmp.map(formatImportEntryRow);
   const rmsRows = dossier.rms.map(formatImportEntryRow);
 
   const overall = dossier.metrics.overall;
@@ -325,9 +344,11 @@ export async function exportMasterData(request: Request, env: Env, materialCode:
     pdf.keyValue(overallKv);
     pdf.heading("By Supplier");
     pdf.table(supplierColumns, supplierRows);
-    pdf.heading("RMF — Novel Imports");
+    pdf.heading("RMF — First Supplies");
     pdf.table(importColumns, rmfRows);
-    pdf.heading("RMS — Repeat Imports");
+    pdf.heading("RMP — Regular Supplies");
+    pdf.table(importColumns, rmpRows);
+    pdf.heading("RMS — Samples");
     pdf.table(importColumns, rmsRows);
     return reportResponse(await pdf.save(), reportFilename(`master-data-${materialCode}`, "pdf"), "pdf");
   }
@@ -335,24 +356,32 @@ export async function exportMasterData(request: Request, env: Env, materialCode:
   const xlsx = buildReportXlsx(branding, "Material Dossier", subtitle, [
     { heading: "Overview", keyValue: overallKv },
     { heading: "By Supplier", table: { columns: supplierColumns, rows: supplierRows } },
-    { heading: "RMF — Novel Imports", table: { columns: importColumns, rows: rmfRows } },
-    { heading: "RMS — Repeat Imports", table: { columns: importColumns, rows: rmsRows } },
+    { heading: "RMF — First Supplies", table: { columns: importColumns, rows: rmfRows } },
+    { heading: "RMP — Regular Supplies", table: { columns: importColumns, rows: rmpRows } },
+    { heading: "RMS — Samples", table: { columns: importColumns, rows: rmsRows } },
   ]);
   return reportResponse(xlsx, reportFilename(`master-data-${materialCode}`, "xlsx"), "xlsx");
 }
 
 function formatImportEntryRow(entry: {
   import_code: string | null;
+  manufacturer: string | null;
+  origin: string | null;
   supplier_name: string;
   supplier_code: string;
   received_at: string;
-  batches: Array<{ supplier_batch_no: string; status: string; internal_batch_no: string | null }>;
+  batches: Array<{ supplier_batch_no: string; status: string; internal_batch_no: string | null; concession: 0 | 1 }>;
 }) {
   return {
     import_code: entry.import_code ?? "—",
-    supplier_name: `${entry.supplier_name} (${entry.supplier_code})`,
-    received_at: fmtDate(entry.received_at),
-    batches: entry.batches.map((b) => `${b.supplier_batch_no}: ${b.status}${b.internal_batch_no ? ` (${b.internal_batch_no})` : ""}`).join("; "),
+    supplier_name: [
+      `${entry.supplier_name} (${entry.supplier_code})`,
+      [entry.manufacturer, entry.origin].filter(Boolean).join(", "),
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    received_at: receivedLabel(entry.received_at, fmtDate),
+    batches: entry.batches.map((b) => `${b.supplier_batch_no}: ${b.concession ? "approved (concession)" : b.status}${b.internal_batch_no ? ` (${b.internal_batch_no})` : ""}`).join("; "),
   };
 }
 

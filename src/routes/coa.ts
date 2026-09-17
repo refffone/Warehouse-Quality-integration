@@ -1,6 +1,8 @@
+import { formatLimit } from "../../public/specLimits.js";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import * as XLSX from "xlsx";
 import { error } from "../http";
+import { pdfText } from "../reportBuilders";
 import { getBatchTestResults, type TestResultWithParameter } from "./receipts";
 import type { Env } from "../types";
 
@@ -27,7 +29,10 @@ interface CoaData {
 
 async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
   const row = await env.DB.prepare(
-    `SELECT rb.supplier_batch_no, rb.internal_batch_no, rb.status, rb.qty_as_received, rb.qty_accepted,
+    `SELECT rb.supplier_batch_no, rb.internal_batch_no, rb.qty_as_received, rb.qty_accepted,
+            CASE WHEN rb.status = 'approved' AND rb.concession = 1
+                 THEN 'approved with concession: ' || COALESCE(rb.concession_reason, '') || ' (authorized by ' || COALESCE(rb.concession_approved_by, '') || ')'
+                 ELSE rb.status END AS status,
             rb.qty_actual_weighed, rb.expiry_date, rb.production_date, rb.decided_by, rb.decided_at,
             rb.tested_by, rb.tested_at,
             rl.unit, rl.material_code, r.id as receipt_id, s.name as supplier_name,
@@ -86,11 +91,19 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
 }
 
 function specText(r: TestResultWithParameter): string {
-  if (r.param_type === "numeric_range" || r.param_type === "time_range") {
-    return `${r.min_value ?? ""}–${r.max_value ?? ""}${r.unit ? ` ${r.unit}` : ""}`;
-  }
-  if (r.param_type === "pass_fail") return "Pass/Fail";
-  return r.unit ?? "";
+  const limit = formatLimit(r);
+  return r.conditions ? `${limit} (${r.conditions})` : limit;
+}
+
+function resultText(r: TestResultWithParameter): string {
+  if (!r.result) return "NOT JUDGED";
+  return r.override_reason ? `${r.result.toUpperCase()}*` : r.result.toUpperCase();
+}
+
+function overrideNotes(results: TestResultWithParameter[]): string[] {
+  return results
+    .filter((r) => r.override_reason)
+    .map((r) => `* ${r.parameter_name}: recorded as ${r.result} (automatic check: ${r.auto_result}) — ${r.override_reason}`);
 }
 
 function quantityLine(data: CoaData): string {
@@ -116,7 +129,7 @@ async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
       page = doc.addPage(pageSize);
       y = top;
     }
-    page.drawText(text, { x: left, y, size, font: opts.f ?? font, color: opts.color ?? rgb(0.13, 0.12, 0.18) });
+    page.drawText(pdfText(text), { x: left, y, size, font: opts.f ?? font, color: opts.color ?? rgb(0.13, 0.12, 0.18) });
     y -= size + 7;
   };
 
@@ -139,7 +152,7 @@ async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
   const cols = [left, left + 150, left + 260, left + 360, left + 450];
   const headerRow = () => {
     ["Parameter", "Method", "Spec", "Measured", "Result"].forEach((h, i) =>
-      page.drawText(h, { x: cols[i], y, size: 9, font: bold, color: rgb(0.42, 0.41, 0.5) })
+      page.drawText(pdfText(h), { x: cols[i], y, size: 9, font: bold, color: rgb(0.42, 0.41, 0.5) })
     );
     y -= 14;
   };
@@ -151,17 +164,22 @@ async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
       y = top;
       headerRow();
     }
-    const resultColor = r.result === "fail" ? rgb(0.71, 0.25, 0.42) : rgb(0.25, 0.48, 0.43);
-    page.drawText(r.parameter_name, { x: cols[0], y, size: 9, font });
-    page.drawText(r.method ?? "—", { x: cols[1], y, size: 9, font });
-    page.drawText(specText(r), { x: cols[2], y, size: 9, font });
-    page.drawText(r.measured_value ?? "—", { x: cols[3], y, size: 9, font });
-    page.drawText(r.result.toUpperCase(), { x: cols[4], y, size: 9, font: bold, color: resultColor });
+    const resultColor =
+      r.result === "fail" ? rgb(0.71, 0.25, 0.42) : r.result === "pass" ? rgb(0.25, 0.48, 0.43) : rgb(0.45, 0.43, 0.5);
+    page.drawText(pdfText(r.parameter_name), { x: cols[0], y, size: 9, font });
+    page.drawText(pdfText(r.method ?? "—"), { x: cols[1], y, size: 9, font });
+    page.drawText(pdfText(specText(r)), { x: cols[2], y, size: 9, font });
+    page.drawText(pdfText(r.measured_value ?? "—"), { x: cols[3], y, size: 9, font });
+    page.drawText(pdfText(resultText(r)), { x: cols[4], y, size: 9, font: bold, color: resultColor });
     y -= 14;
   }
 
   if (data.results.length === 0) {
-    page.drawText("No test results recorded.", { x: left, y, size: 9, font, color: rgb(0.45, 0.43, 0.5) });
+    page.drawText(pdfText("No test results recorded."), { x: left, y, size: 9, font, color: rgb(0.45, 0.43, 0.5) });
+  }
+  for (const note of overrideNotes(data.results)) {
+    y -= 4;
+    line(note, { size: 8, color: rgb(0.45, 0.43, 0.5) });
   }
 
   return doc.save();
@@ -183,7 +201,8 @@ function buildCoaXlsx(data: CoaData): Uint8Array {
     ["Decided by", `${data.decidedBy ?? ""} on ${data.decidedAt ?? ""}`],
     [],
     ["Parameter", "Method", "Spec", "Measured Value", "Result"],
-    ...data.results.map((r) => [r.parameter_name, r.method ?? "", specText(r), r.measured_value ?? "", r.result.toUpperCase()]),
+    ...data.results.map((r) => [r.parameter_name, r.method ?? "", specText(r), r.measured_value ?? "", resultText(r)]),
+    ...overrideNotes(data.results).map((n) => [n]),
   ];
 
   const wb = XLSX.utils.book_new();

@@ -1,6 +1,7 @@
 import { api, getRememberedName, rememberName, uploadFile } from "./api.js";
 import { t, getLang, setLang, applyDocumentDirection } from "./i18n.js";
 import { navIcon, icons } from "./icons.js";
+import { LIMIT_TYPES, autoJudge, formatLimit, formatSeconds, parseClock, validateLimit } from "./specLimits.js";
 
 // ---------------------------------------------------------------- session
 //
@@ -140,6 +141,12 @@ let subtypesCache = null;
 async function getSubtypes(force = false) {
   if (!subtypesCache || force) subtypesCache = await api.get("/api/material-subtypes");
   return subtypesCache;
+}
+
+let testCatalogCache = null;
+async function getTestCatalog(force = false) {
+  if (!testCatalogCache || force) testCatalogCache = await api.get("/api/test-catalog");
+  return testCatalogCache;
 }
 
 let functionsCache = null;
@@ -419,9 +426,11 @@ function wizardStepsHtml(current) {
 }
 
 async function viewReceive() {
+  const generation = beginView();
   const suppliers = await getSuppliers();
+  if (isStaleView(generation)) return;
   if (!receiveWizard.supplier_code && suppliers.length) receiveWizard.supplier_code = suppliers[0].code;
-  if (receiveWizard.step === 2) await renderReceiveStep2();
+  if (receiveWizard.step === 2) await renderReceiveStep2(generation);
   else renderReceiveStep1(suppliers);
 }
 
@@ -513,10 +522,11 @@ function renderReceiveStep1(suppliers) {
   });
 }
 
-async function renderReceiveStep2() {
+async function renderReceiveStep2(generation) {
   const view = document.getElementById("view");
   const w = receiveWizard;
   const materials = await getMaterials();
+  if (isStaleView(generation)) return;
   const materialNamesHtml = [...new Set(materials.map((m) => m.name))]
     .map((name) => `<option value="${esc(name)}"></option>`)
     .join("");
@@ -824,15 +834,40 @@ function batchStatusInline(b) {
   if (b.status === undefined) return `<span class="muted small">${esc(t("line.withQuality"))}</span>`; // redacted (sample, warehouse view)
   if (b.status === "pending") return `<span class="muted small">${esc(t("line.awaitingDecision"))}</span>`;
   if (b.status === "rejected") return statusPill("rejected");
-  return `${statusPill(b.status)}${b.internal_batch_no ? ` <bdi class="mono small">${esc(b.internal_batch_no)}</bdi>` : ""}`;
+  const pill = b.concession ? statusPill("concession") : statusPill(b.status);
+  return `${pill}${b.internal_batch_no ? ` <bdi class="mono small">${esc(b.internal_batch_no)}</bdi>` : ""}`;
+}
+
+/** The Access log's three kinds of record and the code pool each draws from. */
+const SUPPLY_KINDS = ["sample", "first", "regular"];
+
+function supplyKindBadge(line, role) {
+  if (!line.supply_kind && !line.import_code) return "";
+  const kindLabel = line.supply_kind ? t(`kind.${line.supply_kind}`) : "";
+  const scenario = role === "quality" && line.import_scenario ? t(`status.${line.import_scenario}`) : "";
+  const tone = line.supply_kind === "first" ? "flag" : line.supply_kind === "regular" ? "repeat" : "neutral";
+  const words = [kindLabel, scenario].filter(Boolean).map(esc).join(" · ");
+  const code = line.import_code ? `<bdi>${esc(line.import_code)}</bdi>` : "";
+  return `<span class="badge ${tone}">${code}${code && words ? " · " : ""}${words ? `<span class="badge-words">${words}</span>` : ""}</span>`;
 }
 
 function resultsSummaryBadge(results) {
   if (!results || results.length === 0) return "";
   const failed = results.filter((r) => r.result === "fail").length;
-  return failed > 0
-    ? `<span class="badge flag">${esc(t("results.failedOf", { failed, total: results.length }))}</span>`
-    : `<span class="badge repeat">${esc(t("results.passedOf", { total: results.length }))}</span>`;
+  const passed = results.filter((r) => r.result === "pass").length;
+  if (failed > 0) return `<span class="badge flag">${esc(t("results.failedOf", { failed, total: results.length }))}</span>`;
+  return `<span class="badge ${passed === results.length ? "repeat" : "neutral"}">${esc(t("results.passedOf", { passed, total: results.length }))}</span>`;
+}
+
+/** Pass / fail pill, or "not judged" for a value nobody judged (old Access results). */
+function resultPill(r, suffix = "") {
+  if (!r.result) return `<span class="status-pill neutral">${esc(t("results.notJudged"))}</span>`;
+  return `<span class="status-pill ${r.result === "fail" ? "rejected" : "approved"}">${esc(t(`status.${r.result}`))}${suffix}</span>`;
+}
+
+/** Access records with no date carry a 1970 placeholder. */
+function fmtReceived(value, format = fmtDateTime) {
+  return String(value || "").startsWith("1970-01-01") ? t("receipt.dateUnknown") : format(value);
 }
 
 function openResultsModal(results) {
@@ -842,16 +877,18 @@ function openResultsModal(results) {
       <tr>
         <td>${esc(r.parameter_name)}</td>
         <td class="small muted">${esc(r.method || "—")}</td>
+        <td class="small">${esc(paramSpecHint(r))}</td>
         <td class="mono small">${esc(r.measured_value || "—")}</td>
-        <td><span class="status-pill ${r.result === "fail" ? "rejected" : "approved"}">${esc(t(`status.${r.result}`))}</span></td>
+        <td>${resultPill(r, r.override_reason ? " *" : "")}
+          ${r.override_reason ? `<div class="small muted">${esc(overrideNote(r))}</div>` : ""}</td>
       </tr>`
     )
     .join("");
   openModal(
     esc(t("results.title")),
     `<div class="table-scroll"><table class="data-table">
-      <thead><tr><th>${esc(t("results.parameter"))}</th><th>${esc(t("results.method"))}</th><th>${esc(t("results.measured"))}</th><th>${esc(t("results.result"))}</th></tr></thead>
-      <tbody>${rows || `<tr><td colspan="4" class="muted">${esc(t("results.none"))}</td></tr>`}</tbody>
+      <thead><tr><th>${esc(t("results.parameter"))}</th><th>${esc(t("results.method"))}</th><th>${esc(t("results.limit"))}</th><th>${esc(t("results.measured"))}</th><th>${esc(t("results.result"))}</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="5" class="muted">${esc(t("results.none"))}</td></tr>`}</tbody>
     </table></div>`
   );
 }
@@ -1134,7 +1171,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
     ? `<span class="badge neutral">${esc(t(PACKAGING_LABEL_KEYS[line.packaging_type]))}</span>`
     : "";
   const specHtml = spec
-    ? `<span class="spec-chip">${esc(t("line.specVersion", {
+    ? `<span class="spec-chip">${esc(t(spec.scope === "sample" ? "line.sampleSpecVersion" : "line.specVersion", {
         version: spec.version,
         params: spec.parameters.map((p) => `${p.parameter_name}${p.unit ? " (" + p.unit + ")" : ""}`).join(", ") || t("line.noParameters"),
       }))}</span>`
@@ -1142,12 +1179,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       ? `<span class="spec-chip muted">${esc(t("line.noActiveSpec"))}</span>`
       : "";
 
-  const importBadge =
-    line.import_code
-      ? `<span class="badge ${line.import_scenario === "repeat" ? "repeat" : "flag"}">${esc(line.import_code)}${
-          role === "quality" && line.import_scenario ? " · " + esc(t(`status.${line.import_scenario}`)) : ""
-        }</span>`
-      : "";
+  const importBadge = supplyKindBadge(line, role);
 
   const batchesHtml = line.batches
     .map((b) => {
@@ -1194,10 +1226,12 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
           <div class="hstack">
             ${b.expiry_date ? `<span class="small muted">${esc(t("line.exp", { date: fmtDate(b.expiry_date) }))}</span>` : ""}
             ${b.retest_of_batch_id != null ? `<span class="small muted" data-retest-of="${b.retest_of_batch_id}">${esc(t("line.retestOfFallback", { id: b.retest_of_batch_id }))}</span>` : ""}
+            ${b.addition_no ? `<span class="small muted">${esc(t("line.additionNo", { no: "" }))}<bdi class="mono">${esc(b.addition_no)}</bdi></span>` : ""}
             ${batchStatusInline(b)}
             ${resultsBadge ? `<button class="btn sm ghost" data-view-results="${b.id}">${resultsBadge}</button>` : ""}
             ${actions.join("")}
           </div>
+          ${b.concession ? `<div class="small muted" style="flex-basis:100%">${esc(t("line.concessionNote", { reason: b.concession_reason || "—", name: b.concession_approved_by || "—" }))}</div>` : ""}
         </div>`;
     })
     .join("");
@@ -1214,52 +1248,69 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
           ${importBadge}
           ${specHtml}
           ${role === "quality" && !line.material_code ? `<button class="btn sm ghost" data-associate="${line.id}">${esc(t("line.associateACode"))}</button>` : ""}
+          ${role === "quality" ? `<button class="btn sm ghost" data-classify="${line.id}">${esc(t("line.classify"))}</button>` : ""}
+          ${role === "quality" ? `<button class="btn sm ghost" data-product-info="${line.id}">${esc(t("line.productInfo"))}</button>` : ""}
         </div>
       </div>
+      ${role === "quality" ? productInfoHtml(line) : ""}
       ${batchesHtml}
     </div>`;
 }
 
-/** True if any field of this receipt (across its lines/batches) matches
- *  the search text: Receipt #, Material Code, Supplier batch#, Internal
- *  batch#, or Status (receipt- or batch-level). */
-function receiptMatchesQuery(receipt, query) {
-  if (!query) return true;
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  const idMatch = String(receipt.id).includes(q) || `#${receipt.id}`.includes(q);
-  if (idMatch) return true;
-  if ((receipt.status || "").toLowerCase().includes(q)) return true;
-  for (const line of receipt.lines) {
-    if ((line.material_code || "").toLowerCase().includes(q)) return true;
-    for (const b of line.batches) {
-      if ((b.supplier_batch_no || "").toLowerCase().includes(q)) return true;
-      if ((b.internal_batch_no || "").toLowerCase().includes(q)) return true;
-      if ((b.status || "").toLowerCase().includes(q)) return true;
-    }
-  }
-  return false;
+/** Quality's notes on the product that arrived: manufacturer, origin and
+ *  description. Only ever rendered for Quality (the server doesn't send
+ *  them to Warehouse either). */
+function productInfoHtml(entry) {
+  const source = [entry.manufacturer, entry.origin].filter(Boolean);
+  if (!source.length && !entry.product_description) return "";
+  return `
+    <div class="small muted" style="margin:2px 0 6px">
+      ${source.length ? `<div>${bdi(source.join(" · "))}</div>` : ""}
+      ${entry.product_description ? `<div dir="auto" style="white-space:pre-line">${esc(entry.product_description)}</div>` : ""}
+    </div>`;
 }
 
-/** True while an import receipt still has an approved/partial batch that
- *  hasn't been weighed yet — Quality may be fully "decided," but that's
- *  still a to-do for Warehouse. */
-function receiptNeedsWeighIn(receipt) {
-  return receipt.lines.some((line) =>
-    line.batches.some((b) => (b.status === "approved" || b.status === "partial") && b.qty_actual_weighed == null)
+function openProductInfoModal(line, onDone) {
+  openModal(
+    esc(t("productInfo.title")),
+    `<form class="form-grid" id="product-info-form">
+      <div class="small muted">${bdi(line.material_name_text)}${line.import_code ? ` · <bdi class="mono">${esc(line.import_code)}</bdi>` : ""}</div>
+      <div class="field-row">
+        <div class="field"><label>${esc(t("productInfo.manufacturer"))}</label><input name="manufacturer" value="${esc(line.manufacturer || "")}" /></div>
+        <div class="field"><label>${esc(t("productInfo.origin"))}</label><input name="origin" value="${esc(line.origin || "")}" /></div>
+      </div>
+      <div class="field"><label>${esc(t("productInfo.description"))}</label><textarea name="product_description" rows="4" dir="auto">${esc(line.product_description || "")}</textarea></div>
+      <div class="small muted">${esc(t("productInfo.qualityOnly"))}</div>
+      <button type="submit" class="btn primary">${esc(t("common.save"))}</button>
+    </form>`
   );
+  document.getElementById("product-info-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await api.patch(`/api/receipt-lines/${line.id}/product-info`, {
+        manufacturer: fd.get("manufacturer"),
+        origin: fd.get("origin"),
+        product_description: fd.get("product_description"),
+      });
+      toast(t("productInfo.saved"));
+      closeModal();
+      onDone();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
 }
 
-async function fetchReceiptsBucket({ role, type, bucket }) {
-  const full = await api.get(`/api/receipts/detailed?${new URLSearchParams({ type })}`);
-  return full.filter((r) => {
-    const decidedByQuality = r.status === "decided";
-    // Warehouse's own to-do (weighing an approved batch) can outlive
-    // Quality's decision, so "decided" alone isn't enough to file it
-    // under History for them.
-    const stillOpen = role === "warehouse" ? !decidedByQuality || receiptNeedsWeighIn(r) : !decidedByQuality;
-    return bucket === "history" ? !stillOpen : stillOpen;
-  });
+const RECEIPT_PAGE_SIZE = 50;
+
+/** One page of a To Do / History list. The server decides what counts as
+ *  still open (for Warehouse that includes an approved import that hasn't
+ *  been weighed yet), searches, and pages. */
+async function fetchReceiptsBucket({ type, bucket, query, offset = 0, limit = RECEIPT_PAGE_SIZE }) {
+  const params = { type, bucket, offset: String(offset), limit: String(limit) };
+  if (query && query.trim()) params.q = query.trim();
+  return api.get(`/api/receipts/detailed?${new URLSearchParams(params)}`);
 }
 
 function buildReceiptCard(receipt, { role, type }) {
@@ -1285,7 +1336,7 @@ function buildReceiptCard(receipt, { role, type }) {
     <div class="receipt-card-top">
       <div>
         <div class="receipt-title">${esc(t("receipt.receiptNumber", { id: receipt.id }))} · ${bdiHtml(supplierName(receipt.supplier_id))}</div>
-        <div class="receipt-meta">${fmtDateTime(receipt.received_at)} · ${esc(t("receipt.loggedBy"))} ${bdi(receipt.created_by)}</div>
+        <div class="receipt-meta">${esc(fmtReceived(receipt.received_at))} · ${esc(t("receipt.loggedBy"))} ${bdi(receipt.created_by)}${receipt.legacy_ref ? ` <span class="badge neutral">${esc(t("receipt.fromAccess"))}</span>` : ""}</div>
       </div>
       <div class="hstack">
         ${role === "quality" || type !== "sample" ? statusPill(receipt.status) : ""}
@@ -1355,9 +1406,21 @@ function buildReceiptCard(receipt, { role, type }) {
       openFinalizeModal(btn.dataset.finalize, qtyBasisByBatch[btn.dataset.finalize], () => refreshCurrentView())
     )
   );
+  // classification (Quality, any time)
+  const linesById = {};
+  for (const line of receipt.lines) linesById[line.id] = line;
+  card.querySelectorAll("[data-classify]").forEach((btn) =>
+    btn.addEventListener("click", () => openClassifyModal(linesById[btn.dataset.classify], () => refreshCurrentView()))
+  );
+  card.querySelectorAll("[data-product-info]").forEach((btn) =>
+    btn.addEventListener("click", () => openProductInfoModal(linesById[btn.dataset.productInfo], () => refreshCurrentView()))
+  );
   // associate code
   card.querySelectorAll("[data-associate]").forEach((btn) =>
-    btn.addEventListener("click", () => openAssociateModal(btn.dataset.associate, () => refreshCurrentView()))
+    btn.addEventListener("click", () => {
+      const line = linesById[btn.dataset.associate];
+      openAssociateModal(btn.dataset.associate, () => refreshCurrentView(), type === "sample" ? line?.import_code : null);
+    })
   );
   // view test results (read-only)
   card.querySelectorAll("[data-view-results]").forEach((btn) =>
@@ -1371,29 +1434,53 @@ function buildReceiptCard(receipt, { role, type }) {
   return card;
 }
 
-async function renderReceiptsInto(container, { role, type, bucket, query }) {
+async function renderReceiptsInto(container, { role, type, bucket, query, state }) {
   container.innerHTML = loadingState();
   await getSuppliers();
-  const all = await fetchReceiptsBucket({ role, type, bucket });
-  const matches = all.filter((r) => receiptMatchesQuery(r, query));
+  // A refresh keeps however many pages were already open.
+  const shown = Math.max(RECEIPT_PAGE_SIZE, state?.shown || 0);
+  const page = await fetchReceiptsBucket({ type, bucket, query, limit: shown });
+  if (!container.isConnected) return;
 
-  if (all.length === 0) {
-    const key =
-      bucket === "history"
+  if (page.total === 0) {
+    const key = query && query.trim()
+      ? null
+      : bucket === "history"
         ? type === "sample" ? "bucket.noDecidedSamples" : "bucket.noDecidedImports"
         : type === "sample" ? "bucket.noPendingSamples" : "bucket.noPendingImports";
-    container.innerHTML = emptyState(icons.inbox, t(key));
+    container.innerHTML = key
+      ? emptyState(icons.inbox, t(key))
+      : emptyState(icons.search, t("bucket.noResultsFor", { query }));
     return;
   }
-  if (matches.length === 0) {
-    container.innerHTML = emptyState(icons.search, t("bucket.noResultsFor", { query }));
-    return;
-  }
+
   container.innerHTML = "";
-  for (const r of matches) {
-    container.appendChild(buildReceiptCard(r, { role, type }));
-  }
-  enrichRetestLabels(container);
+  const list = document.createElement("div");
+  const footer = document.createElement("div");
+  footer.className = "list-footer";
+  container.append(list, footer);
+  let loaded = 0;
+
+  const append = (items) => {
+    for (const r of items) list.appendChild(buildReceiptCard(r, { role, type }));
+    loaded += items.length;
+    if (state) state.shown = loaded;
+    enrichRetestLabels(list);
+    footer.innerHTML = `
+      <span class="small muted">${esc(t("bucket.showingOf", { shown: loaded, total: page.total }))}</span>
+      ${loaded < page.total ? `<button type="button" class="btn ghost sm" data-more>${esc(t("bucket.showMore"))}</button>` : ""}`;
+    footer.querySelector("[data-more]")?.addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try {
+        const next = await fetchReceiptsBucket({ type, bucket, query, offset: loaded });
+        append(next.items);
+      } catch (err) {
+        e.target.disabled = false;
+        toast(err.message, true);
+      }
+    });
+  };
+  append(page.items);
 }
 
 /** A batch marked as a retest only carries the raw id of the batch it
@@ -1420,12 +1507,24 @@ async function enrichRetestLabels(container) {
 
 // ---------------------------------------------------------------- decide / finalize / associate modals
 
+function limitLabels() {
+  return {
+    max: t("limit.max"),
+    min: t("limit.min"),
+    target: t("limit.target"),
+    asStandard: t("limit.asStandard"),
+    passFail: t("test.specHint.passFail"),
+  };
+}
+
+/** A parameter's limit as Quality reads it, with its test conditions. */
 function paramSpecHint(p) {
-  if (p.param_type === "numeric_range" || p.param_type === "time_range") {
-    return `${p.min_value ?? ""}–${p.max_value ?? ""}${p.unit ? ` ${p.unit}` : ""}`;
-  }
-  if (p.param_type === "pass_fail") return t("test.specHint.passFail");
-  return p.unit ?? "";
+  const limit = formatLimit(p, limitLabels());
+  return p.conditions ? `${limit} · ${p.conditions}` : limit;
+}
+
+function overrideNote(r) {
+  return r.override_reason ? t("results.overridden", { auto: t(`status.${r.auto_result}`), reason: r.override_reason }) : "";
 }
 
 function testResultsRecap(results) {
@@ -1438,7 +1537,7 @@ function testResultsRecap(results) {
       <tr>
         <td>${esc(r.parameter_name)}</td>
         <td class="mono small">${esc(r.measured_value || "—")}</td>
-        <td><span class="status-pill ${r.result === "fail" ? "rejected" : "approved"}">${esc(t(`status.${r.result}`))}</span></td>
+        <td title="${esc(overrideNote(r))}">${resultPill(r, r.override_reason ? " *" : "")}</td>
       </tr>`
     )
     .join("");
@@ -1468,19 +1567,21 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
   openModal(
     esc(t("test.title")),
     `<form class="form-grid" id="test-results-form">
-      <label class="small muted">${esc(t("test.headerForSpec", { title: spec.title, version: spec.version }))}</label>
+      <label class="small muted">${esc(t("test.headerForSpec", { title: spec.title, version: spec.version }))}${spec.scope === "sample" ? ` · ${esc(t("specs.scopeSample"))}` : ""}</label>
       <div class="repeatable">
         ${params
           .map((p) => {
             const existing = existingByParam[p.id];
+            const isTime = p.param_type === "time_range";
             return `
           <div class="repeatable-item" data-result-row data-param-id="${p.id}">
             <div class="field-row">
               <div class="field" style="flex:2">
                 <label>${esc(p.parameter_name)}${p.method ? ` <span class="muted">(${esc(p.method)})</span>` : ""}</label>
-                <div class="small muted">${esc(t("test.spec", { hint: paramSpecHint(p) }))}</div>
+                <div class="small muted">${esc(t("test.spec", { hint: "{hint}" })).replace("{hint}", bdi(paramSpecHint(p)))}</div>
+                ${p.remarks ? `<div class="small muted">${esc(p.remarks)}</div>` : ""}
               </div>
-              <div class="field"><label>${esc(t("test.measuredValue"))}</label><input type="text" data-f="measured_value" value="${esc(existing?.measured_value || "")}" /></div>
+              <div class="field"><label>${esc(t("test.measuredValue"))}</label><input type="text" data-f="measured_value" value="${esc(existing?.measured_value || "")}" ${isTime ? `placeholder="${esc(t("test.timeHint"))}"` : ""} /></div>
               <div class="field" style="max-width:120px"><label>${esc(t("test.result"))}</label>
                 <select data-f="result">
                   <option value="">—</option>
@@ -1488,6 +1589,11 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
                   <option value="fail" ${existing?.result === "fail" ? "selected" : ""}>${esc(t("test.fail"))}</option>
                 </select>
               </div>
+            </div>
+            <div class="small" data-auto-hint></div>
+            <div class="field" data-override-field hidden>
+              <label>${esc(t("test.overrideReason"))}</label>
+              <input type="text" data-f="override_reason" value="${esc(existing?.override_reason || "")}" />
             </div>
           </div>`;
           })
@@ -1498,18 +1604,54 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
     </form>`
   );
 
+  const paramsById = {};
+  for (const p of params) paramsById[p.id] = p;
+
+  // The app judges numeric and time limits as soon as a value is typed and
+  // picks the result; choosing the other result asks for a reason.
+  const rows = [...document.querySelectorAll("[data-result-row]")];
+  for (const row of rows) {
+    const p = paramsById[row.dataset.paramId];
+    const measuredInput = row.querySelector('[data-f="measured_value"]');
+    const resultSelect = row.querySelector('[data-f="result"]');
+    const hint = row.querySelector("[data-auto-hint]");
+    const overrideField = row.querySelector("[data-override-field]");
+    const sync = (fromMeasured) => {
+      const auto = autoJudge(p, measuredInput.value);
+      if (fromMeasured && auto) resultSelect.value = auto;
+      hint.textContent = auto ? t(auto === "pass" ? "test.autoPass" : "test.autoFail") : "";
+      hint.className = `small ${auto === "fail" ? "text-bad" : "muted"}`;
+      overrideField.hidden = !(auto && resultSelect.value && resultSelect.value !== auto);
+      row.dataset.auto = auto || "";
+    };
+    measuredInput.addEventListener("input", () => sync(true));
+    resultSelect.addEventListener("change", () => sync(false));
+    sync(false);
+  }
+
   document.getElementById("test-results-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     rememberName(fd.get("tested_by"));
 
-    const results = [...document.querySelectorAll("[data-result-row]")]
-      .map((row) => ({
+    const results = [];
+    for (const row of rows) {
+      const selected = row.querySelector('[data-f="result"]').value;
+      const measured = row.querySelector('[data-f="measured_value"]').value.trim();
+      const result = selected === "pass" || selected === "fail" ? selected : null;
+      if (!result && !measured) continue;
+      const overridden = Boolean(result && row.dataset.auto && row.dataset.auto !== result);
+      const reason = row.querySelector('[data-f="override_reason"]').value.trim();
+      if (overridden && !reason) {
+        return toast(t("test.overrideNeeded", { name: paramsById[row.dataset.paramId].parameter_name }), true);
+      }
+      results.push({
         spec_parameter_id: Number(row.dataset.paramId),
-        measured_value: row.querySelector('[data-f="measured_value"]').value || null,
-        result: row.querySelector('[data-f="result"]').value,
-      }))
-      .filter((r) => r.result === "pass" || r.result === "fail");
+        measured_value: measured || null,
+        result,
+        override_reason: overridden ? reason : null,
+      });
+    }
     if (!results.length) return toast(t("test.enterAtLeastOne"), true);
 
     try {
@@ -1523,6 +1665,7 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
   });
 }
 
+
 async function openDecideModal(batchId, results, onDone) {
   const resultsHtml = testResultsRecap(results);
 
@@ -1533,9 +1676,14 @@ async function openDecideModal(batchId, results, onDone) {
         <label>${esc(t("decide.decision"))}</label>
         <select name="decision" id="decide-decision">
           <option value="approve">${esc(t("decide.approveWhole"))}</option>
+          <option value="concession">${esc(t("decide.acceptConcession"))}</option>
           <option value="partial">${esc(t("decide.approvePartial"))}</option>
           <option value="reject">${esc(t("decide.reject"))}</option>
         </select>
+      </div>
+      <div class="field-row" id="decide-concession-row" hidden>
+        <div class="field" style="flex:2"><label>${esc(t("decide.concessionReason"))}</label><input type="text" name="concession_reason" /></div>
+        <div class="field"><label>${esc(t("decide.concessionApprovedBy"))}</label><input type="text" name="concession_approved_by" /></div>
       </div>
       <div class="field-row" id="decide-qty-row" hidden>
         <div class="field"><label>${esc(t("decide.qtyAccepted"))}</label><input type="number" step="any" name="qty_accepted" /></div>
@@ -1558,11 +1706,14 @@ async function openDecideModal(batchId, results, onDone) {
 
   const decisionSelect = document.getElementById("decide-decision");
   const qtyRow = document.getElementById("decide-qty-row");
+  const concessionRow = document.getElementById("decide-concession-row");
   const approveFields = document.getElementById("decide-approve-fields");
   const approveFields2 = document.getElementById("decide-approve-fields2");
   function syncFields() {
     const v = decisionSelect.value;
     qtyRow.hidden = v !== "partial";
+    concessionRow.hidden = v !== "concession";
+    for (const input of concessionRow.querySelectorAll("input")) input.required = v === "concession";
     approveFields.hidden = v === "reject";
     approveFields2.hidden = v === "reject";
   }
@@ -1574,6 +1725,10 @@ async function openDecideModal(batchId, results, onDone) {
     const fd = new FormData(e.target);
     rememberName(fd.get("decided_by"));
     const body = { decision: fd.get("decision"), decided_by: fd.get("decided_by") };
+    if (fd.get("decision") === "concession") {
+      body.concession_reason = fd.get("concession_reason");
+      body.concession_approved_by = fd.get("concession_approved_by");
+    }
     if (fd.get("decision") === "partial") {
       body.qty_accepted = Number(fd.get("qty_accepted"));
       body.qty_rejected = Number(fd.get("qty_rejected"));
@@ -1597,12 +1752,45 @@ async function openDecideModal(batchId, results, onDone) {
   });
 }
 
+function openClassifyModal(line, onDone) {
+  openModal(
+    esc(t("classify.title")),
+    `<form class="form-grid" id="classify-form">
+      <div class="field">
+        <label>${esc(t("classify.kind"))}</label>
+        <select name="supply_kind">
+          ${SUPPLY_KINDS.map((k) => `<option value="${k}" ${line.supply_kind === k ? "selected" : ""}>${esc(t(`kind.${k}`))}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field"><label>${esc(t("classify.code"))}</label><input type="text" name="import_code" placeholder="${esc(line.import_code || "")}" /></div>
+      <div class="small muted">${esc(t("classify.receiptWide"))}</div>
+      <button type="submit" class="btn primary">${esc(t("common.save"))}</button>
+    </form>`
+  );
+  document.getElementById("classify-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    try {
+      await api.patch(`/api/receipt-lines/${line.id}/classification`, {
+        supply_kind: fd.get("supply_kind"),
+        import_code: fd.get("import_code") || null,
+      });
+      toast(t("classify.saved"));
+      closeModal();
+      onDone();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+}
+
 function openFinalizeModal(batchId, qtyBasis, onDone) {
   const isCount = qtyBasis === "count";
   openModal(
     esc(isCount ? t("finalize.titleCount") : t("finalize.title")),
     `<form class="form-grid" id="finalize-form">
       <div class="field"><label>${esc(isCount ? t("finalize.actualCount") : t("finalize.actualQty"))}</label><input type="number" step="any" name="qty_actual_weighed" required /></div>
+      <div class="field"><label>${esc(t("finalize.additionNo"))}</label><input type="text" name="addition_no" /></div>
       <button type="submit" class="btn primary">${esc(t("finalize.save"))}</button>
     </form>`
   );
@@ -1610,7 +1798,10 @@ function openFinalizeModal(batchId, qtyBasis, onDone) {
     e.preventDefault();
     const fd = new FormData(e.target);
     try {
-      await api.post(`/api/batches/${batchId}/finalize-weight`, { qty_actual_weighed: Number(fd.get("qty_actual_weighed")) });
+      await api.post(`/api/batches/${batchId}/finalize-weight`, {
+        qty_actual_weighed: Number(fd.get("qty_actual_weighed")),
+        addition_no: fd.get("addition_no") || null,
+      });
       toast(t("finalize.recorded"));
       closeModal();
       onDone();
@@ -1620,7 +1811,7 @@ function openFinalizeModal(batchId, qtyBasis, onDone) {
   });
 }
 
-async function openAssociateModal(lineId, onDone) {
+async function openAssociateModal(lineId, onDone, sampleCode = null) {
   const materials = await getMaterials();
   const types = await getTypes();
   const subtypes = await getSubtypes();
@@ -1642,7 +1833,7 @@ async function openAssociateModal(lineId, onDone) {
       </div>
       <div id="assoc-new" class="form-grid" hidden>
         <div class="field-row">
-          <div class="field"><label>${esc(t("associate.newCode"))}</label><input type="text" name="new_code" /></div>
+          <div class="field"><label>${esc(t("associate.newCode"))}</label><input type="text" name="new_code" value="${esc(sampleCode || "")}" /></div>
           <div class="field"><label>${esc(t("common.name"))}</label><input type="text" name="new_name" /></div>
           <div class="field" style="max-width:100px"><label>${esc(t("common.unit"))}</label><input type="text" name="new_unit" /></div>
         </div>
@@ -1652,6 +1843,7 @@ async function openAssociateModal(lineId, onDone) {
         </div>
         <div class="field"><label>${esc(t("associate.specTitle"))}</label><input type="text" name="spec_title" placeholder="${esc(t("associate.specTitlePlaceholder"))}" /></div>
         <p class="small muted">${esc(t("associate.specHint"))}</p>
+        ${sampleCode ? `<p class="small muted">${esc(t("associate.sampleCodeHint"))}</p>` : ""}
       </div>
       <div class="field"><label>${esc(t("associate.yourNameQuality"))}</label><input type="text" id="assoc-by" value="${esc(getRememberedName())}" /></div>
       <button type="button" class="btn primary" id="assoc-submit">${esc(t("associate.submit"))}</button>
@@ -1707,7 +1899,7 @@ async function openAssociateModal(lineId, onDone) {
 const listState = {};
 function getListState(role, bucket) {
   const key = `${role}:${bucket}`;
-  if (!listState[key]) listState[key] = { type: "import", query: "" };
+  if (!listState[key]) listState[key] = { type: "import", query: "", shown: 0 };
   return listState[key];
 }
 
@@ -1729,6 +1921,7 @@ function bucketExport(role, bucket) {
 }
 
 async function viewReceiptBucket({ role, bucket }) {
+  beginView();
   const state = getListState(role, bucket);
   const view = document.getElementById("view");
   const title = bucket === "history" ? t("bucket.historyTitle") : t("bucket.todoTitle");
@@ -1751,6 +1944,7 @@ async function viewReceiptBucket({ role, bucket }) {
   view.querySelectorAll("[data-t]").forEach((btn) =>
     btn.addEventListener("click", () => {
       state.type = btn.dataset.t;
+      state.shown = 0;
       viewReceiptBucket({ role, bucket });
     })
   );
@@ -1762,13 +1956,14 @@ async function viewReceiptBucket({ role, bucket }) {
   let debounceTimer;
   document.getElementById("receipt-search").addEventListener("input", (e) => {
     state.query = e.target.value;
+    state.shown = 0;
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
-      renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query });
-    }, 150);
+      renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query, state });
+    }, 250);
   });
 
-  await renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query });
+  await renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query, state });
 }
 
 // ---------------------------------------------------------------- view: Codes
@@ -1782,6 +1977,7 @@ const CODES_SUBTABS = [
 let codesSubtab = "types";
 
 async function viewCodes() {
+  const generation = beginView();
   const view = document.getElementById("view");
   view.innerHTML = `
     <div class="view-head"><div><h1>${esc(t("codes.title"))}</h1><p>${esc(t("codes.subtitle"))}</p></div></div>
@@ -1805,7 +2001,9 @@ async function viewCodes() {
     getFunctions(true),
     getMaterials(true),
   ]);
+  if (isStaleView(generation)) return;
   const section = document.getElementById("codes-section");
+  if (!section) return;
   if (codesSubtab === "types") renderTypesSubtypesSection(section, { types, subtypes, functions });
   else if (codesSubtab === "materials") renderMaterialsSection(section, { types, subtypes, functions, materials });
   else if (codesSubtab === "list") renderCodesListSection(section, { types, subtypes, functions, materials });
@@ -2067,6 +2265,11 @@ function renderCodesListSection(section, { types, subtypes, functions, materials
 }
 
 function renderSchemesSection(section) {
+  const pools = [
+    { kind: "RMS", heading: "codes.rmsHeading" },
+    { kind: "RMF", heading: "codes.rmfHeading" },
+    { kind: "RMP", heading: "codes.rmpHeading" },
+  ];
   section.innerHTML = `
     <div class="card">
       <h3 style="margin-bottom:12px">${esc(t("codes.schemesHeading"))}</h3>
@@ -2074,18 +2277,25 @@ function renderSchemesSection(section) {
         <b class="small">${esc(t("codes.batchPatternHeading"))}</b>
         <div class="field-row">
           <input name="supplier_code" placeholder="${esc(t("codes.supplierCodeBlankDefault"))}" />
-          <input name="pattern_template" placeholder="{supplier_code}{MMYY}{seq:04d}" required style="flex:2" />
+          <input name="pattern_template" placeholder="{supplier_abbr}{seq:04d}{YY}" required style="flex:2" />
           <button class="btn primary sm">${esc(t("common.save"))}</button>
         </div>
+        <div class="small muted">${esc(t("codes.batchPatternHelp"))}</div>
       </form>
-      <form class="form-grid" id="rmf-scheme-form" style="margin-top:10px">
-        <b class="small">${esc(t("codes.rmfHeading"))}</b>
-        <div class="field-row"><input name="pattern_template" placeholder="RMF{seq:04d}" required style="flex:1" /><button class="btn primary sm">${esc(t("common.save"))}</button></div>
-      </form>
-      <form class="form-grid" id="rms-scheme-form" style="margin-top:10px">
-        <b class="small">${esc(t("codes.rmsHeading"))}</b>
-        <div class="field-row"><input name="pattern_template" placeholder="RMS{seq:04d}" required style="flex:1" /><button class="btn primary sm">${esc(t("common.save"))}</button></div>
-      </form>
+      <div class="small muted" style="margin-top:14px">${esc(t("codes.lastUsedHelp"))}</div>
+      ${pools
+        .map(
+          (p) => `
+      <form class="form-grid" data-pool-form="${p.kind}" style="margin-top:10px">
+        <b class="small">${esc(t(p.heading))}</b>
+        <div class="field-row" style="align-items:flex-end">
+          <div class="field" style="flex:2"><label>${esc(t("codes.pattern"))}</label><input name="pattern_template" placeholder="${p.kind}{seq:04d}" required /></div>
+          <div class="field"><label>${esc(t("codes.lastUsed"))}</label><input name="current_sequence" type="number" min="0" step="1" required /></div>
+          <button class="btn primary sm">${esc(t("common.save"))}</button>
+        </div>
+      </form>`
+        )
+        .join("")}
     </div>
   `;
 
@@ -2103,88 +2313,197 @@ function renderSchemesSection(section) {
     }
   });
 
-  document.getElementById("rmf-scheme-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    try {
-      await api.put("/api/import-code-schemes/RMF", { pattern_template: new FormData(e.target).get("pattern_template") });
-      toast(t("codes.rmfSaved"));
-    } catch (err) {
-      toast(err.message, true);
-    }
-  });
-  document.getElementById("rms-scheme-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    try {
-      await api.put("/api/import-code-schemes/RMS", { pattern_template: new FormData(e.target).get("pattern_template") });
-      toast(t("codes.rmsSaved"));
-    } catch (err) {
-      toast(err.message, true);
-    }
-  });
+  api
+    .get("/api/import-code-schemes")
+    .then((rows) => {
+      for (const row of rows) {
+        const form = section.querySelector(`[data-pool-form="${row.kind}"]`);
+        if (!form) continue;
+        form.elements.pattern_template.value = row.pattern_template;
+        form.elements.current_sequence.value = row.current_sequence;
+      }
+    })
+    .catch((err) => toast(err.message, true));
+
+  section.querySelectorAll("[data-pool-form]").forEach((form) =>
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const kind = form.dataset.poolForm;
+      try {
+        await api.put(`/api/import-code-schemes/${kind}`, {
+          pattern_template: form.elements.pattern_template.value,
+          current_sequence: Number(form.elements.current_sequence.value),
+        });
+        toast(t("codes.poolSaved", { kind }));
+      } catch (err) {
+        toast(err.message, true);
+      }
+    })
+  );
 }
 
 // ---------------------------------------------------------------- view: Specifications
 
-const PARAM_TYPES = ["numeric_range", "pass_fail", "time_range", "text_value"];
-
-function paramRowHtml(p = {}) {
+/** The editable row for one spec parameter: a test from the catalog (or a
+ *  custom one), its limit type, and only the fields that type uses. */
+function paramRowHtml(p = {}, catalog = []) {
+  const type = p.param_type || "numeric_range";
+  const isTime = type === "time_range";
+  const limitValue = (v) => (v == null || v === "" ? "" : isTime ? formatSeconds(v) : v);
+  const tests = catalog.filter((c) => c.active || c.code === p.test_code);
   return `
     <div class="repeatable-item param-item">
       <div class="field-row">
-        <div class="field" style="flex:2"><label>${esc(t("results.parameter"))}</label><input data-f="parameter_name" value="${esc(p.parameter_name || "")}" required /></div>
-        <div class="field"><label>${esc(t("common.type"))}</label>
-          <select data-f="param_type">${PARAM_TYPES.map((pt) => `<option value="${pt}" ${p.param_type === pt ? "selected" : ""}>${esc(t("paramType." + pt))}</option>`).join("")}</select>
+        <div class="field" style="flex:1.3"><label>${esc(t("specs.test"))}</label>
+          <select data-f="test_code">
+            <option value="">${esc(t("specs.customTest"))}</option>
+            ${tests.map((c) => `<option value="${esc(c.code)}" ${p.test_code === c.code ? "selected" : ""}>${esc(c.name)}${c.method_code ? ` · ${esc(c.method_code)}` : ""}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field" style="flex:1.3"><label>${esc(t("results.parameter"))}</label><input data-f="parameter_name" value="${esc(p.parameter_name || "")}" required /></div>
+        <div class="field"><label>${esc(t("specs.limitType"))}</label>
+          <select data-f="param_type">${LIMIT_TYPES.map((lt) => `<option value="${lt}" ${type === lt ? "selected" : ""}>${esc(t("paramType." + lt))}</option>`).join("")}</select>
         </div>
         <div><label>&nbsp;</label><button type="button" class="btn ghost sm" data-remove-param>✕</button></div>
       </div>
       <div class="field-row">
+        <div class="field" data-show="min"><label>${esc(t("specs.paramMin"))}</label><input data-f="min_value" value="${esc(limitValue(p.min_value))}" /></div>
+        <div class="field" data-show="max"><label>${esc(t("specs.paramMax"))}</label><input data-f="max_value" value="${esc(limitValue(p.max_value))}" /></div>
+        <div class="field" data-show="target"><label>${esc(t("specs.targetValue"))}</label><input data-f="target_value" value="${esc(p.target_value ?? "")}" /></div>
+        <div class="field" data-show="tolerance"><label>${esc(t("specs.tolerance"))}</label><input data-f="tolerance" value="${esc(p.tolerance ?? "")}" placeholder="${esc(t("specs.toleranceHint"))}" /></div>
+        <div class="field" data-show="unit" style="max-width:110px"><label>${esc(t("common.unit"))}</label><input data-f="unit" value="${esc(p.unit || "")}" /></div>
+        <div class="field" data-show="expected" style="flex:2"><label data-expected-label></label><input data-f="expected_text" value="${esc(p.expected_text || "")}" /></div>
+      </div>
+      <div class="field-row">
         <div class="field"><label>${esc(t("common.method"))}</label><input data-f="method" value="${esc(p.method || "")}" /></div>
-        <div class="field"><label>${esc(t("specs.paramMin"))}</label><input type="number" step="any" data-f="min_value" value="${p.min_value ?? ""}" /></div>
-        <div class="field"><label>${esc(t("specs.paramMax"))}</label><input type="number" step="any" data-f="max_value" value="${p.max_value ?? ""}" /></div>
-        <div class="field"><label>${esc(t("common.unit"))}</label><input data-f="unit" value="${esc(p.unit || "")}" /></div>
+        <div class="field" style="flex:2"><label>${esc(t("specs.conditions"))}</label><input data-f="conditions" value="${esc(p.conditions || "")}" placeholder="${esc(t("specs.conditionsPlaceholder"))}" /></div>
+        <div class="field" style="flex:1.3"><label>${esc(t("specs.remarks"))}</label><input data-f="remarks" value="${esc(p.remarks || "")}" /></div>
       </div>
     </div>`;
 }
 
-function wireParamList(container, initial = []) {
+const LIMIT_FIELDS = {
+  numeric_range: ["min", "max", "unit"],
+  max: ["max", "unit"],
+  min: ["min", "unit"],
+  target: ["target", "tolerance", "unit"],
+  time_range: ["min", "max"],
+  appearance: ["expected"],
+  vs_standard: ["expected"],
+  pass_fail: [],
+  text_value: ["expected", "unit"],
+};
+
+function syncParamRow(item) {
+  const type = item.querySelector('[data-f="param_type"]').value;
+  const shown = LIMIT_FIELDS[type] || [];
+  item.querySelectorAll("[data-show]").forEach((el) => (el.hidden = !shown.includes(el.dataset.show)));
+  item.querySelector("[data-expected-label]").textContent =
+    type === "appearance" ? t("specs.expectedAppearance") : t("specs.compareNotes");
+  for (const f of ["min_value", "max_value"]) {
+    item.querySelector(`[data-f="${f}"]`).placeholder = type === "time_range" ? t("specs.timePlaceholder") : "";
+  }
+}
+
+function wireParamList(container, initial = [], catalog = []) {
+  const byCode = {};
+  for (const c of catalog) byCode[c.code] = c;
   function addRow(p) {
     const wrap = document.createElement("div");
-    wrap.innerHTML = paramRowHtml(p);
+    wrap.innerHTML = paramRowHtml(p, catalog);
     const item = wrap.firstElementChild;
     item.querySelector("[data-remove-param]").addEventListener("click", () => item.remove());
+    const typeSelect = item.querySelector('[data-f="param_type"]');
+    typeSelect.addEventListener("change", () => syncParamRow(item));
+    // Picking a test fills in what the catalog knows, without overwriting
+    // anything already typed for this row.
+    const testSelect = item.querySelector('[data-f="test_code"]');
+    let previous = byCode[testSelect.value];
+    testSelect.addEventListener("change", () => {
+      const test = byCode[testSelect.value];
+      const set = (f, value, prevValue) => {
+        const input = item.querySelector(`[data-f="${f}"]`);
+        if (!input.value || input.value === (prevValue ?? "")) input.value = value ?? "";
+      };
+      if (test) {
+        set("parameter_name", test.name, previous?.name);
+        set("method", test.method_code, previous?.method_code);
+        set("unit", test.default_unit, previous?.default_unit);
+        typeSelect.value = test.default_type;
+        syncParamRow(item);
+      }
+      previous = test;
+    });
+    syncParamRow(item);
     container.appendChild(item);
   }
-  (initial.length ? initial : []).forEach(addRow);
+  initial.forEach(addRow);
   return addRow;
 }
 
+/** Reads every row back into API shape. Throws with a readable message on
+ *  a value that isn't a number (or m:ss for a time limit). */
 function collectParams(container) {
   return [...container.querySelectorAll(".param-item")].map((item) => {
-    const get = (f) => item.querySelector(`[data-f="${f}"]`).value;
+    const get = (f) => item.querySelector(`[data-f="${f}"]`).value.trim();
     const type = get("param_type");
-    const needsBounds = type === "numeric_range" || type === "time_range";
-    return {
-      parameter_name: get("parameter_name"),
+    const shown = LIMIT_FIELDS[type] || [];
+    const name = get("parameter_name");
+    const limit = (f) => {
+      const raw = get(f);
+      if (raw === "") return null;
+      const value = type === "time_range" && raw.includes(":") ? parseClock(raw) : Number(raw.replace(",", "."));
+      if (value == null || Number.isNaN(value)) throw new Error(t("specs.invalidNumber", { name, value: raw }));
+      return value;
+    };
+    const number = (f) => {
+      const raw = get(f);
+      if (raw === "") return null;
+      const value = Number(raw.replace(",", "."));
+      if (Number.isNaN(value)) throw new Error(t("specs.invalidNumber", { name, value: raw }));
+      return value;
+    };
+    const param = {
+      test_code: get("test_code") || null,
+      parameter_name: name,
       param_type: type,
       method: get("method") || null,
-      unit: get("unit") || null,
-      min_value: needsBounds && get("min_value") !== "" ? Number(get("min_value")) : null,
-      max_value: needsBounds && get("max_value") !== "" ? Number(get("max_value")) : null,
+      conditions: get("conditions") || null,
+      unit: shown.includes("unit") ? get("unit") || null : null,
+      min_value: shown.includes("min") ? limit("min_value") : null,
+      max_value: shown.includes("max") ? limit("max_value") : null,
+      expected_text: shown.includes("expected") ? get("expected_text") || null : null,
+      target_value: shown.includes("target") ? number("target_value") : null,
+      tolerance: shown.includes("tolerance") ? number("tolerance") : null,
+      remarks: get("remarks") || null,
     };
+    const problem = validateLimit(param);
+    if (problem) throw new Error(problem);
+    return param;
   });
 }
+
 
 // ---------------------------------------------------------------- suppliers list (both roles)
 
 async function viewSuppliers() {
+  const generation = beginView();
   const view = document.getElementById("view");
   const suppliers = await getSuppliers(true);
+  if (isStaleView(generation)) return;
   const role = getRole();
 
+  const abbreviationCell = (s) =>
+    role === "quality"
+      ? `<form class="hstack" data-abbr-form="${esc(s.code)}">
+          <input name="abbreviation" value="${esc(s.abbreviation || "")}" placeholder="${esc(t("suppliersList.abbreviationHint"))}" style="max-width:110px" />
+          <button class="btn ghost sm">${esc(t("suppliersList.setAbbreviation"))}</button>
+        </form>`
+      : `<span class="mono">${esc(s.abbreviation || "—")}</span>`;
   const rows = suppliers
     .map(
       (s) =>
-        `<tr><td class="mono">${esc(s.code)}</td><td>${esc(s.name)}</td><td>${s.total_receipts}</td></tr>`
+        `<tr><td class="mono">${esc(s.code)}</td><td>${esc(s.name)}</td><td>${abbreviationCell(s)}</td><td>${s.total_receipts}</td></tr>`
     )
     .join("");
 
@@ -2196,8 +2515,8 @@ async function viewSuppliers() {
       ${exportBarHtml("suppliers-list-export", { withPeriod: false })}
       <div class="table-scroll" style="margin-top:12px">
         <table class="data-table">
-          <thead><tr><th>${esc(t("common.code"))}</th><th>${esc(t("common.name"))}</th><th>${esc(t("suppliersList.totalReceipts"))}</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="3" class="muted">${esc(t("common.noneYet"))}</td></tr>`}</tbody>
+          <thead><tr><th>${esc(t("common.code"))}</th><th>${esc(t("common.name"))}</th><th>${esc(t("suppliersList.abbreviation"))}</th><th>${esc(t("suppliersList.totalReceipts"))}</th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="4" class="muted">${esc(t("common.noneYet"))}</td></tr>`}</tbody>
         </table>
       </div>
       <form class="form-grid" id="new-supplier-form" style="margin-top:16px; border-top:1px solid var(--rule); padding-top:14px;">
@@ -2205,6 +2524,7 @@ async function viewSuppliers() {
         <div class="field-row">
           <input name="code" placeholder="${esc(t("common.code"))}" required />
           <input name="name" placeholder="${esc(t("common.name"))}" required />
+          ${role === "quality" ? `<input name="abbreviation" placeholder="${esc(t("suppliersList.abbreviation"))}" style="max-width:120px" />` : ""}
           <button class="btn primary sm">${esc(t("common.add"))}</button>
         </div>
       </form>
@@ -2220,13 +2540,27 @@ async function viewSuppliers() {
 
   wireExportBar("suppliers-list-export", "suppliers", { withPeriod: false, filenamePrefix: "suppliers" });
   wireImportSection("suppliers-import", "/api/suppliers/import", viewSuppliers);
+  view.querySelectorAll("[data-abbr-form]").forEach((form) =>
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        await api.patch(`/api/suppliers/${encodeURIComponent(form.dataset.abbrForm)}`, {
+          abbreviation: form.elements.abbreviation.value,
+        });
+        await getSuppliers(true);
+        toast(t("suppliersList.abbreviationSaved"));
+      } catch (err) {
+        toast(err.message, true);
+      }
+    })
+  );
   if (role === "quality") wireImportSection("suppliers-specs-import", "/api/specs/import", viewSuppliers);
 
   document.getElementById("new-supplier-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
     try {
-      await api.post("/api/suppliers", { code: fd.get("code"), name: fd.get("name") });
+      await api.post("/api/suppliers", { code: fd.get("code"), name: fd.get("name"), abbreviation: fd.get("abbreviation") || null });
       toast(t("suppliersList.supplierAdded"));
       viewSuppliers();
     } catch (err) {
@@ -2254,8 +2588,10 @@ function varianceClass(pct) {
 }
 
 async function viewSupplierAssessment() {
+  const generation = beginView();
   const view = document.getElementById("view");
   const suppliers = await getSuppliers(true);
+  if (isStaleView(generation)) return;
 
   view.innerHTML = `
     <div class="view-head"><div><h1>${esc(t("supplierAssessment.title"))}</h1><p>${esc(t("supplierAssessment.subtitle"))}</p></div></div>
@@ -2327,9 +2663,26 @@ async function viewSupplierAssessment() {
   }
 }
 
+let specsScope = "supply";
+
+function specParamsTableHtml(parameters) {
+  if (!parameters.length) return `<div class="small muted">${esc(t("specs.noParameters"))}</div>`;
+  return `
+    <div class="table-scroll"><table class="data-table">
+      <thead><tr><th>${esc(t("specs.test"))}</th><th>${esc(t("common.method"))}</th><th>${esc(t("specs.limit"))}</th><th>${esc(t("specs.conditions"))}</th><th>${esc(t("specs.remarks"))}</th></tr></thead>
+      <tbody>${parameters
+        .map(
+          (p) => `<tr><td>${esc(p.parameter_name)}</td><td class="mono small">${esc(p.method || "—")}</td><td>${esc(formatLimit(p, limitLabels()) || "—")}</td><td class="small muted">${esc(p.conditions || "—")}</td><td class="small muted">${esc(p.remarks || "—")}</td></tr>`
+        )
+        .join("")}</tbody>
+    </table></div>`;
+}
+
 async function viewSpecs() {
+  const generation = beginView();
   const view = document.getElementById("view");
-  const [materials, subtypes] = await Promise.all([getMaterials(true), getSubtypes(true)]);
+  const [materials, subtypes, catalog] = await Promise.all([getMaterials(true), getSubtypes(true), getTestCatalog(true)]);
+  if (isStaleView(generation)) return;
 
   view.innerHTML = `
     <div class="view-head"><div><h1>${esc(t("specs.title"))}</h1><p>${esc(t("specs.subtitle"))}</p></div></div>
@@ -2339,23 +2692,66 @@ async function viewSpecs() {
       <div class="field"><label>${esc(t("common.material"))}</label>
         ${codeSearchHtml("spec-material", t("common.searchByCodeOrName"))}
       </div>
+      <div class="subtabs" style="margin-top:10px">
+        <button type="button" class="subtab-btn${specsScope === "supply" ? " active" : ""}" data-scope="supply">${esc(t("specs.scopeSupply"))}</button>
+        <button type="button" class="subtab-btn${specsScope === "sample" ? " active" : ""}" data-scope="sample">${esc(t("specs.scopeSample"))}</button>
+      </div>
       ${exportBarHtml("spec-export", { withPeriod: false })}
       <div id="spec-history" style="margin-top:14px"></div>
       <form class="form-grid" id="new-spec-form" style="margin-top:16px; border-top:1px solid var(--rule); padding-top:14px;">
-        <b class="small">${esc(t("specs.newVersion"))}</b>
+        <b class="small" id="new-spec-heading"></b>
         <div class="field-row">
           <div class="field"><label>${esc(t("common.title"))}</label><input name="title" required /></div>
           <div class="field"><label>${esc(t("specs.createdBy"))}</label><input name="created_by" value="${esc(getRememberedName())}" required /></div>
         </div>
+        <div class="field-row">
+          <div class="field"><label>${esc(t("specs.variant"))}</label><input name="variant" placeholder="${esc(t("specs.variantHint"))}" /></div>
+          <div class="field" id="change-reason-field" style="flex:2"><label>${esc(t("specs.changeReason"))}</label><input name="change_reason" /></div>
+        </div>
         <div class="field"><label>${esc(t("common.notes"))}</label><textarea name="notes"></textarea></div>
         <div id="spec-params" class="repeatable"></div>
-        <div style="display:flex; gap:8px;">
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
           <button type="button" class="btn ghost sm" id="spec-add-param">${esc(t("specs.addParameter"))}</button>
+          <button type="button" class="btn ghost sm" id="spec-from-current">${esc(t("specs.startFromCurrent"))}</button>
           <button type="button" class="btn ghost sm" id="spec-prefill">${esc(t("specs.prefillFromTemplate"))}</button>
         </div>
         <button type="submit" class="btn primary">${esc(t("specs.createVersion"))}</button>
       </form>
       ${importSectionHtml("specs-import", "/api/specs/import-template")}
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:6px">${esc(t("specs.catalogHeading"))}</h3>
+      <p class="small muted" style="margin-bottom:10px">${esc(t("specs.catalogHint"))}</p>
+      <div class="table-scroll"><table class="data-table">
+        <thead><tr><th>${esc(t("specs.catalogCode"))}</th><th>${esc(t("common.name"))}</th><th>${esc(t("specs.catalogMethod"))}</th><th>${esc(t("specs.catalogDefaultType"))}</th><th>${esc(t("specs.catalogUnit"))}</th><th>${esc(t("specs.catalogActive"))}</th><th></th></tr></thead>
+        <tbody>${catalog
+          .map(
+            (c) => `<tr>
+              <td class="mono small">${esc(c.code)}</td><td>${esc(c.name)}</td><td class="mono small">${esc(c.method_code || "—")}</td>
+              <td class="small">${esc(t("paramType." + c.default_type))}</td><td class="small">${esc(c.default_unit || "—")}</td>
+              <td>${c.active ? "✓" : "—"}</td>
+              <td><button type="button" class="btn ghost sm" data-edit-test="${esc(c.code)}">${esc(t("specs.catalogEdit"))}</button></td>
+            </tr>`
+          )
+          .join("")}</tbody>
+      </table></div>
+      <form class="form-grid" id="test-catalog-form" style="margin-top:14px; border-top:1px solid var(--rule); padding-top:14px;">
+        <b class="small">${esc(t("specs.catalogAddOrEdit"))}</b>
+        <div class="field-row" style="align-items:flex-end">
+          <div class="field"><label>${esc(t("specs.catalogCode"))}</label><input name="code" required /></div>
+          <div class="field" style="flex:1.5"><label>${esc(t("common.name"))}</label><input name="name" required /></div>
+          <div class="field"><label>${esc(t("specs.catalogMethod"))}</label><input name="method_code" /></div>
+        </div>
+        <div class="field-row" style="align-items:flex-end">
+          <div class="field"><label>${esc(t("specs.catalogDefaultType"))}</label>
+            <select name="default_type">${LIMIT_TYPES.map((lt) => `<option value="${lt}">${esc(t("paramType." + lt))}</option>`).join("")}</select>
+          </div>
+          <div class="field"><label>${esc(t("specs.catalogUnit"))}</label><input name="default_unit" /></div>
+          <label class="small" style="display:flex; gap:6px; align-items:center;"><input type="checkbox" name="active" checked /> ${esc(t("specs.catalogActive"))}</label>
+          <button class="btn primary sm">${esc(t("common.save"))}</button>
+        </div>
+      </form>
     </div>
 
     <div class="card">
@@ -2373,37 +2769,65 @@ async function viewSpecs() {
 
   const historyEl = document.getElementById("spec-history");
   const paramsContainer = document.getElementById("spec-params");
-  let addParamRow = wireParamList(paramsContainer);
+  const addParamRow = wireParamList(paramsContainer, [], catalog);
+  const changeReasonField = document.getElementById("change-reason-field");
+  let specsForMaterial = [];
+  const variantInput = document.querySelector('#new-spec-form [name="variant"]');
+  const currentVariant = () => variantInput.value.trim() || null;
+  const activeInScope = () =>
+    specsForMaterial.find((s) => s.scope === specsScope && s.status === "active" && (s.variant || null) === currentVariant());
+  const syncChangeReason = () => {
+    // A reason is only asked for when this version replaces another.
+    const needsReason = Boolean(activeInScope());
+    changeReasonField.hidden = !needsReason;
+    changeReasonField.querySelector("input").required = needsReason;
+  };
+  variantInput.addEventListener("input", syncChangeReason);
 
   async function loadHistory() {
     const code = specMaterialSelect.value;
-    if (!code) {
-      historyEl.innerHTML = "";
-      return;
-    }
-    const specs = await api.get(`/api/materials/${encodeURIComponent(code)}/specs`);
-    historyEl.innerHTML = specs.length
-      ? specs
-          .map(
-            (s) => `
+    specsForMaterial = code ? await api.get(`/api/materials/${encodeURIComponent(code)}/specs`) : [];
+    const inScope = specsForMaterial.filter((s) => s.scope === specsScope);
+    const scopeLabel = t(specsScope === "sample" ? "specs.scopeSample" : "specs.scopeSupply");
+    document.getElementById("new-spec-heading").textContent = `${t("specs.newVersion")} — ${scopeLabel}`;
+    syncChangeReason();
+
+    const fallbackNote =
+      specsScope === "sample" && !inScope.length && specsForMaterial.some((s) => s.scope === "supply")
+        ? `<div class="small muted" style="margin-bottom:8px">${esc(t("specs.sampleFallbackNote"))}</div>`
+        : "";
+    historyEl.innerHTML = !code
+      ? ""
+      : inScope.length
+        ? fallbackNote +
+          inScope
+            .map(
+              (s) => `
         <div class="card" style="box-shadow:none; padding:12px 14px; margin-bottom:8px;">
-          <div style="display:flex; justify-content:space-between; align-items:center;">
-            <b class="small">v${s.version} — ${esc(s.title)}</b>
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <b class="small">${s.variant ? `<span class="badge neutral">${esc(s.variant)}</span> ` : ""}v${s.version} — ${esc(s.title)}</b>
             <span class="status-pill ${s.status === "active" ? "approved" : "neutral"}">${esc(t(`status.${s.status}`))}</span>
           </div>
-          <div class="small muted" style="margin-top:4px;">
-            ${s.parameters.map((p) => `${esc(p.parameter_name)}${p.min_value != null ? ` (${p.min_value}–${p.max_value}${p.unit ? " " + esc(p.unit) : ""})` : ""}`).join(" · ") || esc(t("specs.noParameters"))}
-          </div>
+          <div class="small muted" style="margin:4px 0 8px;">${esc(s.created_by)} · ${esc(fmtDate(s.created_at))}${s.change_reason ? ` · ${esc(t("specs.changeReason"))}: ${esc(s.change_reason)}` : ""}</div>
+          ${s.notes ? `<div class="small" style="margin-bottom:8px">${esc(s.notes)}</div>` : ""}
+          ${specParamsTableHtml(s.parameters)}
         </div>`
-          )
-          .join("")
-      : emptyState(icons.navSpecs, t("specs.noSpecsYet"));
+            )
+            .join("")
+        : fallbackNote + emptyState(icons.navSpecs, t("specs.noSpecsYet"));
   }
   const specMaterialSelect = wireCodeSearch("spec-material", materials, loadHistory);
   if (materials.length) {
     specMaterialSelect.value = materials[0].code;
     await loadHistory();
   }
+  view.querySelectorAll("[data-scope]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      specsScope = btn.dataset.scope;
+      view.querySelectorAll("[data-scope]").forEach((b) => b.classList.toggle("active", b === btn));
+      await loadHistory();
+    })
+  );
   wireExportBar(
     "spec-export",
     () => (specMaterialSelect.value ? `spec/${encodeURIComponent(specMaterialSelect.value)}` : null),
@@ -2413,6 +2837,15 @@ async function viewSpecs() {
   wireImportSection("specs-import", "/api/specs/import", viewSpecs);
 
   document.getElementById("spec-add-param").addEventListener("click", () => addParamRow({}));
+
+  document.getElementById("spec-from-current").addEventListener("click", () => {
+    const current = activeInScope();
+    if (!current) return toast(t("specs.noSpecsYet"), true);
+    paramsContainer.innerHTML = "";
+    current.parameters.forEach((p) => addParamRow(p));
+    const form = document.getElementById("new-spec-form");
+    if (!form.elements.title.value) form.elements.title.value = current.title;
+  });
 
   document.getElementById("spec-prefill").addEventListener("click", async () => {
     const material = materials.find((m) => m.code === specMaterialSelect.value);
@@ -2427,18 +2860,58 @@ async function viewSpecs() {
     e.preventDefault();
     const fd = new FormData(e.target);
     rememberName(fd.get("created_by"));
-    const params = collectParams(paramsContainer);
     try {
+      const params = collectParams(paramsContainer);
       await api.post(`/api/materials/${encodeURIComponent(specMaterialSelect.value)}/specs`, {
+        scope: specsScope,
+        variant: fd.get("variant") || null,
         title: fd.get("title"),
         notes: fd.get("notes") || null,
+        change_reason: fd.get("change_reason") || null,
         created_by: fd.get("created_by"),
         parameters: params.length ? params : undefined,
       });
       toast(t("specs.versionCreated"));
       e.target.reset();
+      e.target.elements.created_by.value = getRememberedName();
       paramsContainer.innerHTML = "";
       await loadHistory();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  // test catalog
+  const catalogForm = document.getElementById("test-catalog-form");
+  view.querySelectorAll("[data-edit-test]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const c = catalog.find((x) => x.code === btn.dataset.editTest);
+      catalogForm.elements.code.value = c.code;
+      catalogForm.elements.name.value = c.name;
+      catalogForm.elements.method_code.value = c.method_code || "";
+      catalogForm.elements.default_type.value = c.default_type;
+      catalogForm.elements.default_unit.value = c.default_unit || "";
+      catalogForm.elements.active.checked = Boolean(c.active);
+      catalogForm.scrollIntoView({ block: "nearest" });
+    })
+  );
+  catalogForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = catalogForm.elements;
+    const existing = catalog.find((x) => x.code === f.code.value.trim().toUpperCase());
+    try {
+      await api.put("/api/test-catalog", {
+        code: f.code.value,
+        name: f.name.value,
+        method_code: f.method_code.value || null,
+        default_type: f.default_type.value,
+        default_unit: f.default_unit.value || null,
+        sort_order: existing?.sort_order,
+        active: f.active.checked ? 1 : 0,
+      });
+      toast(t("specs.catalogSaved"));
+      await getTestCatalog(true);
+      viewSpecs();
     } catch (err) {
       toast(err.message, true);
     }
@@ -2447,7 +2920,7 @@ async function viewSpecs() {
   // subtype templates
   const templateSubtypeSelect = document.getElementById("template-subtype");
   const templateParams = document.getElementById("template-params");
-  let addTemplateRow = wireParamList(templateParams);
+  const addTemplateRow = wireParamList(templateParams, [], catalog);
 
   async function loadTemplate() {
     templateParams.innerHTML = "";
@@ -2508,7 +2981,7 @@ function dossierImportEntryHtml(entry) {
       <div class="batch-row">
         <div><bdi class="batch-id">${esc(b.supplier_batch_no)}</bdi></div>
         <div class="hstack">
-          ${statusPill(b.status)}
+          ${statusPill(b.concession ? "concession" : b.status)}
           ${b.internal_batch_no ? `<bdi class="mono small">${esc(b.internal_batch_no)}</bdi>` : ""}
           ${b.status !== "pending" ? `<button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="pdf">${esc(t("line.coaPdf"))}</button>
           <button class="btn sm ghost" data-dossier-coa="${b.id}" data-format="xlsx">${esc(t("line.coaExcel"))}</button>` : ""}
@@ -2534,7 +3007,8 @@ function dossierImportEntryHtml(entry) {
       <div class="line-head">
         <div>
           <bdi class="mono"><b>${esc(entry.import_code)}</b></bdi> ${scenarioBadge}
-          <div class="small muted">${bdi(entry.material_name_text)} · ${bdi(entry.supplier_name)} <span class="mono">(${esc(entry.supplier_code)})</span> · ${esc(t("masterdata.receivedOn", { date: fmtDate(entry.received_at) }))}</div>
+          <div class="small muted">${bdi(entry.material_name_text)} · ${bdi(entry.supplier_name)} <span class="mono">(${esc(entry.supplier_code)})</span> · ${esc(t("masterdata.receivedOn", { date: fmtReceived(entry.received_at, fmtDate) }))}</div>
+          ${productInfoHtml(entry)}
         </div>
       </div>
       <div style="margin-top:6px">${batchRows}</div>
@@ -2675,6 +3149,7 @@ const MASTERDATA_SUBTABS = [
 let masterDataSubtab = "dossier";
 
 async function viewMasterData() {
+  beginView();
   const view = document.getElementById("view");
   view.innerHTML = `
     <div class="view-head"><div><h1>${esc(t("masterdata.title"))}</h1><p>${esc(t("masterdata.subtitle"))}</p></div></div>
@@ -2713,6 +3188,7 @@ async function renderMaterialDossierSection(section) {
 
   const body = document.getElementById("dossier-body");
   let rmsExpanded = false;
+  let rmpExpanded = false;
   let currentCode = null;
 
   wireExportBar(
@@ -2733,12 +3209,12 @@ async function renderMaterialDossierSection(section) {
     const namesHtml = d.names.length
       ? `<div class="table-scroll"><table class="data-table">
           <thead><tr><th>${esc(t("common.name"))}</th><th>${esc(t("masterdata.timesReceived"))}</th><th>${esc(t("masterdata.lastReceived"))}</th></tr></thead>
-          <tbody>${d.names.map((n) => `<tr><td>${esc(n.name)}</td><td>${n.count}</td><td>${fmtDate(n.last_received_at)}</td></tr>`).join("")}</tbody>
+          <tbody>${d.names.map((n) => `<tr><td>${esc(n.name)}</td><td>${n.count}</td><td>${esc(fmtReceived(n.last_received_at, fmtDate))}</td></tr>`).join("")}</tbody>
         </table></div>`
       : `<div class="small muted">${esc(t("masterdata.noReceivingHistory"))}</div>`;
 
     const specVersionOptions = d.specs
-      .map((s) => `<option value="${s.version}">v${s.version} — ${esc(s.title)} (${esc(t(`status.${s.status}`))})</option>`)
+      .map((s) => `<option value="${s.id}">${esc(t(s.scope === "sample" ? "specs.scopeSample" : "specs.scopeSupply"))}${s.variant ? ` (${esc(s.variant)})` : ""} v${s.version} — ${esc(s.title)} (${esc(t(`status.${s.status}`))})</option>`)
       .join("");
     const specsHtml = d.specs.length
       ? `<div class="field" style="max-width:320px"><label>${esc(t("common.version"))}</label><select id="dossier-spec-version">${specVersionOptions}</select></div>
@@ -2802,6 +3278,11 @@ async function renderMaterialDossierSection(section) {
       </div>
 
       <div class="card">
+        <button type="button" class="btn ghost sm" id="dossier-show-rmp">${rmpExpanded ? esc(t("masterdata.hideRmps")) : esc(t("masterdata.showAllRmps", { n: d.rmp.length }))}</button>
+        <div id="dossier-rmp" ${rmpExpanded ? "" : "hidden"} style="margin-top:10px">${d.rmp.length ? d.rmp.map(dossierImportEntryHtml).join("") : `<div class="small muted">${esc(t("masterdata.noRegularSupplies"))}</div>`}</div>
+      </div>
+
+      <div class="card">
         <button type="button" class="btn ghost sm" id="dossier-show-rms">${rmsExpanded ? esc(t("masterdata.hideRmss")) : esc(t("masterdata.showAllRmss", { n: d.rms.length }))}</button>
         <div id="dossier-rms" ${rmsExpanded ? "" : "hidden"} style="margin-top:10px">${d.rms.length ? d.rms.map(dossierImportEntryHtml).join("") : `<div class="small muted">${esc(t("masterdata.noRepeatImports"))}</div>`}</div>
       </div>
@@ -2809,7 +3290,15 @@ async function renderMaterialDossierSection(section) {
 
     const reload = () => loadDossier(currentCode);
     wireDossierImportEntries(document.getElementById("dossier-rmf"), reload);
+    wireDossierImportEntries(document.getElementById("dossier-rmp"), reload);
     wireDossierImportEntries(document.getElementById("dossier-rms"), reload);
+
+    document.getElementById("dossier-show-rmp")?.addEventListener("click", (e) => {
+      const el = document.getElementById("dossier-rmp");
+      el.hidden = !el.hidden;
+      rmpExpanded = !el.hidden;
+      e.target.textContent = el.hidden ? t("masterdata.showAllRmps", { n: d.rmp.length }) : t("masterdata.hideRmps");
+    });
 
     document.getElementById("dossier-show-rms")?.addEventListener("click", (e) => {
       const el = document.getElementById("dossier-rms");
@@ -2822,15 +3311,10 @@ async function renderMaterialDossierSection(section) {
     if (versionSelect) {
       const detailEl = document.getElementById("dossier-spec-detail");
       function renderSpecDetail() {
-        const spec = d.specs.find((s) => String(s.version) === versionSelect.value);
+        const spec = d.specs.find((s) => String(s.id) === versionSelect.value);
         detailEl.innerHTML = spec
-          ? `<div class="small muted" style="margin-bottom:6px">${esc(spec.notes || "")}</div>
-             <div class="table-scroll"><table class="data-table">
-               <thead><tr><th>${esc(t("results.parameter"))}</th><th>${esc(t("results.method"))}</th><th>${esc(t("masterdata.specColumn"))}</th></tr></thead>
-               <tbody>${spec.parameters
-                 .map((p) => `<tr><td>${esc(p.parameter_name)}</td><td>${esc(p.method || "—")}</td><td>${esc(paramSpecHint(p))}</td></tr>`)
-                 .join("")}</tbody>
-             </table></div>`
+          ? `<div class="small muted" style="margin-bottom:6px">${esc(spec.notes || "")}${spec.change_reason ? ` · ${esc(t("specs.changeReason"))}: ${esc(spec.change_reason)}` : ""}</div>
+             ${specParamsTableHtml(spec.parameters)}`
           : "";
       }
       versionSelect.addEventListener("change", renderSpecDetail);
@@ -2979,6 +3463,18 @@ async function renderView() {
   } catch (err) {
     document.getElementById("view").innerHTML = errorState(t("error.screenLoadFailed", { message: err.message }));
   }
+}
+
+// Only the most recently started screen render may touch the page. A
+// screen that finishes loading after the user (or a reload, or the 20s
+// refresh) has already started another one just stops — otherwise it would
+// land on top of the newer screen and wipe whatever was typed into it.
+let viewGeneration = 0;
+function beginView() {
+  return ++viewGeneration;
+}
+function isStaleView(generation) {
+  return generation !== viewGeneration;
 }
 
 function refreshCurrentView() {

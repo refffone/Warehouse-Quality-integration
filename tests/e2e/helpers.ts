@@ -198,9 +198,11 @@ export async function openReceiptCard(page: Page, bucket: "todo" | "history", re
 }
 
 export interface DecisionInput {
-  decision: "approve" | "partial" | "reject";
+  decision: "approve" | "concession" | "partial" | "reject";
   qtyAccepted?: number;
   qtyRejected?: number;
+  concessionReason?: string;
+  concessionApprovedBy?: string;
   decidedBy: string;
 }
 
@@ -214,6 +216,10 @@ export async function decideBatch(card: ReturnType<Page["locator"]>, batchButton
   if (input.decision === "partial") {
     await modal.locator('input[name="qty_accepted"]').fill(String(input.qtyAccepted));
     await modal.locator('input[name="qty_rejected"]').fill(String(input.qtyRejected));
+  }
+  if (input.decision === "concession") {
+    await modal.locator('input[name="concession_reason"]').fill(input.concessionReason ?? "");
+    await modal.locator('input[name="concession_approved_by"]').fill(input.concessionApprovedBy ?? "");
   }
   await modal.locator('input[name="decided_by"]').fill(input.decidedBy);
   await modal.locator('button[type="submit"]').click();
@@ -303,9 +309,12 @@ export async function associateCode(
  *  covers as its own transaction. Each uses `page.request`, which shares
  *  the browser context's session cookie, so the caller must already be
  *  logged in with a role allowed to create that kind of record. */
-export async function seedSupplier(page: Page, code: string, name: string) {
-  const res = await page.request.post("/api/suppliers", { data: { code, name } });
-  if (!res.ok() && res.status() !== 400) throw new Error(`seedSupplier failed: ${res.status()} ${await res.text()}`);
+export async function seedSupplier(page: Page, code: string, name: string, abbreviation?: string) {
+  const res = await page.request.post("/api/suppliers", { data: { code, name, abbreviation } });
+  // 409 = already exists (re-running against a database that kept it)
+  if (!res.ok() && res.status() !== 400 && res.status() !== 409) {
+    throw new Error(`seedSupplier failed: ${res.status()} ${await res.text()}`);
+  }
 }
 
 export async function seedMaterial(

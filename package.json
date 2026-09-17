@@ -5,8 +5,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "db:migrate:local": "for f in migrations/*.sql; do wrangler d1 execute warehouse-quality-db --local --file=\"$f\"; done",
-    "db:migrate:remote": "for f in migrations/*.sql; do wrangler d1 execute warehouse-quality-db --remote --file=\"$f\"; done",
+    "db:migrate:local": "wrangler d1 migrations apply warehouse-quality-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply warehouse-quality-db --remote",
     "typecheck": "tsc --noEmit",
     "typecheck:e2e": "tsc --noEmit -p tsconfig.e2e.json",
     "test:e2e": "playwright test"

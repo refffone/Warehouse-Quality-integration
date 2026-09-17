@@ -1,3 +1,4 @@
+import { validateLimit, LIMIT_TYPES } from "../../public/specLimits.js";
 import { fetchByIds } from "../db";
 import { error, json } from "../http";
 import { buildTemplateXlsx, parseXlsxRows, templateResponse } from "../xlsxImport";
@@ -11,58 +12,101 @@ import type {
   ParameterInput,
   Spec,
   SpecParameter,
+  SpecScope,
   SpecWithParameters,
   SubtypeSpecTemplateInput,
+  TestCatalogEntry,
 } from "../types";
 
-const PARAM_TYPES: ParamType[] = ["numeric_range", "pass_fail", "time_range", "text_value"];
+const SCOPES: SpecScope[] = ["supply", "sample"];
 
-/** Enforces the same shape the DB CHECK constraint requires, so a bad
- *  request comes back as a clear 400 instead of a raw SQLite error.
- *  Exported so importSpecs can attribute the same check to individual
- *  Excel rows instead of duplicating the bounds logic. */
+export function isSpecScope(value: unknown): value is SpecScope {
+  return SCOPES.includes(value as SpecScope);
+}
+
+/** Same rules as the DB CHECK constraints (and the browser's own form
+ *  validation), so a bad request comes back as a clear 400. */
 export function validateParameter(p: ParameterInput): string | null {
-  if (!p.parameter_name || !p.param_type) return "Each parameter needs parameter_name and param_type";
-  const needsBounds = p.param_type === "numeric_range" || p.param_type === "time_range";
-  const hasBounds = p.min_value != null && p.max_value != null;
-  if (needsBounds && !hasBounds) {
-    return `${p.parameter_name}: ${p.param_type} requires min_value and max_value`;
-  }
-  if (!needsBounds && hasBounds) {
-    return `${p.parameter_name}: ${p.param_type} must not have min_value/max_value`;
-  }
-  return null;
+  return validateLimit(p);
 }
 
-function validateParameters(params: ParameterInput[]): string | null {
-  for (const p of params) {
-    const err = validateParameter(p);
-    if (err) return err;
-  }
-  return null;
+async function loadCatalog(env: Env): Promise<Map<string, TestCatalogEntry>> {
+  const rows = await env.DB.prepare("SELECT * FROM test_catalog").all<TestCatalogEntry>();
+  return new Map((rows.results ?? []).map((r) => [r.code, r]));
 }
 
-async function insertParameters(
+/** Fills a parameter's blanks from its catalog test (name, method code,
+ *  unit) and checks it. Returns the completed parameter or an error. */
+function completeParameter(
+  p: ParameterInput,
+  catalog: Map<string, TestCatalogEntry>
+): { ok: true; param: ParameterInput } | { ok: false; message: string } {
+  const testCode = p.test_code?.trim() || null;
+  const test = testCode ? catalog.get(testCode) : undefined;
+  if (testCode && !test) return { ok: false, message: `Unknown test: ${testCode}` };
+  const clean = (v: string | null | undefined) => (v == null ? null : String(v).trim() || null);
+  const param: ParameterInput = {
+    test_code: testCode,
+    parameter_name: clean(p.parameter_name) ?? test?.name ?? "",
+    param_type: p.param_type,
+    method: clean(p.method) ?? test?.method_code ?? null,
+    conditions: clean(p.conditions),
+    min_value: p.min_value ?? null,
+    max_value: p.max_value ?? null,
+    unit: clean(p.unit) ?? (p.param_type === "time_range" ? null : (test?.default_unit ?? null)),
+    expected_text: clean(p.expected_text),
+    target_value: p.target_value ?? null,
+    tolerance: p.tolerance ?? null,
+    remarks: clean(p.remarks),
+    sort_order: p.sort_order,
+  };
+  const problem = validateParameter(param);
+  return problem ? { ok: false, message: problem } : { ok: true, param };
+}
+
+async function completeParameters(
   env: Env,
-  specId: number,
   params: ParameterInput[]
-): Promise<void> {
+): Promise<{ ok: true; params: ParameterInput[] } | { ok: false; message: string }> {
+  const catalog = await loadCatalog(env);
+  const out: ParameterInput[] = [];
+  for (const p of params) {
+    const r = completeParameter(p, catalog);
+    if (!r.ok) return r;
+    out.push(r.param);
+  }
+  return { ok: true, params: out };
+}
+
+const PARAM_COLUMNS =
+  "test_code, parameter_name, param_type, method, conditions, min_value, max_value, unit, expected_text, target_value, tolerance, remarks, sort_order";
+const PARAM_PLACEHOLDERS = "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?";
+
+function paramValues(p: ParameterInput, i: number): unknown[] {
+  return [
+    p.test_code ?? null,
+    p.parameter_name,
+    p.param_type,
+    p.method ?? null,
+    p.conditions ?? null,
+    p.min_value ?? null,
+    p.max_value ?? null,
+    p.unit ?? null,
+    p.expected_text ?? null,
+    p.target_value ?? null,
+    p.tolerance ?? null,
+    p.remarks ?? null,
+    p.sort_order ?? i,
+  ];
+}
+
+async function insertParameters(env: Env, specId: number, params: ParameterInput[]): Promise<void> {
   if (params.length === 0) return;
   await env.DB.batch(
     params.map((p, i) =>
-      env.DB.prepare(
-        `INSERT INTO spec_parameters
-           (spec_id, parameter_name, param_type, method, min_value, max_value, unit, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(
+      env.DB.prepare(`INSERT INTO spec_parameters (spec_id, ${PARAM_COLUMNS}) VALUES (?, ${PARAM_PLACEHOLDERS})`).bind(
         specId,
-        p.parameter_name,
-        p.param_type,
-        p.method ?? null,
-        p.min_value ?? null,
-        p.max_value ?? null,
-        p.unit ?? null,
-        p.sort_order ?? i
+        ...paramValues(p, i)
       )
     )
   );
@@ -70,7 +114,7 @@ async function insertParameters(
 
 async function getTemplateParameters(env: Env, subtypeCode: string): Promise<ParameterInput[]> {
   const rows = await env.DB.prepare(
-    "SELECT * FROM subtype_spec_templates WHERE subtype_code = ? ORDER BY sort_order"
+    `SELECT ${PARAM_COLUMNS} FROM subtype_spec_templates WHERE subtype_code = ? ORDER BY sort_order`
   )
     .bind(subtypeCode)
     .all<ParameterInput>();
@@ -82,9 +126,9 @@ export type CreateSpecResult =
   | { ok: false; message: string; status: number };
 
 /** Core "create a new active spec version" logic, shared by the
- *  POST /api/materials/:code/specs handler and associateCode's "new
- *  material" path — both need to create a material's first spec version,
- *  one via a dedicated request, the other inline within a single call. */
+ *  POST /api/materials/:code/specs handler, associateCode's "new material"
+ *  path, and the Excel import. Versions are numbered per scope: a
+ *  material's supply spec and sample spec each have their own history. */
 export async function createSpecVersion(
   env: Env,
   materialCode: string,
@@ -93,6 +137,9 @@ export async function createSpecVersion(
   if (!input.title || !input.created_by) {
     return { ok: false, message: "title and created_by are required", status: 400 };
   }
+  const scope = input.scope ?? "supply";
+  if (!isSpecScope(scope)) return { ok: false, message: "scope must be supply or sample", status: 400 };
+  const variant = input.variant?.trim() || null;
 
   const material = await env.DB.prepare("SELECT code, subtype_code FROM materials WHERE code = ?")
     .bind(materialCode)
@@ -103,30 +150,40 @@ export async function createSpecVersion(
   if (!parameters) {
     parameters = material.subtype_code ? await getTemplateParameters(env, material.subtype_code) : [];
   }
-
-  const validationError = validateParameters(parameters);
-  if (validationError) return { ok: false, message: validationError, status: 400 };
+  const completed = await completeParameters(env, parameters);
+  if (!completed.ok) return { ok: false, message: completed.message, status: 400 };
 
   const nextVersionRow = await env.DB.prepare(
-    "SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM specs WHERE material_code = ?"
+    `SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM specs
+     WHERE material_code = ? AND scope = ? AND COALESCE(variant, '') = ?`
   )
-    .bind(materialCode)
+    .bind(materialCode, scope, variant ?? "")
     .first<{ next_version: number }>();
   const nextVersion = nextVersionRow!.next_version;
 
   const [, insertResult] = await env.DB.batch<{ id: number }>([
-    env.DB.prepare("UPDATE specs SET status = 'superseded' WHERE material_code = ? AND status = 'active'").bind(
-      materialCode
-    ),
     env.DB.prepare(
-      `INSERT INTO specs (material_code, version, status, title, notes, created_by)
-       VALUES (?, ?, 'active', ?, ?, ?)
+      `UPDATE specs SET status = 'superseded'
+       WHERE material_code = ? AND scope = ? AND COALESCE(variant, '') = ? AND status = 'active'`
+    ).bind(materialCode, scope, variant ?? ""),
+    env.DB.prepare(
+      `INSERT INTO specs (material_code, scope, variant, version, status, title, notes, change_reason, created_by)
+       VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
        RETURNING id`
-    ).bind(materialCode, nextVersion, input.title, input.notes ?? null, input.created_by),
+    ).bind(
+      materialCode,
+      scope,
+      variant,
+      nextVersion,
+      input.title,
+      input.notes ?? null,
+      input.change_reason?.trim() || null,
+      input.created_by
+    ),
   ]);
   const specId = insertResult.results[0].id;
 
-  await insertParameters(env, specId, parameters);
+  await insertParameters(env, specId, completed.params);
 
   return { ok: true, spec: await getSpecWithParameters(env, specId) };
 }
@@ -142,44 +199,53 @@ export async function listSpecs(env: Env, materialCode: string): Promise<Respons
   return json(await listSpecsForMaterial(env, materialCode));
 }
 
+/** Every version of both scopes, newest first within each scope. */
 export async function listSpecsForMaterial(env: Env, materialCode: string): Promise<SpecWithParameters[]> {
   const specs = await env.DB.prepare(
-    "SELECT * FROM specs WHERE material_code = ? ORDER BY version DESC"
+    "SELECT * FROM specs WHERE material_code = ? ORDER BY scope DESC, COALESCE(variant, '') ASC, version DESC"
   )
     .bind(materialCode)
     .all<Spec>();
+  return attachParameters(env, specs.results ?? []);
+}
 
-  const detailed: SpecWithParameters[] = [];
-  for (const spec of specs.results ?? []) {
-    detailed.push(await getSpecWithParameters(env, spec.id));
+async function attachParameters(env: Env, specs: Spec[]): Promise<SpecWithParameters[]> {
+  if (!specs.length) return [];
+  const params = await fetchByIds<SpecParameter>(
+    env,
+    (ph) => `SELECT * FROM spec_parameters WHERE spec_id IN (${ph}) ORDER BY sort_order, id`,
+    specs.map((s) => s.id)
+  );
+  const bySpec = new Map<number, SpecParameter[]>();
+  for (const p of params) {
+    if (!bySpec.has(p.spec_id)) bySpec.set(p.spec_id, []);
+    bySpec.get(p.spec_id)!.push(p);
   }
-  return detailed;
+  return specs.map((s) => ({ ...s, parameters: bySpec.get(s.id) ?? [] }));
 }
 
 async function getSpecWithParameters(env: Env, specId: number): Promise<SpecWithParameters> {
   const spec = await env.DB.prepare("SELECT * FROM specs WHERE id = ?").bind(specId).first<Spec>();
-  const params = await env.DB.prepare(
-    "SELECT * FROM spec_parameters WHERE spec_id = ? ORDER BY sort_order"
-  )
-    .bind(specId)
-    .all<SpecParameter>();
-  return { ...spec!, parameters: params.results ?? [] };
+  return (await attachParameters(env, [spec!]))[0];
 }
 
-export async function getActiveSpec(env: Env, materialCode: string): Promise<SpecWithParameters | null> {
-  const spec = await env.DB.prepare("SELECT * FROM specs WHERE material_code = ? AND status = 'active'")
-    .bind(materialCode)
-    .first<Spec>();
-  if (!spec) return null;
-  return getSpecWithParameters(env, spec.id);
+/** The spec a batch is tested against: for a sample, the material's sample
+ *  spec if it has one, otherwise its supply spec (as in Access, a sample
+ *  spec only exists where Quality wrote one). */
+export async function getActiveSpec(
+  env: Env,
+  materialCode: string,
+  scope: SpecScope = "supply"
+): Promise<SpecWithParameters | null> {
+  return (await getActiveSpecsForMaterials(env, [materialCode], scope)).get(materialCode) ?? null;
 }
 
 /** Bulk form of getActiveSpec, for a page rendering many receipt lines at
- *  once (e.g. a whole To Do/History bucket) — one pass instead of one
- *  query per distinct material code. */
+ *  once (e.g. a whole To Do/History bucket). */
 export async function getActiveSpecsForMaterials(
   env: Env,
-  materialCodes: string[]
+  materialCodes: string[],
+  scope: SpecScope = "supply"
 ): Promise<Map<string, SpecWithParameters>> {
   const map = new Map<string, SpecWithParameters>();
   const codes = [...new Set(materialCodes)];
@@ -187,24 +253,23 @@ export async function getActiveSpecsForMaterials(
 
   const specs = await fetchByIds<Spec>(
     env,
-    (ph) => `SELECT * FROM specs WHERE status = 'active' AND material_code IN (${ph})`,
+    // Variants aren't picked for receipts yet — that needs the receipt to
+    // say which manufacturer it came from — so testing uses the normal spec.
+    (ph) => `SELECT * FROM specs WHERE status = 'active' AND variant IS NULL AND material_code IN (${ph})`,
     codes
   );
-  if (!specs.length) return map;
-
-  const specIds = specs.map((s) => s.id);
-  const params = await fetchByIds<SpecParameter>(
-    env,
-    (ph) => `SELECT * FROM spec_parameters WHERE spec_id IN (${ph}) ORDER BY sort_order`,
-    specIds
-  );
-  const paramsBySpec = new Map<number, SpecParameter[]>();
-  for (const p of params) {
-    if (!paramsBySpec.has(p.spec_id)) paramsBySpec.set(p.spec_id, []);
-    paramsBySpec.get(p.spec_id)!.push(p);
-  }
+  // Prefer the requested scope; a sample falls back to the supply spec.
+  const chosen = new Map<string, Spec>();
   for (const s of specs) {
-    map.set(s.material_code, { ...s, parameters: paramsBySpec.get(s.id) ?? [] });
+    if (s.scope === scope) chosen.set(s.material_code, s);
+  }
+  if (scope === "sample") {
+    for (const s of specs) {
+      if (s.scope === "supply" && !chosen.has(s.material_code)) chosen.set(s.material_code, s);
+    }
+  }
+  for (const spec of await attachParameters(env, [...chosen.values()])) {
+    map.set(spec.material_code, spec);
   }
   return map;
 }
@@ -220,80 +285,125 @@ export async function setSubtypeSpecTemplate(
   subtypeCode: string
 ): Promise<Response> {
   const input = await request.json<SubtypeSpecTemplateInput>();
-  const validationError = validateParameters(input.parameters ?? []);
-  if (validationError) return error(validationError);
+  const completed = await completeParameters(env, input.parameters ?? []);
+  if (!completed.ok) return error(completed.message);
 
   const subtype = await env.DB.prepare("SELECT code FROM material_subtypes WHERE code = ?")
     .bind(subtypeCode)
     .first();
   if (!subtype) return error(`Unknown subtype code: ${subtypeCode}`, 404);
 
-  await env.DB.prepare("DELETE FROM subtype_spec_templates WHERE subtype_code = ?").bind(subtypeCode).run();
-
-  const params = input.parameters ?? [];
-  if (params.length > 0) {
-    await env.DB.batch(
-      params.map((p, i) =>
-        env.DB.prepare(
-          `INSERT INTO subtype_spec_templates
-             (subtype_code, parameter_name, param_type, method, min_value, max_value, unit, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        ).bind(
-          subtypeCode,
-          p.parameter_name,
-          p.param_type,
-          p.method ?? null,
-          p.min_value ?? null,
-          p.max_value ?? null,
-          p.unit ?? null,
-          p.sort_order ?? i
-        )
-      )
-    );
-  }
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM subtype_spec_templates WHERE subtype_code = ?").bind(subtypeCode),
+    ...completed.params.map((p, i) =>
+      env.DB.prepare(
+        `INSERT INTO subtype_spec_templates (subtype_code, ${PARAM_COLUMNS}) VALUES (?, ${PARAM_PLACEHOLDERS})`
+      ).bind(subtypeCode, ...paramValues(p, i))
+    ),
+  ]);
 
   return getSubtypeSpecTemplate(env, subtypeCode);
 }
 
+// ---------------------------------------------------------------- test catalog
+
+export async function listTestCatalog(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare("SELECT * FROM test_catalog ORDER BY active DESC, sort_order, name").all();
+  return json(rows.results ?? []);
+}
+
+/** Adds or edits one test. The code is the stable key specs refer to. */
+export async function upsertTestCatalogEntry(request: Request, env: Env): Promise<Response> {
+  const input = await request.json<Partial<TestCatalogEntry>>();
+  const code = input.code?.trim().toUpperCase();
+  const name = input.name?.trim();
+  if (!code || !/^[A-Z0-9_]{1,40}$/.test(code)) return error("code must be letters, digits or _", 400);
+  if (!name) return error("name is required", 400);
+  if (!LIMIT_TYPES.includes(input.default_type as ParamType)) return error("Unknown default_type", 400);
+
+  await env.DB.prepare(
+    `INSERT INTO test_catalog (code, name, method_code, default_type, default_unit, sort_order, active)
+     VALUES (?, ?, ?, ?, ?, COALESCE(?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM test_catalog)), ?)
+     ON CONFLICT(code) DO UPDATE SET
+       name = excluded.name, method_code = excluded.method_code, default_type = excluded.default_type,
+       default_unit = excluded.default_unit, sort_order = excluded.sort_order, active = excluded.active`
+  )
+    .bind(
+      code,
+      name,
+      input.method_code?.trim() || null,
+      input.default_type,
+      input.default_unit?.trim() || null,
+      input.sort_order ?? null,
+      input.active === 0 ? 0 : 1
+    )
+    .run();
+  return json(await env.DB.prepare("SELECT * FROM test_catalog WHERE code = ?").bind(code).first());
+}
+
+// ---------------------------------------------------------------- Excel import/export
+
 const SPEC_IMPORT_COLUMNS = [
   { key: "material_code", header: "Material Code" },
+  { key: "scope", header: "Scope" },
+  { key: "variant", header: "Variant" },
   { key: "title", header: "Title" },
   { key: "notes", header: "Notes" },
+  { key: "change_reason", header: "Change Reason" },
   { key: "created_by", header: "Created By" },
+  { key: "test_code", header: "Test Code" },
   { key: "parameter_name", header: "Parameter Name" },
-  { key: "param_type", header: "Param Type" },
+  { key: "param_type", header: "Limit Type" },
   { key: "method", header: "Method" },
-  { key: "min_value", header: "Min Value" },
-  { key: "max_value", header: "Max Value" },
+  { key: "conditions", header: "Conditions" },
+  { key: "min_value", header: "Min" },
+  { key: "max_value", header: "Max" },
   { key: "unit", header: "Unit" },
+  { key: "expected_text", header: "Expected" },
+  { key: "target_value", header: "Target" },
+  { key: "tolerance", header: "Tolerance" },
+  { key: "remarks", header: "Remarks" },
 ];
 
-/** One row per parameter of each material's currently *active* spec — the
- *  editable snapshot a client re-imports as a brand-new version (specs are
- *  append-only history, so import never edits a row in place, it always
- *  creates the next version). A material with no active spec yet simply
- *  has no rows here; add one manually to create its first spec. */
+/** One row per parameter of each material's currently *active* specs (both
+ *  scopes) — the editable snapshot a client re-imports as new versions.
+ *  Time limits are written as m:ss, the way Quality reads them. */
 export async function specsImportTemplate(env: Env): Promise<Response> {
   const rows = await env.DB.prepare(
-    `SELECT s.material_code, s.title, s.notes, s.created_by,
-            sp.parameter_name, sp.param_type, sp.method, sp.min_value, sp.max_value, sp.unit
+    `SELECT s.material_code, s.scope, s.variant, s.title, s.notes, NULL AS change_reason, s.created_by,
+            sp.test_code, sp.parameter_name, sp.param_type, sp.method, sp.conditions,
+            sp.min_value, sp.max_value, sp.unit, sp.expected_text, sp.target_value, sp.tolerance, sp.remarks
      FROM specs s
      JOIN spec_parameters sp ON sp.spec_id = s.id
      WHERE s.status = 'active'
-     ORDER BY s.material_code, sp.sort_order`
+     ORDER BY s.material_code, s.scope DESC, COALESCE(s.variant, ''), sp.sort_order`
   ).all<Record<string, unknown>>();
-  const bytes = buildTemplateXlsx(SPEC_IMPORT_COLUMNS, rows.results ?? []);
+  const shaped = (rows.results ?? []).map((r) =>
+    r.param_type === "time_range" ? { ...r, min_value: toClock(r.min_value), max_value: toClock(r.max_value) } : r
+  );
+  const bytes = buildTemplateXlsx(SPEC_IMPORT_COLUMNS, shaped);
   return templateResponse(bytes, "specs-import-template.xlsx");
 }
 
-/** Unlike Suppliers/Materials (upsert by code), a spec import can never
- *  "update" an existing row — every commit creates a brand-new version via
- *  the same `createSpecVersion` the manual "new spec version" form uses,
- *  so a material with an active spec already just gets superseded, same as
- *  usual. Rows are grouped into one new spec per distinct Material Code
- *  (all its parameter rows), so this only supports one new spec per
- *  material per import file — a second block for the same material in one
- *  file merges into the first rather than creating two versions. */
+function toClock(seconds: unknown): string {
+  const t = Math.round(Number(seconds));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+}
+
+/** A Min/Max cell: a plain number, or m:ss for a time limit (stored as seconds). */
+function parseLimitCell(raw: string, type: ParamType): number | null | "invalid" {
+  if (raw === "") return null;
+  if (type === "time_range") {
+    const m = /^(\d+):(\d{1,2})$/.exec(raw);
+    if (m) return Number(m[1]) * 60 + Number(m[2]);
+  }
+  const n = Number(raw.replace(",", "."));
+  return Number.isNaN(n) ? "invalid" : n;
+}
+
+/** Every commit creates brand-new versions via the same createSpecVersion
+ *  the manual form uses — never edits a row in place. Rows are grouped into
+ *  one new spec per (Material Code, Scope). */
 export async function importSpecs(request: Request, env: Env, commit: boolean): Promise<Response> {
   const form = await request.formData();
   const file = form.get("file");
@@ -308,71 +418,101 @@ export async function importSpecs(request: Request, env: Env, commit: boolean): 
 
   const materialRows = await env.DB.prepare("SELECT code FROM materials").all<{ code: string }>();
   const validMaterials = new Set((materialRows.results ?? []).map((r) => r.code));
+  const catalog = await loadCatalog(env);
 
   interface Group {
     materialCode: string;
+    scope: SpecScope;
+    variant: string | null;
     title: string;
     notes: string | null;
+    changeReason: string | null;
     createdBy: string;
     parameters: ParameterInput[];
   }
   const groups = new Map<string, Group>();
   const results: ImportRowResult[] = [];
   const rowErrors = new Map<number, string>();
-  const materialsWithRowError = new Set<string>();
+  const groupsWithRowError = new Set<string>();
+  const rowGroup = new Map<number, string>();
 
   parsedRows.forEach((row, i) => {
     const rowNum = i + 1;
-    const materialCode = (row["Material Code"] ?? "").trim();
-    const title = (row["Title"] ?? "").trim();
-    const createdBy = (row["Created By"] ?? "").trim();
-    const notes = (row["Notes"] ?? "").trim() || null;
-    const method = (row["Method"] ?? "").trim() || null;
-    const unit = (row["Unit"] ?? "").trim() || null;
-    const minStr = (row["Min Value"] ?? "").trim();
-    const maxStr = (row["Max Value"] ?? "").trim();
-
-    results.push({ row: rowNum, code: materialCode || "(blank)", action: "insert" });
+    const cell = (h: string) => (row[h] ?? "").trim();
+    const materialCode = cell("Material Code");
+    const scope = (cell("Scope").toLowerCase() || "supply") as SpecScope;
+    const variant = cell("Variant") || null;
+    const key = `${materialCode}|${scope}|${variant ?? ""}`;
+    rowGroup.set(rowNum, key);
+    const label = `${materialCode} (${scope}${variant ? `, ${variant}` : ""})`;
+    results.push({ row: rowNum, code: materialCode ? label : "(blank)", action: "insert" });
 
     const fail = (message: string) => {
       rowErrors.set(rowNum, message);
-      if (materialCode) materialsWithRowError.add(materialCode);
+      if (materialCode) groupsWithRowError.add(key);
     };
 
     if (!materialCode) return fail("Material Code is required");
     if (!validMaterials.has(materialCode)) return fail(`Unknown material code: ${materialCode}`);
+    if (!isSpecScope(scope)) return fail(`Scope must be supply or sample, not "${cell("Scope")}"`);
+    const title = cell("Title");
+    const createdBy = cell("Created By");
     if (!title) return fail("Title is required");
     if (!createdBy) return fail("Created By is required");
 
-    const parameter: ParameterInput = {
-      parameter_name: (row["Parameter Name"] ?? "").trim(),
-      param_type: (row["Param Type"] ?? "").trim() as ParamType,
-      method,
-      unit,
-      min_value: minStr === "" ? null : Number(minStr),
-      max_value: maxStr === "" ? null : Number(maxStr),
-    };
-    if (!PARAM_TYPES.includes(parameter.param_type)) {
-      return fail(`Unknown Param Type: ${parameter.param_type || "(blank)"}`);
-    }
-    if (minStr !== "" && Number.isNaN(parameter.min_value)) return fail(`Min Value isn't a number: ${minStr}`);
-    if (maxStr !== "" && Number.isNaN(parameter.max_value)) return fail(`Max Value isn't a number: ${maxStr}`);
-    const paramError = validateParameter(parameter);
-    if (paramError) return fail(paramError);
+    const type = cell("Limit Type") as ParamType;
+    if (!LIMIT_TYPES.includes(type)) return fail(`Unknown Limit Type: ${type || "(blank)"}`);
+    const min = parseLimitCell(cell("Min"), type);
+    const max = parseLimitCell(cell("Max"), type);
+    if (min === "invalid") return fail(`Min isn't a number: ${cell("Min")}`);
+    if (max === "invalid") return fail(`Max isn't a number: ${cell("Max")}`);
+    const target = parseLimitCell(cell("Target"), "numeric_range");
+    const tolerance = parseLimitCell(cell("Tolerance"), "numeric_range");
+    if (target === "invalid") return fail(`Target isn't a number: ${cell("Target")}`);
+    if (tolerance === "invalid") return fail(`Tolerance isn't a number: ${cell("Tolerance")}`);
 
-    if (!groups.has(materialCode)) {
-      groups.set(materialCode, { materialCode, title, notes, createdBy, parameters: [] });
+    const completed = completeParameter(
+      {
+        test_code: cell("Test Code") || null,
+        parameter_name: cell("Parameter Name"),
+        param_type: type,
+        method: cell("Method") || null,
+        conditions: cell("Conditions") || null,
+        min_value: min,
+        max_value: max,
+        unit: cell("Unit") || null,
+        expected_text: cell("Expected") || null,
+        target_value: target,
+        tolerance,
+        remarks: cell("Remarks") || null,
+      },
+      catalog
+    );
+    if (!completed.ok) return fail(completed.message);
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        materialCode,
+        scope,
+        variant,
+        title,
+        notes: cell("Notes") || null,
+        changeReason: cell("Change Reason") || null,
+        createdBy,
+        parameters: [],
+      });
     }
-    parameter.sort_order = groups.get(materialCode)!.parameters.length;
-    groups.get(materialCode)!.parameters.push(parameter);
+    const group = groups.get(key)!;
+    completed.param.sort_order = group.parameters.length;
+    group.parameters.push(completed.param);
   });
 
   results.forEach((r, idx) => {
     const rowNum = idx + 1;
     if (rowErrors.has(rowNum)) {
       results[idx] = { ...r, action: "error", message: rowErrors.get(rowNum) };
-    } else if (materialsWithRowError.has(r.code)) {
-      results[idx] = { ...r, action: "error", message: "Not created — another row for this material has an error" };
+    } else if (groupsWithRowError.has(rowGroup.get(rowNum)!)) {
+      results[idx] = { ...r, action: "error", message: "Not created — another row for this spec has an error" };
     }
   });
 
@@ -380,12 +520,15 @@ export async function importSpecs(request: Request, env: Env, commit: boolean): 
   if (commit && errors > 0) return error("Fix the rows with errors before importing", 400);
 
   if (commit) {
-    for (const group of groups.values()) {
-      if (materialsWithRowError.has(group.materialCode)) continue;
+    for (const [key, group] of groups) {
+      if (groupsWithRowError.has(key)) continue;
       const created = await createSpecVersion(env, group.materialCode, {
         title: group.title,
         notes: group.notes,
+        change_reason: group.changeReason,
         created_by: group.createdBy,
+        scope: group.scope,
+        variant: group.variant,
         parameters: group.parameters,
       });
       if (!created.ok) return error(created.message, created.status);

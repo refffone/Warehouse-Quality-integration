@@ -43,6 +43,12 @@ every spec namespaces its own supplier/material codes (`WH1-`, `QA1-`,
   create a material code directly from the Codes tab; create a new spec
   version for a material; finalize actual count (not weight) for a
   count-basis packaging material.
+- **`access-workflow.spec.ts`** — the Access-log alignment: supplies
+  filed as first (RMF) then regular (RMP) and samples as RMS, an
+  Access-format internal batch number (abbreviation + sequence + year),
+  accepting a batch with concession, Quality reclassifying a line, and
+  a spec's automatic pass/fail (plus the reason an override needs), and
+  Quality-only product details that Warehouse never receives.
 
 Not covered (out of scope for this pass, not because they're low-risk —
 worth adding if this suite grows): Excel import/export, the Suppliers

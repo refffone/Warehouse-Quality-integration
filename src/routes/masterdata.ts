@@ -14,10 +14,12 @@ import type {
   ImportRowResult,
   ImportSummary,
   Material,
+  Role,
   Supplier,
   SupplierCodeMetrics,
   SupplierRating,
   SupplierWeightVariance,
+  SupplyKind,
 } from "../types";
 
 export async function listSuppliers(_request: Request, env: Env): Promise<Response> {
@@ -31,27 +33,72 @@ export async function listSuppliers(_request: Request, env: Env): Promise<Respon
   return json(rows.results ?? []);
 }
 
-export async function createSupplier(request: Request, env: Env): Promise<Response> {
-  const input = await request.json<{ code: string; name: string }>();
+export async function createSupplier(request: Request, env: Env, role: Role): Promise<Response> {
+  const input = await request.json<{ code: string; name: string; abbreviation?: string | null }>();
   if (!input.code || !input.name) return error("code and name are required");
+  const abbreviation = normalizeAbbreviation(input.abbreviation);
+  if (abbreviation && role !== "quality") {
+    return error("Only quality can set a supplier's abbreviation", 403);
+  }
+  if (abbreviation && !isValidAbbreviation(abbreviation)) {
+    return error("Abbreviation must be 1-10 letters or digits", 400);
+  }
+
+  const taken = await env.DB.prepare("SELECT 1 FROM suppliers WHERE code = ?").bind(input.code).first();
+  if (taken) return error(`Supplier code ${input.code} already exists`, 409);
 
   const row = await env.DB.prepare(
-    "INSERT INTO suppliers (code, name) VALUES (?, ?) RETURNING id"
+    "INSERT INTO suppliers (code, name, abbreviation) VALUES (?, ?, ?) RETURNING id"
   )
-    .bind(input.code, input.name)
+    .bind(input.code, input.name, abbreviation)
     .first<{ id: number }>();
   return json({ id: row!.id }, 201);
 }
 
+/** Batch-number prefixes are upper-case letters/digits (MHND, ALMAS). */
+function normalizeAbbreviation(value: string | null | undefined): string | null {
+  const v = (value ?? "").trim().toUpperCase();
+  return v || null;
+}
+
+function isValidAbbreviation(value: string): boolean {
+  return /^[A-Z0-9]{1,10}$/.test(value);
+}
+
+/** Quality edits a supplier's name and/or batch-number abbreviation. */
+export async function updateSupplier(request: Request, env: Env, code: string): Promise<Response> {
+  const input = await request.json<{ name?: string; abbreviation?: string | null }>();
+  const supplier = await env.DB.prepare("SELECT id FROM suppliers WHERE code = ?").bind(code).first<{ id: number }>();
+  if (!supplier) return error(`Unknown supplier code: ${code}`, 404);
+
+  if (input.name !== undefined && !input.name.trim()) return error("name can't be blank", 400);
+  const abbreviation = input.abbreviation === undefined ? undefined : normalizeAbbreviation(input.abbreviation);
+  if (abbreviation && !isValidAbbreviation(abbreviation)) {
+    return error("Abbreviation must be 1-10 letters or digits", 400);
+  }
+
+  await env.DB.prepare(
+    `UPDATE suppliers SET
+       name = COALESCE(?, name),
+       abbreviation = CASE WHEN ? THEN ? ELSE abbreviation END
+     WHERE id = ?`
+  )
+    .bind(input.name?.trim() ?? null, abbreviation !== undefined ? 1 : 0, abbreviation ?? null, supplier.id)
+    .run();
+  return json({ code, name: input.name, abbreviation });
+}
+
 export async function suppliersImportTemplate(env: Env): Promise<Response> {
-  const rows = await env.DB.prepare("SELECT code, name FROM suppliers ORDER BY name").all<{
+  const rows = await env.DB.prepare("SELECT code, name, abbreviation FROM suppliers ORDER BY name").all<{
     code: string;
     name: string;
+    abbreviation: string | null;
   }>();
   const bytes = buildTemplateXlsx(
     [
       { key: "code", header: "Code" },
       { key: "name", header: "Name" },
+      { key: "abbreviation", header: "Abbreviation" },
     ],
     rows.results ?? []
   );
@@ -64,7 +111,7 @@ export async function suppliersImportTemplate(env: Env): Promise<Response> {
  *  row still has an error, rather than silently applying the valid rows
  *  and skipping the rest — so "did my import work?" always has a clean
  *  yes/no answer instead of "partially." */
-export async function importSuppliers(request: Request, env: Env, commit: boolean): Promise<Response> {
+export async function importSuppliers(request: Request, env: Env, role: Role, commit: boolean): Promise<Response> {
   const form = await request.formData();
   const file = form.get("file");
   if (!isUploadedFile(file)) return error("file is required", 400);
@@ -81,7 +128,7 @@ export async function importSuppliers(request: Request, env: Env, commit: boolea
   const seenInFile = new Set<string>();
 
   const results: ImportRowResult[] = [];
-  const toWrite: Array<{ code: string; name: string }> = [];
+  const toWrite: Array<{ code: string; name: string; abbreviation: string | null }> = [];
 
   parsedRows.forEach((row, i) => {
     const rowNum = i + 1;
@@ -96,9 +143,20 @@ export async function importSuppliers(request: Request, env: Env, commit: boolea
       results.push({ row: rowNum, code, action: "error", message: "Duplicate code — already on an earlier row in this file" });
       return;
     }
+    // A blank Abbreviation leaves any existing one alone. Only Quality can
+    // set one, since it decides Quality's internal batch numbers.
+    const abbreviation = normalizeAbbreviation(row["Abbreviation"]);
+    if (abbreviation && role !== "quality") {
+      results.push({ row: rowNum, code, action: "error", message: "Only Quality can set supplier abbreviations — leave that column blank" });
+      return;
+    }
+    if (abbreviation && !isValidAbbreviation(abbreviation)) {
+      results.push({ row: rowNum, code, action: "error", message: "Abbreviation must be 1-10 letters or digits" });
+      return;
+    }
     seenInFile.add(code);
     results.push({ row: rowNum, code, action: existingCodes.has(code) ? "update" : "insert" });
-    toWrite.push({ code, name });
+    toWrite.push({ code, name, abbreviation });
   });
 
   const errors = results.filter((r) => r.action === "error").length;
@@ -108,9 +166,11 @@ export async function importSuppliers(request: Request, env: Env, commit: boolea
     await env.DB.batch(
       toWrite.map((r) =>
         env.DB.prepare(
-          `INSERT INTO suppliers (code, name) VALUES (?, ?)
-           ON CONFLICT(code) DO UPDATE SET name = excluded.name`
-        ).bind(r.code, r.name)
+          `INSERT INTO suppliers (code, name, abbreviation) VALUES (?, ?, ?)
+           ON CONFLICT(code) DO UPDATE SET
+             name = excluded.name,
+             abbreviation = COALESCE(excluded.abbreviation, suppliers.abbreviation)`
+        ).bind(r.code, r.name, r.abbreviation)
       )
     );
   }
@@ -379,7 +439,9 @@ export async function upsertMaterialSubtype(request: Request, env: Env): Promise
 
 /** Configure (or reconfigure) the internal batch-number pattern. Pass
  *  supplier_code to scope it to one supplier, or omit it to set the global
- *  default. Placeholders: {supplier_code}, {MMYY}, {seq:04d}. */
+ *  default. Placeholders: {supplier_abbr}, {supplier_code}, {material_code},
+ *  {YY}, {YYYY}, {MM}, {MMYY}, {seq:04d}. The counter restarts monthly if the
+ *  pattern has a month in it, yearly if it only has a year. */
 export async function setBatchNumberScheme(request: Request, env: Env): Promise<Response> {
   const input = await request.json<{ supplier_code?: string; pattern_template: string }>();
   if (!input.pattern_template) return error("pattern_template is required");
@@ -424,25 +486,43 @@ export async function setBatchNumberScheme(request: Request, env: Env): Promise<
   return json({ supplier_id: supplierId, pattern_template: input.pattern_template });
 }
 
-/** Two simple, system-wide ledger pools (mirroring Quality's current RMF/RMS
- *  labeling): RMF for any novel scenario, RMS for a regular repeat. Each is
- *  a plain prefix + running number, not scoped to a material or supplier.
- *  Placeholder: {seq:04d}. */
+/** The three code pools, matching the Access log: RMS for samples, RMF for
+ *  first supplies, RMP for regular supplies. Each is a pattern plus a plain
+ *  running number (placeholder: {seq:04d}), not scoped to any material or
+ *  supplier. */
 export async function listImportCodeSchemes(_request: Request, env: Env): Promise<Response> {
-  const rows = await env.DB.prepare("SELECT * FROM import_code_schemes ORDER BY kind").all();
+  const rows = await env.DB.prepare(
+    "SELECT kind, pattern_template, current_sequence FROM code_pools ORDER BY CASE kind WHEN 'RMS' THEN 1 WHEN 'RMF' THEN 2 ELSE 3 END"
+  ).all();
   return json(rows.results ?? []);
 }
 
+/** Updates a pool's pattern and/or its last-used number — the latter so
+ *  numbering can continue from where the Access log left off. */
 export async function setImportCodeScheme(request: Request, env: Env, kind: string): Promise<Response> {
-  if (kind !== "RMF" && kind !== "RMS") return error("kind must be RMF or RMS", 404);
-  const input = await request.json<{ pattern_template: string }>();
-  if (!input.pattern_template) return error("pattern_template is required");
+  if (kind !== "RMS" && kind !== "RMF" && kind !== "RMP") return error("kind must be RMS, RMF or RMP", 404);
+  const input = await request.json<{ pattern_template?: string; current_sequence?: number }>();
+  const pattern = input.pattern_template?.trim() || null;
+  const sequence = input.current_sequence;
+  if (!pattern && sequence === undefined) return error("Provide pattern_template and/or current_sequence", 400);
+  if (pattern && !pattern.includes("{seq")) return error("The pattern needs a {seq} placeholder, e.g. RMP{seq:04d}", 400);
+  if (sequence !== undefined && (!Number.isInteger(sequence) || sequence < 0)) {
+    return error("current_sequence must be a whole number, 0 or more", 400);
+  }
 
-  await env.DB.prepare("UPDATE import_code_schemes SET pattern_template = ? WHERE kind = ?")
-    .bind(input.pattern_template, kind)
+  await env.DB.prepare(
+    `UPDATE code_pools SET
+       pattern_template = COALESCE(?, pattern_template),
+       current_sequence = COALESCE(?, current_sequence)
+     WHERE kind = ?`
+  )
+    .bind(pattern, sequence ?? null, kind)
     .run();
 
-  return json({ kind, pattern_template: input.pattern_template });
+  const row = await env.DB.prepare("SELECT kind, pattern_template, current_sequence FROM code_pools WHERE kind = ?")
+    .bind(kind)
+    .first();
+  return json(row);
 }
 
 /** Weighted by accepted/rejected quantity rather than a flat per-batch
@@ -456,8 +536,9 @@ function passRate(qtyAccepted: number, qtyRejected: number): number | null {
 }
 
 /** Everything Quality knows about one material code: every name it's been
- *  received under, its full spec history, its import history split into
- *  novel (RMF) vs repeat (RMS) events with each event's batches/attachments,
+ *  received under, its full spec history, its receipt history split into
+ *  first supplies (RMF), regular supplies (RMP) and samples (RMS) with each
+ *  entry's batches/attachments,
  *  and pass-rate metrics overall and per supplier. */
 export type MaterialDossier = Awaited<ReturnType<typeof getMaterialDossierData>>;
 
@@ -485,9 +566,10 @@ export async function getMaterialDossierData(env: Env, materialCode: string) {
 
   const specs = await listSpecsForMaterial(env, materialCode);
 
-  const [rmf, rms] = await Promise.all([
-    getImportEntries(env, materialCode, "RMF"),
-    getImportEntries(env, materialCode, "RMS"),
+  const [rmf, rmp, rms] = await Promise.all([
+    getImportEntries(env, materialCode, "first"),
+    getImportEntries(env, materialCode, "regular"),
+    getImportEntries(env, materialCode, "sample"),
   ]);
 
   const overallRow = await env.DB.prepare(
@@ -546,6 +628,7 @@ export async function getMaterialDossierData(env: Env, materialCode: string) {
     names: namesRows.results ?? [],
     specs,
     rmf,
+    rmp,
     rms,
     metrics: { overall, by_supplier: bySupplier },
   };
@@ -554,25 +637,22 @@ export async function getMaterialDossierData(env: Env, materialCode: string) {
 async function getImportEntries(
   env: Env,
   materialCode: string,
-  kind: "RMF" | "RMS"
+  kind: SupplyKind
 ): Promise<DossierImportEntry[]> {
-  // Classify by the real import_scenario column, not by pattern-matching
-  // the generated import_code's text prefix — the RMS/RMF code format is
-  // user-configurable (Codes > Numbering Schemes), so a code no longer
-  // starting with the literal text "RMS"/"RMF" used to make a real repeat
-  // import silently vanish from this count, even though import_scenario
-  // was still classified correctly all along.
-  const scenarioFilter = kind === "RMS" ? "rl.import_scenario = 'repeat'" : "rl.import_scenario IN ('new_material', 'new_supplier', 'new_name_variant')";
+  // Classify by the real supply_kind column, not by pattern-matching the
+  // code's text prefix — the code format is user-configurable (Codes >
+  // Numbering Schemes), so a prefix match would silently drop entries.
   const lines = await env.DB.prepare(
     `SELECT rl.id as receipt_line_id, rl.import_code, rl.import_scenario, rl.material_name_text,
+            rl.product_description, rl.manufacturer, rl.origin,
             r.id as receipt_id, r.received_at, s.id as supplier_id, s.code as supplier_code, s.name as supplier_name
      FROM receipt_lines rl
      JOIN receipts r ON r.id = rl.receipt_id
      JOIN suppliers s ON s.id = r.supplier_id
-     WHERE rl.material_code = ? AND ${scenarioFilter}
+     WHERE rl.material_code = ? AND rl.supply_kind = ? AND rl.import_code IS NOT NULL
      ORDER BY r.received_at DESC`
   )
-    .bind(materialCode)
+    .bind(materialCode, kind)
     .all<Omit<DossierImportEntry, "batches" | "attachments">>();
 
   const lineRows = lines.results ?? [];
@@ -586,7 +666,7 @@ async function getImportEntries(
     fetchByIds<DossierBatchSummary & { receipt_line_id: number }>(
       env,
       (ph) =>
-        `SELECT id, receipt_line_id, supplier_batch_no, status, internal_batch_no, decided_at
+        `SELECT id, receipt_line_id, supplier_batch_no, status, internal_batch_no, decided_at, concession
          FROM receipt_batches WHERE receipt_line_id IN (${ph}) ORDER BY id`,
       lineIds
     ),
