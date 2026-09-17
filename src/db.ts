@@ -1,5 +1,5 @@
 import { sendPushToRole } from "./push";
-import type { Env, ImportScenario, NotificationKind, Role, Supplier } from "./types";
+import type { CodePool, Env, ImportScenario, NotificationKind, Role, Supplier, SupplyKind } from "./types";
 
 /** D1 caps bound parameters per statement, so a `WHERE col IN (...)` over
  *  an arbitrarily long id list needs chunking. Runs one query per chunk
@@ -94,24 +94,42 @@ export async function notify(
   }).catch(() => {});
 }
 
+export const DEFAULT_BATCH_PATTERN = "{supplier_abbr}{seq:04d}{YY}";
+
+/** Which counter period a batch-number pattern implies: a pattern with a
+ *  month in it restarts monthly, one with only a year restarts yearly, and
+ *  one with no date at all never restarts. */
+function batchPeriodKey(pattern: string, date: Date): string {
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = String(date.getUTCFullYear());
+  if (/\{MM(YY)?\}/.test(pattern)) return `${mm}${yyyy.slice(2)}`;
+  if (/\{YY(YY)?\}/.test(pattern)) return yyyy;
+  return "all";
+}
+
 /**
- * Resolve the batch-number pattern for a supplier (falling back to the
- * global default scheme where supplier_id IS NULL), atomically bump that
- * supplier's counter for the given period, and render the final string.
+ * Next internal batch number for one material from one supplier, matching
+ * the Access log's format (MHND000926 = abbreviation MHND, the 9th batch of
+ * this material from MHND this year, 2026).
  *
- * The INSERT ... ON CONFLICT ... RETURNING round-trip is a single
- * statement, so two concurrent receipts for the same supplier/month can't
- * observe the same sequence value.
+ * The pattern comes from the supplier's own scheme, else the global default
+ * (supplier_id IS NULL), else DEFAULT_BATCH_PATTERN. The counter is keyed
+ * by (abbreviation, material, period) — Access counts per abbreviation, and
+ * two suppliers sharing one abbreviation share its sequence. A supplier
+ * with no abbreviation yet falls back to its own id as the scope and its
+ * code as the prefix.
+ *
+ * The same number can exist on a different material, but never twice on
+ * the same one: if a drawn number is already taken for this material (a
+ * counter seeded too low, or a number typed in by hand earlier), the next
+ * one is drawn instead.
  */
 export async function generateInternalBatchNo(
   env: Env,
   supplier: Supplier,
+  materialCode: string,
   periodDate: Date
 ): Promise<string> {
-  // Prefer a supplier-specific scheme, falling back to the single
-  // supplier_id IS NULL default row. UNION ALL without ORDER BY preserves
-  // branch order in SQLite, so LIMIT 1 picks the supplier-specific row
-  // when one exists.
   const scheme = await env.DB.prepare(
     `SELECT pattern_template FROM batch_number_schemes
      WHERE supplier_id = ?
@@ -122,33 +140,60 @@ export async function generateInternalBatchNo(
   )
     .bind(supplier.id)
     .first<{ pattern_template: string }>();
+  const pattern = scheme?.pattern_template ?? DEFAULT_BATCH_PATTERN;
 
-  const pattern = scheme?.pattern_template ?? "{supplier_code}{MMYY}{seq:04d}";
-
+  const abbr = supplier.abbreviation?.trim().toUpperCase() || null;
+  const scope = abbr ?? `#${supplier.id}`;
+  const periodKey = batchPeriodKey(pattern, periodDate);
   const mm = String(periodDate.getUTCMonth() + 1).padStart(2, "0");
-  const yy = String(periodDate.getUTCFullYear() % 100).padStart(2, "0");
-  const periodKey = `${mm}${yy}`;
+  const yyyy = String(periodDate.getUTCFullYear());
 
-  const counterRow = await env.DB.prepare(
-    `INSERT INTO batch_number_counters (supplier_id, period_key, current_sequence)
-     VALUES (?, ?, 1)
-     ON CONFLICT(supplier_id, period_key)
-     DO UPDATE SET current_sequence = current_sequence + 1
-     RETURNING current_sequence`
-  )
-    .bind(supplier.id, periodKey)
-    .first<{ current_sequence: number }>();
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const counterRow = await env.DB.prepare(
+      `INSERT INTO batch_seq_counters (scope, material_code, period_key, current_sequence)
+       VALUES (?, ?, ?, 1)
+       ON CONFLICT(scope, material_code, period_key)
+       DO UPDATE SET current_sequence = current_sequence + 1
+       RETURNING current_sequence`
+    )
+      .bind(scope, materialCode, periodKey)
+      .first<{ current_sequence: number }>();
 
-  const sequence = counterRow?.current_sequence ?? 1;
-
-  return renderPattern(pattern, {
-    supplier_code: supplier.code,
-    MMYY: periodKey,
-    seq: sequence,
-  });
+    const candidate = renderPattern(pattern, {
+      supplier_abbr: abbr ?? supplier.code,
+      supplier_code: supplier.code,
+      material_code: materialCode,
+      MMYY: `${mm}${yyyy.slice(2)}`,
+      MM: mm,
+      YY: yyyy.slice(2),
+      YYYY: yyyy,
+      seq: counterRow?.current_sequence ?? 1,
+    });
+    if (!(await isInternalBatchNoTaken(env, materialCode, candidate))) return candidate;
+  }
+  throw new Error("Couldn't find a free internal batch number — check this supplier's batch-number counter");
 }
 
-/** Shared placeholder renderer for both the batch-number and import-code
+/** True if `internalBatchNo` is already used by a batch of `materialCode`,
+ *  optionally ignoring one batch (the one being decided). */
+export async function isInternalBatchNoTaken(
+  env: Env,
+  materialCode: string,
+  internalBatchNo: string,
+  exceptBatchId?: number
+): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT 1 FROM receipt_batches rb
+     JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
+     WHERE rl.material_code = ? AND rb.internal_batch_no = ? AND rb.id != ?
+     LIMIT 1`
+  )
+    .bind(materialCode, internalBatchNo, exceptBatchId ?? -1)
+    .first();
+  return row !== null;
+}
+
+/** Shared placeholder renderer for both the batch-number and code-pool
  *  patterns: `{key}` substitutes a value verbatim, `{key:04d}` zero-pads a
  *  numeric value to that width. */
 function renderPattern(pattern: string, values: Record<string, string | number>): string {
@@ -166,87 +211,78 @@ function normalizeName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-export interface ImportCodeResult {
-  code: string;
-  scenario: ImportScenario;
+export const POOL_FOR_KIND: Record<SupplyKind, CodePool> = {
+  sample: "RMS",
+  first: "RMF",
+  regular: "RMP",
+};
+
+export interface LineClassification {
+  kind: SupplyKind;
+  scenario: ImportScenario | null;
 }
 
 /**
- * Detects which of the three novelty scenarios applies to a
- * (material_code, material_name_text, supplier) combination based on
- * already-reviewed receipt lines (import_code IS NOT NULL) — this drives
- * which pool the code is drawn from: any "new_*" scenario draws from the
- * RMF pool, a "repeat" draws from RMS. Each pool is a single, simple,
- * system-wide running count (matching Quality's current RMF/RMS ledger),
- * not scoped to any one material or supplier — only the scenario
- * detection itself looks at material/supplier/name history.
+ * First supply vs regular supply for a coded supply line, from earlier
+ * supply lines in *other* receipts (samples don't count — in Access a
+ * sample typically comes before the first supply). Any of the three novelty
+ * scenarios is a first supply (RMF); a plain repeat is a regular supply
+ * (RMP). The scenario itself is kept on the line for display.
  */
-export async function generateImportCode(
+export async function classifySupplyLine(
   env: Env,
   materialCode: string,
   materialNameText: string,
-  supplier: Supplier
-): Promise<ImportCodeResult> {
-  const nameKey = normalizeName(materialNameText);
-
-  const seenMaterial = await env.DB.prepare(
-    "SELECT 1 FROM receipt_lines WHERE material_code = ? AND import_code IS NOT NULL LIMIT 1"
+  supplierId: number,
+  receiptId: number
+): Promise<LineClassification> {
+  const history = await env.DB.prepare(
+    `SELECT
+       COUNT(*) AS seen_material,
+       COALESCE(MAX(CASE WHEN r.supplier_id = ? THEN 1 ELSE 0 END), 0) AS seen_supplier,
+       COALESCE(MAX(CASE WHEN r.supplier_id = ? AND LOWER(TRIM(rl.material_name_text)) = ? THEN 1 ELSE 0 END), 0) AS seen_name
+     FROM receipt_lines rl
+     JOIN receipts r ON r.id = rl.receipt_id
+     WHERE rl.material_code = ? AND rl.receipt_id != ? AND rl.supply_kind IN ('first', 'regular')`
   )
-    .bind(materialCode)
-    .first();
+    .bind(supplierId, supplierId, normalizeName(materialNameText), materialCode, receiptId)
+    .first<{ seen_material: number; seen_supplier: number; seen_name: number }>();
 
-  const seenSupplier = seenMaterial
-    ? await env.DB.prepare(
-        `SELECT 1 FROM receipt_lines rl
-         JOIN receipts r ON r.id = rl.receipt_id
-         WHERE rl.material_code = ? AND r.supplier_id = ? AND rl.import_code IS NOT NULL
-         LIMIT 1`
-      )
-        .bind(materialCode, supplier.id)
-        .first()
-    : null;
-
-  const seenNameVariant = seenSupplier
-    ? await env.DB.prepare(
-        `SELECT 1 FROM receipt_lines rl
-         JOIN receipts r ON r.id = rl.receipt_id
-         WHERE rl.material_code = ? AND r.supplier_id = ? AND rl.import_code IS NOT NULL
-           AND LOWER(TRIM(rl.material_name_text)) = ?
-         LIMIT 1`
-      )
-        .bind(materialCode, supplier.id, nameKey)
-        .first()
-    : null;
-
-  const scenario: ImportScenario = !seenMaterial
+  const scenario: ImportScenario = !history?.seen_material
     ? "new_material"
-    : !seenSupplier
+    : !history.seen_supplier
       ? "new_supplier"
-      : !seenNameVariant
+      : !history.seen_name
         ? "new_name_variant"
         : "repeat";
-
-  const kind = scenario === "repeat" ? "RMS" : "RMF";
-  const code = await drawImportCode(env, kind);
-
-  return { code, scenario };
+  return { kind: scenario === "repeat" ? "regular" : "first", scenario };
 }
 
-async function drawImportCode(env: Env, kind: "RMF" | "RMS"): Promise<string> {
-  const schemeRow = await env.DB.prepare("SELECT pattern_template FROM import_code_schemes WHERE kind = ?")
-    .bind(kind)
-    .first<{ pattern_template: string }>();
-  const pattern = schemeRow?.pattern_template ?? `${kind}{seq:04d}`;
+/**
+ * Draws the next code from a pool (RMS / RMF / RMP). The UPDATE ...
+ * RETURNING is one statement, so two concurrent draws can't get the same
+ * number. A number already used on another line (e.g. Quality set the
+ * counter back, or typed that code by hand) is skipped.
+ */
+export async function drawPoolCode(env: Env, pool: CodePool): Promise<string> {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const row = await env.DB.prepare(
+      `UPDATE code_pools SET current_sequence = current_sequence + 1
+       WHERE kind = ?
+       RETURNING current_sequence, pattern_template`
+    )
+      .bind(pool)
+      .first<{ current_sequence: number; pattern_template: string }>();
+    if (!row) throw new Error(`Code pool ${pool} isn't configured`);
+    const code = renderPattern(row.pattern_template, { seq: row.current_sequence });
+    if (!(await isImportCodeTaken(env, code))) return code;
+  }
+  throw new Error(`Couldn't find a free ${pool} code — check the ${pool} counter under Numbering Schemes`);
+}
 
-  const counterRow = await env.DB.prepare(
-    `INSERT INTO import_code_counters (kind, current_sequence)
-     VALUES (?, 1)
-     ON CONFLICT(kind) DO UPDATE SET current_sequence = current_sequence + 1
-     RETURNING current_sequence`
-  )
-    .bind(kind)
-    .first<{ current_sequence: number }>();
-  const sequence = counterRow?.current_sequence ?? 1;
-
-  return renderPattern(pattern, { seq: sequence });
+export async function isImportCodeTaken(env: Env, code: string, exceptLineId?: number): Promise<boolean> {
+  const row = await env.DB.prepare("SELECT 1 FROM receipt_lines WHERE import_code = ? AND id != ? LIMIT 1")
+    .bind(code, exceptLineId ?? -1)
+    .first();
+  return row !== null;
 }

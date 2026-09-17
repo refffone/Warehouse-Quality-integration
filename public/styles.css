@@ -398,6 +398,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .badge.flag { background: var(--flag-bg); color: var(--flag); }
 .badge.repeat { background: var(--repeat-bg); color: var(--repeat); }
 .badge.neutral { background: var(--surface-2); border: 1px solid var(--rule); color: var(--ink-muted); }
+/* Words (not codes) inside a badge read better in the body font — Arabic especially. */
+.badge .badge-words { font-family: var(--font-body); font-size: 0.72rem; }
 
 /* ---------- master data dossier ---------- */
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
@@ -421,6 +423,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .status-pill.approved, .status-pill.decided { background: var(--good-bg); color: var(--good); }
 .status-pill.rejected { background: var(--bad-bg); color: var(--bad); }
 .status-pill.partial { background: var(--accent-soft); color: var(--accent-soft-ink); }
+.status-pill.concession { background: var(--warn-bg); color: var(--warn); }
 .status-pill.in_review { background: var(--warn-bg); color: var(--warn); }
 
 /* ---------- buttons ---------- */
@@ -571,6 +574,8 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
 .spinner { width: 22px; height: 22px; border-radius: 50%; border: 2.5px solid var(--rule-strong); border-top-color: var(--accent); animation: spin 0.7s linear infinite; }
 
 .muted { color: var(--ink-muted); }
+.text-bad { color: var(--bad); }
+.list-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding-block: 10px; }
 .mono { font-family: var(--font-mono); white-space: nowrap; }
 .small { font-size: 0.78rem; }
 

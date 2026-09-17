@@ -1,12 +1,17 @@
 import {
+  classifySupplyLine,
+  drawPoolCode,
   fetchByIds,
-  generateImportCode,
   generateInternalBatchNo,
   getSupplierByCode,
+  isImportCodeTaken,
+  isInternalBatchNoTaken,
   notify,
+  POOL_FOR_KIND,
   resolveMaterialClassification,
 } from "../db";
 import { error, json } from "../http";
+import { autoJudge } from "../../public/specLimits.js";
 import { createSpecVersion, getActiveSpec, getActiveSpecsForMaterials } from "./specs";
 import type {
   AssociateCodeInput,
@@ -14,25 +19,45 @@ import type {
   BatchTestResult,
   Env,
   FinalizeWeightInput,
+  LineProductInfoInput,
   NewReceiptInput,
   Receipt,
   ReceiptBatch,
   ReceiptLine,
   RecordTestResultsInput,
   Role,
+  SetLineClassificationInput,
   SetSampleSenderInput,
+  SpecScope,
   SpecWithParameters,
+  Supplier,
+  SupplyKind,
 } from "../types";
 
 /** A test result joined with enough of its spec parameter to render/export
  *  without a second lookup. */
 export interface TestResultWithParameter extends BatchTestResult {
+  test_code: string | null;
   parameter_name: string;
   unit: string | null;
   param_type: string;
   method: string | null;
+  conditions: string | null;
   min_value: number | null;
   max_value: number | null;
+  expected_text: string | null;
+  target_value: number | null;
+  tolerance: number | null;
+  remarks: string | null;
+}
+
+const RESULT_PARAMETER_COLUMNS =
+  "sp.test_code, sp.parameter_name, sp.unit, sp.param_type, sp.method, sp.conditions, sp.min_value, sp.max_value, sp.expected_text, sp.target_value, sp.tolerance, sp.remarks";
+
+/** Samples are tested against the sample spec (falling back to the supply
+ *  spec); everything else against the supply spec. */
+export function specScopeFor(receiptType: string): SpecScope {
+  return receiptType === "sample" ? "sample" : "supply";
 }
 
 /** Full receipt payload assembled from the three tables for API responses. */
@@ -55,7 +80,7 @@ interface ReceiptWithDetail {
 
 export async function getBatchTestResults(env: Env, batchId: number): Promise<TestResultWithParameter[]> {
   const rows = await env.DB.prepare(
-    `SELECT btr.*, sp.parameter_name, sp.unit, sp.param_type, sp.method, sp.min_value, sp.max_value
+    `SELECT btr.*, ${RESULT_PARAMETER_COLUMNS}
      FROM batch_test_results btr
      JOIN spec_parameters sp ON sp.id = btr.spec_parameter_id
      WHERE btr.batch_id = ?
@@ -126,6 +151,23 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
     .first<{ id: number }>();
   const receiptId = receiptRow!.id;
 
+  // Like the Access log, every line gets its kind and code the moment it's
+  // registered: a sample line draws from RMS; a supply line is classified
+  // first (RMF) or regular (RMP) from its material's history. A supply line
+  // without a material code can't be classified yet, so it gets its code
+  // when Quality associates one (associateCode).
+  const lineCodes: Array<{ kind: SupplyKind | null; scenario: string | null; code: string | null }> = [];
+  for (const line of input.lines) {
+    if (input.type === "sample") {
+      lineCodes.push({ kind: "sample", scenario: null, code: await drawPoolCode(env, "RMS") });
+    } else if (line.material_code) {
+      const c = await classifySupplyLine(env, line.material_code, line.material_name_text, supplier.id, receiptId);
+      lineCodes.push({ kind: c.kind, scenario: c.scenario, code: await drawPoolCode(env, POOL_FOR_KIND[c.kind]) });
+    } else {
+      lineCodes.push({ kind: null, scenario: null, code: null });
+    }
+  }
+
   // Every line and batch insert lands in one atomic D1 batch (a single
   // transaction — all commit together or none do) instead of the previous
   // sequential .run() calls, so a failure partway through a multi-line,
@@ -135,19 +177,23 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
   // than last_insert_rowid() — that connection-level value drifts to point
   // at whichever *batch* row was just inserted once a line has more than
   // one batch, silently misattaching every batch after the first.
-  const statements = [];
-  for (const line of input.lines) {
+  const statements: D1PreparedStatement[] = [];
+  input.lines.forEach((line, i) => {
     statements.push(
       env.DB.prepare(
-        `INSERT INTO receipt_lines (receipt_id, material_code, material_name_text, unit, packaging_type, qty_basis)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO receipt_lines (receipt_id, material_code, material_name_text, unit, packaging_type, qty_basis,
+                                    supply_kind, import_scenario, import_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).bind(
         receiptId,
         line.material_code ?? null,
         line.material_name_text,
         line.unit,
         line.packaging_type ?? null,
-        line.qty_basis ?? null
+        line.qty_basis ?? null,
+        lineCodes[i].kind,
+        lineCodes[i].scenario,
+        lineCodes[i].code
       )
     );
     for (const batch of line.batches) {
@@ -166,7 +212,7 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
         )
       );
     }
-  }
+  });
   await env.DB.batch(statements);
 
   await notify(
@@ -247,20 +293,28 @@ export async function listReceipts(request: Request, env: Env, role: Role): Prom
  *  receipt that still has an approved/partial batch nobody has weighed in
  *  yet. */
 export async function getTodoCount(env: Env, role: Role): Promise<Response> {
-  const sql =
-    role === "warehouse"
-      ? `SELECT COUNT(*) AS count FROM receipts r
-         WHERE r.status != 'decided'
-            OR EXISTS (
-              SELECT 1 FROM receipt_lines rl
-              JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
-              WHERE rl.receipt_id = r.id
-                AND rb.status IN ('approved', 'partial')
-                AND rb.qty_actual_weighed IS NULL
-            )`
-      : `SELECT COUNT(*) AS count FROM receipts WHERE status != 'decided'`;
-  const row = await env.DB.prepare(sql).first<{ count: number }>();
+  const row = await env.DB.prepare(`SELECT COUNT(*) AS count FROM receipts r WHERE ${openReceiptSql(role)}`).first<{
+    count: number;
+  }>();
   return json({ count: row?.count ?? 0 });
+}
+
+/** SQL condition (on alias `r`) for "still on this role's To Do": Quality's
+ *  is simply "not yet decided"; Warehouse's also keeps a decided *import*
+ *  that still has an approved/partial batch nobody has weighed in yet
+ *  (samples are never weighed, so they never linger for that reason). */
+function openReceiptSql(role: Role): string {
+  if (role !== "warehouse") return "r.status != 'decided'";
+  return `(r.status != 'decided' OR (r.type = 'import' AND EXISTS (
+    SELECT 1 FROM receipt_lines rl
+    JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
+    WHERE rl.receipt_id = r.id
+      -- The unary + keeps SQLite from walking every approved batch through
+      -- the status index for each receipt (seconds, once the Access history
+      -- is in); batches are found through their line instead (milliseconds).
+      AND +rb.status IN ('approved', 'partial')
+      AND rb.qty_actual_weighed IS NULL
+  )))`;
 }
 
 export async function getReceipt(env: Env, role: Role, id: number): Promise<Response> {
@@ -277,13 +331,15 @@ export async function getReceipt(env: Env, role: Role, id: number): Promise<Resp
     const batches = await env.DB.prepare("SELECT * FROM receipt_batches WHERE receipt_line_id = ?")
       .bind(line.id)
       .all<ReceiptBatch>();
-    const spec = line.material_code ? await getActiveSpec(env, line.material_code) : null;
+    const spec = line.material_code
+      ? await getActiveSpec(env, line.material_code, specScopeFor(receipt.type as string))
+      : null;
     const batchesWithResults = [];
     for (const b of batches.results ?? []) {
       const test_results = role === "quality" || receipt.type !== "sample" ? await getBatchTestResults(env, b.id) : [];
       batchesWithResults.push({ ...redactBatchForRole(b, role, receipt.type as string), test_results });
     }
-    detail.lines.push({ ...line, spec, batches: batchesWithResults });
+    detail.lines.push({ ...redactLineForRole(line, role), spec, batches: batchesWithResults });
   }
 
   return json(detail);
@@ -298,20 +354,59 @@ export async function getReceipt(env: Env, role: Role, id: number): Promise<Resp
 export async function listReceiptsDetailed(request: Request, env: Env, role: Role): Promise<Response> {
   const url = new URL(request.url);
   const type = url.searchParams.get("type");
+  const bucket = url.searchParams.get("bucket");
+  const query = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit")) || 50, 1), 200);
+  const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
 
+  // Filtering, search and paging all happen here rather than in the
+  // browser, so a list with thousands of receipts (the Access history)
+  // stays complete and fast.
   const conditions: string[] = [];
-  const params: string[] = [];
+  const params: Array<string | number> = [];
   if (type) {
-    conditions.push("type = ?");
+    conditions.push("r.type = ?");
     params.push(type);
   }
+  if (bucket === "todo") conditions.push(openReceiptSql(role));
+  if (bucket === "history") conditions.push(`NOT ${openReceiptSql(role)}`);
+  if (query) {
+    const like = `%${query.replace(/^#/, "")}%`;
+    // Warehouse never learns a sample's status, so it can't search by it either.
+    const statusVisible = role === "quality" ? "1" : "r.type != 'sample'";
+    conditions.push(`(
+      CAST(r.id AS TEXT) LIKE ?
+      OR LOWER(s.name) LIKE ? OR LOWER(s.code) LIKE ?
+      OR (${statusVisible} AND r.status LIKE ?)
+      OR EXISTS (
+        SELECT 1 FROM receipt_lines ql
+        LEFT JOIN receipt_batches qb ON qb.receipt_line_id = ql.id
+        WHERE ql.receipt_id = r.id AND (
+          LOWER(COALESCE(ql.material_code, '')) LIKE ?
+          OR LOWER(COALESCE(ql.import_code, '')) LIKE ?
+          OR LOWER(ql.material_name_text) LIKE ?
+          OR LOWER(COALESCE(qb.supplier_batch_no, '')) LIKE ?
+          OR LOWER(COALESCE(qb.internal_batch_no, '')) LIKE ?
+          OR (${statusVisible} AND COALESCE(qb.status, '') LIKE ?)
+        )
+      )
+    )`);
+    params.push(like, like, like, like, like, like, like, like, like, like);
+  }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const from = "FROM receipts r JOIN suppliers s ON s.id = r.supplier_id";
 
-  const receiptRows = await env.DB.prepare(`SELECT * FROM receipts ${where} ORDER BY created_at DESC LIMIT 200`)
-    .bind(...params)
-    .all<Receipt>();
+  const [receiptRows, totalRow] = await Promise.all([
+    env.DB.prepare(`SELECT r.* ${from} ${where} ORDER BY r.created_at DESC, r.id DESC LIMIT ? OFFSET ?`)
+      .bind(...params, limit, offset)
+      .all<Receipt>(),
+    env.DB.prepare(`SELECT COUNT(*) AS total ${from} ${where}`)
+      .bind(...params)
+      .first<{ total: number }>(),
+  ]);
   const receipts = receiptRows.results ?? [];
-  if (!receipts.length) return json([]);
+  const total = totalRow?.total ?? 0;
+  if (!receipts.length) return json({ items: [], total, offset, limit });
 
   const receiptIds = receipts.map((r) => r.id);
   const lines = await fetchByIds<ReceiptLine>(
@@ -331,7 +426,7 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
   const testResultRows = await fetchByIds<TestResultWithParameter>(
     env,
     (ph) =>
-      `SELECT btr.*, sp.parameter_name, sp.unit, sp.param_type, sp.method, sp.min_value, sp.max_value
+      `SELECT btr.*, ${RESULT_PARAMETER_COLUMNS}
        FROM batch_test_results btr
        JOIN spec_parameters sp ON sp.id = btr.spec_parameter_id
        WHERE btr.batch_id IN (${ph})
@@ -339,8 +434,15 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
     batchIds
   );
 
-  const materialCodes = lines.map((l) => l.material_code).filter((c): c is string => Boolean(c));
-  const specsByMaterial = await getActiveSpecsForMaterials(env, materialCodes);
+  const receiptTypeById = new Map(receipts.map((r) => [r.id, r.type]));
+  const codesFor = (scope: SpecScope) =>
+    lines
+      .filter((l) => l.material_code && specScopeFor(receiptTypeById.get(l.receipt_id)!) === scope)
+      .map((l) => l.material_code as string);
+  const specsByScope: Record<SpecScope, Map<string, SpecWithParameters>> = {
+    supply: await getActiveSpecsForMaterials(env, codesFor("supply"), "supply"),
+    sample: await getActiveSpecsForMaterials(env, codesFor("sample"), "sample"),
+  };
 
   const testResultsByBatch = new Map<number, TestResultWithParameter[]>();
   for (const r of testResultRows) {
@@ -360,17 +462,19 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
 
   const detailed = receipts.map((receipt) => {
     const receiptLines = (linesByReceipt.get(receipt.id) ?? []).map((line) => {
-      const spec = line.material_code ? (specsByMaterial.get(line.material_code) ?? null) : null;
+      const spec = line.material_code
+        ? (specsByScope[specScopeFor(receipt.type)].get(line.material_code) ?? null)
+        : null;
       const lineBatches = (batchesByLine.get(line.id) ?? []).map((b) => {
         const test_results = role === "quality" || receipt.type !== "sample" ? (testResultsByBatch.get(b.id) ?? []) : [];
         return { ...redactBatchForRole(b, role, receipt.type), test_results };
       });
-      return { ...line, spec, batches: lineBatches };
+      return { ...redactLineForRole(line, role), spec, batches: lineBatches };
     });
     return { ...receipt, lines: receiptLines };
   });
 
-  return json(detailed);
+  return json({ items: detailed, total, offset, limit });
 }
 
 export async function decideBatch(
@@ -382,7 +486,7 @@ export async function decideBatch(
 
   const batch = await env.DB.prepare(
     `SELECT rb.*, rl.id as line_id, rl.material_code, rl.material_name_text,
-            rl.import_code, rl.import_scenario, rl.receipt_id, r.supplier_id, r.type as receipt_type
+            rl.import_code, rl.import_scenario, rl.supply_kind, rl.receipt_id, r.supplier_id, r.type as receipt_type
      FROM receipt_batches rb
      JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
      JOIN receipts r ON r.id = rl.receipt_id
@@ -396,6 +500,7 @@ export async function decideBatch(
         material_name_text: string;
         import_code: string | null;
         import_scenario: string | null;
+        supply_kind: SupplyKind | null;
         receipt_id: number;
         supplier_id: number;
         receipt_type: string;
@@ -408,33 +513,19 @@ export async function decideBatch(
   if (batch.status !== "pending") {
     return error("This batch has already been decided", 409);
   }
-
-  const supplier = await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?")
-    .bind(batch.supplier_id)
-    .first<{ id: number; code: string; name: string }>();
-
-  // Import code flags novelty of (material, name, supplier) and is assigned
-  // once per line, on its first review, regardless of the decision outcome.
-  let importCode = batch.import_code;
-  let importScenario = batch.import_scenario;
-  if (!importCode) {
-    if (input.import_code) {
-      importCode = input.import_code;
-      importScenario = null;
-    } else {
-      const generated = await generateImportCode(env, batch.material_code, batch.material_name_text, supplier!);
-      importCode = generated.code;
-      importScenario = generated.scenario;
-    }
-    await env.DB.prepare("UPDATE receipt_lines SET import_code = ?, import_scenario = ? WHERE id = ?")
-      .bind(importCode, importScenario, batch.line_id)
-      .run();
+  if (!["approve", "concession", "reject", "partial"].includes(input.decision)) {
+    return error("decision must be approve, concession, reject or partial", 400);
+  }
+  const concession = input.decision === "concession";
+  const concessionReason = input.concession_reason?.trim() || null;
+  const concessionApprovedBy = input.concession_approved_by?.trim() || null;
+  if (concession && (!concessionReason || !concessionApprovedBy)) {
+    return error("Accepting with concession needs a reason and who authorized it", 400);
   }
 
   let status: "approved" | "rejected" | "partial";
   let qtyAccepted: number | null = null;
   let qtyRejected: number | null = null;
-  let internalBatchNo: string | null = null;
 
   if (input.decision === "reject") {
     status = "rejected";
@@ -456,21 +547,62 @@ export async function decideBatch(
         400
       );
     }
-
-    internalBatchNo =
-      input.internal_batch_no ?? (await generateInternalBatchNo(env, supplier!, new Date()));
   }
+
+  const manualBatchNo = status === "rejected" ? null : input.internal_batch_no?.trim() || null;
+  if (manualBatchNo && (await isInternalBatchNoTaken(env, batch.material_code, manualBatchNo, batchId))) {
+    return error(`Internal batch # ${manualBatchNo} is already used for ${batch.material_code}`, 409);
+  }
+  const manualImportCode = input.import_code?.trim() || null;
+  if (manualImportCode && !batch.import_code && (await isImportCodeTaken(env, manualImportCode, batch.line_id))) {
+    return error(`Code ${manualImportCode} is already used on another line`, 409);
+  }
+
+  const supplier = (await env.DB.prepare("SELECT * FROM suppliers WHERE id = ?")
+    .bind(batch.supplier_id)
+    .first<Supplier>())!;
+
+  // Lines registered before codes were assigned at receiving time may
+  // still lack one — give it one now, from the pool its kind belongs to.
+  let importCode = batch.import_code;
+  let importScenario = batch.import_scenario;
+  if (!importCode) {
+    let kind = batch.supply_kind;
+    if (!kind) {
+      if (batch.receipt_type === "sample") {
+        kind = "sample";
+      } else {
+        const c = await classifySupplyLine(env, batch.material_code, batch.material_name_text, supplier.id, batch.receipt_id);
+        kind = c.kind;
+        importScenario = c.scenario;
+      }
+    }
+    if (manualImportCode) {
+      importCode = manualImportCode;
+      importScenario = null;
+    } else {
+      importCode = await drawPoolCode(env, POOL_FOR_KIND[kind]);
+    }
+    await env.DB.prepare("UPDATE receipt_lines SET import_code = ?, import_scenario = ?, supply_kind = ? WHERE id = ?")
+      .bind(importCode, importScenario, kind, batch.line_id)
+      .run();
+  }
+
+  const internalBatchNo =
+    status === "rejected"
+      ? null
+      : (manualBatchNo ?? (await generateInternalBatchNo(env, supplier, batch.material_code, new Date())));
 
   // Guarding the UPDATE itself with "AND status = 'pending'" (not just the
   // earlier SELECT-time check) closes a real race: two near-simultaneous
   // decide requests on the same batch could otherwise both pass the check
   // above before either UPDATE lands, and the second would silently
-  // overwrite the first's decision (including generating a second, unused
-  // internal batch number).
+  // overwrite the first's decision.
   const result = await env.DB.prepare(
     `UPDATE receipt_batches
      SET status = ?, qty_accepted = ?, qty_rejected = ?, internal_batch_no = ?,
-         expiry_date = ?, production_date = ?, coa_remarks = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP
+         expiry_date = ?, production_date = ?, coa_remarks = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP,
+         concession = ?, concession_reason = ?, concession_approved_by = ?
      WHERE id = ? AND status = 'pending'`
   )
     .bind(
@@ -482,6 +614,9 @@ export async function decideBatch(
       input.production_date ?? null,
       input.coa_remarks ?? null,
       input.decided_by,
+      concession ? 1 : 0,
+      concession ? concessionReason : null,
+      concession ? concessionApprovedBy : null,
       batchId
     )
     .run();
@@ -502,7 +637,9 @@ export async function decideBatch(
   const summary =
     status === "rejected"
       ? `Batch ${batch.supplier_batch_no} was rejected`
-      : `Batch ${batch.supplier_batch_no} ${status} — internal batch # ${internalBatchNo}`;
+      : concession
+        ? `Batch ${batch.supplier_batch_no} accepted with concession — internal batch # ${internalBatchNo}`
+        : `Batch ${batch.supplier_batch_no} ${status} — internal batch # ${internalBatchNo}`;
   await notify(env, "warehouse", "decision", summary, {
     receiptId: batch.receipt_id,
     batchId,
@@ -511,10 +648,97 @@ export async function decideBatch(
   return json({
     id: batchId,
     status,
+    concession,
     internal_batch_no: internalBatchNo,
     import_code: importCode,
     import_scenario: importScenario,
   });
+}
+
+/**
+ * Quality re-files a line as a sample, first supply, or regular supply —
+ * at any time, decided or not. Sample vs supply is a property of the whole
+ * receipt (it decides what Warehouse may see), so moving one line across
+ * that boundary moves the whole receipt: the other lines are re-filed too
+ * (samples -> RMS; supplies -> classified from history; an uncoded supply
+ * line waits for its material code, as at receiving time).
+ *
+ * A line whose kind changes gets the next code from its new pool, unless
+ * Quality typed a code in. The old number isn't reused.
+ */
+export async function setLineClassification(request: Request, env: Env, lineId: number): Promise<Response> {
+  const input = await request.json<SetLineClassificationInput>();
+  if (!["sample", "first", "regular"].includes(input.supply_kind)) {
+    return error("supply_kind must be sample, first or regular", 400);
+  }
+  const manualCode = input.import_code?.trim() || null;
+
+  const line = await env.DB.prepare(
+    `SELECT rl.id, rl.receipt_id, rl.supply_kind, rl.import_code, r.type AS receipt_type
+     FROM receipt_lines rl JOIN receipts r ON r.id = rl.receipt_id
+     WHERE rl.id = ?`
+  )
+    .bind(lineId)
+    .first<{ id: number; receipt_id: number; supply_kind: SupplyKind | null; import_code: string | null; receipt_type: string }>();
+  if (!line) return error("Receipt line not found", 404);
+  if (manualCode && (await isImportCodeTaken(env, manualCode, lineId))) {
+    return error(`Code ${manualCode} is already used on another line`, 409);
+  }
+
+  const kind = input.supply_kind;
+  const newReceiptType = kind === "sample" ? "sample" : "import";
+  const statements: D1PreparedStatement[] = [];
+
+  if (newReceiptType !== line.receipt_type) {
+    statements.push(env.DB.prepare("UPDATE receipts SET type = ? WHERE id = ?").bind(newReceiptType, line.receipt_id));
+
+    const receipt = (await env.DB.prepare("SELECT supplier_id FROM receipts WHERE id = ?")
+      .bind(line.receipt_id)
+      .first<{ supplier_id: number }>())!;
+    const others = await env.DB.prepare(
+      "SELECT id, material_code, material_name_text FROM receipt_lines WHERE receipt_id = ? AND id != ?"
+    )
+      .bind(line.receipt_id, lineId)
+      .all<{ id: number; material_code: string | null; material_name_text: string }>();
+    for (const other of others.results ?? []) {
+      let otherKind: SupplyKind | null = null;
+      let otherScenario: string | null = null;
+      let otherCode: string | null = null;
+      if (newReceiptType === "sample") {
+        otherKind = "sample";
+        otherCode = await drawPoolCode(env, "RMS");
+      } else if (other.material_code) {
+        const c = await classifySupplyLine(env, other.material_code, other.material_name_text, receipt.supplier_id, line.receipt_id);
+        otherKind = c.kind;
+        otherScenario = c.scenario;
+        otherCode = await drawPoolCode(env, POOL_FOR_KIND[c.kind]);
+      }
+      statements.push(
+        env.DB.prepare("UPDATE receipt_lines SET supply_kind = ?, import_scenario = ?, import_code = ? WHERE id = ?").bind(
+          otherKind,
+          otherScenario,
+          otherCode,
+          other.id
+        )
+      );
+    }
+  }
+
+  let code = line.import_code;
+  if (manualCode) code = manualCode;
+  else if (kind !== line.supply_kind || !code) code = await drawPoolCode(env, POOL_FOR_KIND[kind]);
+
+  // Set by hand, so there's no detected scenario to show any more.
+  statements.push(
+    env.DB.prepare("UPDATE receipt_lines SET supply_kind = ?, import_scenario = NULL, import_code = ? WHERE id = ?").bind(
+      kind,
+      code,
+      lineId
+    )
+  );
+  await env.DB.batch(statements);
+
+  return json({ id: lineId, supply_kind: kind, import_code: code, receipt_type: newReceiptType });
 }
 
 export async function recordTestResults(
@@ -525,13 +749,14 @@ export async function recordTestResults(
   const input = await request.json<RecordTestResultsInput>();
 
   const batch = await env.DB.prepare(
-    `SELECT rb.*, rl.material_code
+    `SELECT rb.*, rl.material_code, r.type AS receipt_type
      FROM receipt_batches rb
      JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
+     JOIN receipts r ON r.id = rl.receipt_id
      WHERE rb.id = ?`
   )
     .bind(batchId)
-    .first<ReceiptBatch & { material_code: string | null }>();
+    .first<ReceiptBatch & { material_code: string | null; receipt_type: string }>();
   if (!batch) return error("Batch not found", 404);
   if (!batch.material_code) {
     return error("Associate a material code on this line before testing it", 400);
@@ -543,26 +768,46 @@ export async function recordTestResults(
     return error("Provide at least one test result", 400);
   }
 
-  const spec = await getActiveSpec(env, batch.material_code);
-  const validIds = new Set((spec?.parameters ?? []).map((p) => p.id));
+  const spec = await getActiveSpec(env, batch.material_code, specScopeFor(batch.receipt_type));
+  const paramsById = new Map((spec?.parameters ?? []).map((p) => [p.id, p]));
+  const rows: Array<{ id: number; measured: string | null; result: string | null; auto: string | null; reason: string | null }> = [];
   for (const r of input.results) {
-    if (!validIds.has(r.spec_parameter_id)) {
+    const param = paramsById.get(r.spec_parameter_id);
+    if (!param) {
       return error(`spec_parameter_id ${r.spec_parameter_id} is not on this material's active spec`, 400);
     }
-    if (r.result !== "pass" && r.result !== "fail") {
-      return error("Each test result needs result: 'pass' or 'fail'", 400);
+    const measured = r.measured_value?.trim() || null;
+    // The app judges numeric and time limits itself; a person can still
+    // disagree (e.g. a known instrument offset), but has to say why.
+    const auto = autoJudge(param, measured);
+    // A value with no result is kept as "not judged" — unless the app can
+    // judge it, in which case its judgement is the result.
+    if (r.result == null && measured != null) r.result = auto;
+    if (r.result != null && r.result !== "pass" && r.result !== "fail") {
+      return error("Each test result needs result: 'pass', 'fail', or none", 400);
     }
+    if (r.result == null && measured == null) {
+      return error(`${param.parameter_name}: enter a value or a result`, 400);
+    }
+    const reason = r.override_reason?.trim() || null;
+    if (auto && r.result && auto !== r.result && !reason) {
+      return error(
+        `${param.parameter_name}: ${measured} is a ${auto} against the spec — give a reason to record it as ${r.result}`,
+        400
+      );
+    }
+    rows.push({ id: param.id, measured, result: r.result, auto, reason: auto && r.result && auto !== r.result ? reason : null });
   }
 
-  await env.DB.prepare("DELETE FROM batch_test_results WHERE batch_id = ?").bind(batchId).run();
-  await env.DB.batch(
-    input.results.map((r) =>
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM batch_test_results WHERE batch_id = ?").bind(batchId),
+    ...rows.map((r) =>
       env.DB.prepare(
-        `INSERT INTO batch_test_results (batch_id, spec_parameter_id, measured_value, result)
-         VALUES (?, ?, ?, ?)`
-      ).bind(batchId, r.spec_parameter_id, r.measured_value ?? null, r.result)
-    )
-  );
+        `INSERT INTO batch_test_results (batch_id, spec_parameter_id, measured_value, result, auto_result, override_reason)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).bind(batchId, r.id, r.measured, r.result, r.auto, r.reason)
+    ),
+  ]);
 
   await env.DB.prepare("UPDATE receipt_batches SET tested_by = ?, tested_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(input.tested_by, batchId)
@@ -592,16 +837,17 @@ export async function finalizeWeight(request: Request, env: Env, batchId: number
 
   // Same race as decideBatch: guard the UPDATE itself, not just the read
   // above, so two near-simultaneous finalize requests can't both "win".
+  const additionNo = input.addition_no?.trim() || null;
   const result = await env.DB.prepare(
-    "UPDATE receipt_batches SET qty_actual_weighed = ? WHERE id = ? AND qty_actual_weighed IS NULL"
+    "UPDATE receipt_batches SET qty_actual_weighed = ?, addition_no = ? WHERE id = ? AND qty_actual_weighed IS NULL"
   )
-    .bind(input.qty_actual_weighed, batchId)
+    .bind(input.qty_actual_weighed, additionNo, batchId)
     .run();
   if (result.meta.changes === 0) {
     return error("Actual weight was just recorded by someone else — refresh and check its current value", 409);
   }
 
-  return json({ id: batchId, qty_actual_weighed: input.qty_actual_weighed });
+  return json({ id: batchId, qty_actual_weighed: input.qty_actual_weighed, addition_no: additionNo });
 }
 
 /** Who sent the sample. If warehouse didn't capture it at receiving time
@@ -639,10 +885,13 @@ export async function setSampleSender(
 export async function associateCode(request: Request, env: Env, lineId: number): Promise<Response> {
   const input = await request.json<AssociateCodeInput>();
 
-  const line = await env.DB.prepare("SELECT * FROM receipt_lines WHERE id = ?")
+  const line = await env.DB.prepare(
+    "SELECT rl.*, r.type AS receipt_type FROM receipt_lines rl JOIN receipts r ON r.id = rl.receipt_id WHERE rl.id = ?"
+  )
     .bind(lineId)
-    .first<ReceiptLine>();
+    .first<ReceiptLine & { receipt_type: string }>();
   if (!line) return error("Receipt line not found", 404);
+  const scope = specScopeFor(line.receipt_type);
   if (line.material_code !== null) {
     return error("This line already has a material code associated", 409);
   }
@@ -657,7 +906,7 @@ export async function associateCode(request: Request, env: Env, lineId: number):
       .first<{ code: string }>();
     if (!material) return error(`Unknown material code: ${input.material_code}`, 404);
     materialCode = material.code;
-    spec = await getActiveSpec(env, materialCode);
+    spec = await getActiveSpec(env, materialCode, scope);
   } else if (input.mode === "new") {
     const { new_material, spec: specInput } = input;
     if (!new_material?.code || !new_material.name || !new_material.unit) {
@@ -692,18 +941,83 @@ export async function associateCode(request: Request, env: Env, lineId: number):
       .run();
     materialCode = new_material.code;
 
-    const specResult = await createSpecVersion(env, materialCode, specInput);
+    const specResult = await createSpecVersion(env, materialCode, { scope, ...specInput });
     if (!specResult.ok) return error(specResult.message, specResult.status);
     spec = specResult.spec;
   } else {
     return error("mode must be 'existing' or 'new'");
   }
 
-  await env.DB.prepare("UPDATE receipt_lines SET material_code = ? WHERE id = ?")
-    .bind(materialCode, lineId)
+  // A supply line registered without a code couldn't be classified at
+  // receiving time — now that its material is known, it can be.
+  let supplyKind = line.supply_kind;
+  let importScenario = line.import_scenario;
+  let importCode = line.import_code;
+  if (!importCode) {
+    const receipt = (await env.DB.prepare("SELECT type, supplier_id FROM receipts WHERE id = ?")
+      .bind(line.receipt_id)
+      .first<{ type: string; supplier_id: number }>())!;
+    if (receipt.type === "sample") {
+      supplyKind = "sample";
+    } else {
+      const c = await classifySupplyLine(env, materialCode, line.material_name_text, receipt.supplier_id, line.receipt_id);
+      supplyKind = c.kind;
+      importScenario = c.scenario;
+    }
+    importCode = await drawPoolCode(env, POOL_FOR_KIND[supplyKind]);
+  }
+
+  await env.DB.prepare(
+    "UPDATE receipt_lines SET material_code = ?, supply_kind = ?, import_scenario = ?, import_code = ? WHERE id = ?"
+  )
+    .bind(materialCode, supplyKind, importScenario, importCode, lineId)
     .run();
 
-  return json({ receipt_line_id: lineId, material_code: materialCode, spec });
+  return json({ receipt_line_id: lineId, material_code: materialCode, spec, supply_kind: supplyKind, import_code: importCode });
+}
+
+/** Product description, manufacturer and origin are Quality's notes on
+ *  what arrived — Warehouse never receives them. */
+function redactLineForRole(line: ReceiptLine, role: Role): ReceiptLine {
+  if (role === "quality") return line;
+  return { ...line, product_description: null, manufacturer: null, origin: null };
+}
+
+/** The received line migrated from one Access record ("access:RM Master
+ *  Data:<ID>") — used by the attachment upload script to find where each
+ *  old TDS/MSDS/photo belongs. */
+export async function findLineByLegacyRef(env: Env, ref: string): Promise<Response> {
+  const row = await env.DB.prepare(
+    `SELECT rl.id AS line_id, rl.import_code, r.id AS receipt_id
+     FROM receipts r JOIN receipt_lines rl ON rl.receipt_id = r.id
+     WHERE r.legacy_ref = ?
+     ORDER BY rl.id LIMIT 1`
+  )
+    .bind(ref)
+    .first();
+  if (!row) return error(`No migrated record for ${ref}`, 404);
+  return json(row);
+}
+
+/** Quality records (or corrects) the product details of a received line,
+ *  at any time. Blank fields are cleared. */
+export async function setLineProductInfo(request: Request, env: Env, lineId: number): Promise<Response> {
+  const input = await request.json<LineProductInfoInput>();
+  const clean = (v: string | null | undefined, max: number) => {
+    const t = (v ?? "").trim();
+    return t ? t.slice(0, max) : null;
+  };
+  const description = clean(input.product_description, 2000);
+  const manufacturer = clean(input.manufacturer, 200);
+  const origin = clean(input.origin, 100);
+
+  const result = await env.DB.prepare(
+    "UPDATE receipt_lines SET product_description = ?, manufacturer = ?, origin = ? WHERE id = ?"
+  )
+    .bind(description, manufacturer, origin, lineId)
+    .run();
+  if (result.meta.changes === 0) return error("Receipt line not found", 404);
+  return json({ id: lineId, product_description: description, manufacturer, origin });
 }
 
 /** Samples never show Quality's in-progress/final test status to warehouse. */

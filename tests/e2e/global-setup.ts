@@ -46,7 +46,8 @@ export default async function globalSetup() {
   // from a previous run (or collide with data a developer seeded by hand
   // while poking at `wrangler dev` themselves).
   rmSync(path.join(ROOT, ".wrangler", "state"), { recursive: true, force: true });
-  execFileSync("npm", ["run", "db:migrate:local"], { cwd: ROOT, stdio: "inherit" });
+  // CI=true skips wrangler's "apply these migrations?" prompt.
+  execFileSync("npm", ["run", "db:migrate:local"], { cwd: ROOT, stdio: "inherit", env: { ...process.env, CI: "true" } });
 
   const pidFilePath = path.join(ROOT, PID_FILE);
   if (existsSync(pidFilePath)) {

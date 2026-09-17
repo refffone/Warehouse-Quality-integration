@@ -15,6 +15,25 @@ export interface ReportColumn {
 
 type Row = Record<string, string | number | null | undefined>;
 
+// The standard PDF fonts only cover the WinAnsi character set; drawing
+// anything outside it (Arabic, "≥") throws and fails the whole export.
+const WIN_ANSI_EXTRAS = new Set("€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ");
+const PDF_REPLACEMENTS: Record<string, string> = { "≥": ">=", "≤": "<=", "≠": "!=", "±": "+/-", " ": " " };
+
+/** Makes text drawable with the standard fonts: known symbols are spelled
+ *  out, anything else unsupported becomes "?", line breaks become spaces. */
+export function pdfText(text: string): string {
+  let out = "";
+  for (const ch of text.replace(/[\r\n\t]+/g, " ")) {
+    if (PDF_REPLACEMENTS[ch] !== undefined) out += PDF_REPLACEMENTS[ch];
+    else {
+      const code = ch.codePointAt(0)!;
+      out += (code >= 0x20 && code < 0x7f) || (code >= 0xa0 && code <= 0xff) || WIN_ANSI_EXTRAS.has(ch) ? ch : "?";
+    }
+  }
+  return out;
+}
+
 function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; kind: "png" | "jpg" } | null {
   const match = dataUrl.match(/^data:image\/(png|jpeg);base64,(.+)$/);
   if (!match) return null;
@@ -79,14 +98,14 @@ export class ReportPdf {
     }
     const textX = this.logo ? this.left + this.logo.scale(28 / this.logo.height).width + 10 : this.left;
     if (branding.company_name) {
-      this.page.drawText(branding.company_name, {
+      this.page.drawText(pdfText(branding.company_name), {
         x: textX,
         y: this.y - 12,
         size: 12,
         font: this.bold,
         color: rgb(0.13, 0.12, 0.18),
       });
-      this.page.drawText(new Date().toLocaleString(), {
+      this.page.drawText(pdfText(new Date().toLocaleString()), {
         x: textX,
         y: this.y - 26,
         size: 8,
@@ -94,7 +113,7 @@ export class ReportPdf {
         color: rgb(0.55, 0.53, 0.63),
       });
     } else {
-      this.page.drawText(new Date().toLocaleString(), {
+      this.page.drawText(pdfText(new Date().toLocaleString()), {
         x: textX,
         y: this.y - 12,
         size: 8,
@@ -103,10 +122,10 @@ export class ReportPdf {
       });
     }
     this.y -= 44;
-    this.page.drawText(title, { x: this.left, y: this.y, size: 18, font: this.bold, color: rgb(0.13, 0.12, 0.18) });
+    this.page.drawText(pdfText(title), { x: this.left, y: this.y, size: 18, font: this.bold, color: rgb(0.13, 0.12, 0.18) });
     this.y -= 22;
     if (subtitle) {
-      this.page.drawText(subtitle, { x: this.left, y: this.y, size: 10, font: this.font, color: rgb(0.42, 0.41, 0.5) });
+      this.page.drawText(pdfText(subtitle), { x: this.left, y: this.y, size: 10, font: this.font, color: rgb(0.42, 0.41, 0.5) });
       this.y -= 18;
     }
     this.y -= 8;
@@ -115,21 +134,21 @@ export class ReportPdf {
   heading(text: string) {
     this.ensureSpace(28);
     this.y -= 6;
-    this.page.drawText(text, { x: this.left, y: this.y, size: 13, font: this.bold, color: rgb(0.13, 0.12, 0.18) });
+    this.page.drawText(pdfText(text), { x: this.left, y: this.y, size: 13, font: this.bold, color: rgb(0.13, 0.12, 0.18) });
     this.y -= 18;
   }
 
   paragraph(text: string) {
     this.ensureSpace(16);
-    this.page.drawText(text, { x: this.left, y: this.y, size: 9.5, font: this.font, color: rgb(0.3, 0.28, 0.38) });
+    this.page.drawText(pdfText(text), { x: this.left, y: this.y, size: 9.5, font: this.font, color: rgb(0.3, 0.28, 0.38) });
     this.y -= 15;
   }
 
   keyValue(pairs: Array<[string, string]>) {
     for (const [k, v] of pairs) {
       this.ensureSpace(15);
-      this.page.drawText(k, { x: this.left, y: this.y, size: 9.5, font: this.bold, color: rgb(0.42, 0.41, 0.5) });
-      this.page.drawText(v, { x: this.left + 130, y: this.y, size: 9.5, font: this.font, color: rgb(0.13, 0.12, 0.18) });
+      this.page.drawText(pdfText(k), { x: this.left, y: this.y, size: 9.5, font: this.bold, color: rgb(0.42, 0.41, 0.5) });
+      this.page.drawText(pdfText(v), { x: this.left + 130, y: this.y, size: 9.5, font: this.font, color: rgb(0.13, 0.12, 0.18) });
       this.y -= 15;
     }
     this.y -= 6;
@@ -138,7 +157,7 @@ export class ReportPdf {
   /** Empty-state line for a section that legitimately has no rows. */
   emptyNote(text: string) {
     this.ensureSpace(15);
-    this.page.drawText(text, { x: this.left, y: this.y, size: 9, font: this.font, color: rgb(0.55, 0.53, 0.63) });
+    this.page.drawText(pdfText(text), { x: this.left, y: this.y, size: 9, font: this.font, color: rgb(0.55, 0.53, 0.63) });
     this.y -= 18;
   }
 
@@ -157,7 +176,7 @@ export class ReportPdf {
       this.ensureSpace(20);
       let x = this.left;
       for (const col of columns) {
-        this.page.drawText(col.header, { x, y: this.y, size: 8.5, font: this.bold, color: rgb(0.42, 0.41, 0.5) });
+        this.page.drawText(pdfText(col.header), { x, y: this.y, size: 8.5, font: this.bold, color: rgb(0.42, 0.41, 0.5) });
         x += col.width;
       }
       this.y -= 14;
@@ -182,7 +201,7 @@ export class ReportPdf {
       for (const col of columns) {
         const value = row[col.key];
         const text = value === null || value === undefined ? "—" : String(value);
-        this.page.drawText(truncate(text, col.width), { x, y: this.y, size: 8.5, font: this.font, color: rgb(0.13, 0.12, 0.18) });
+        this.page.drawText(pdfText(truncate(text, col.width)), { x, y: this.y, size: 8.5, font: this.font, color: rgb(0.13, 0.12, 0.18) });
         x += col.width;
       }
       this.y -= 14;

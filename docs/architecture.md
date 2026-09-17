@@ -238,7 +238,8 @@ lines, classifying the line as `new_material` / `new_supplier` /
 display, but the *code itself* draws from one of two simple, system-wide
 ledger pools, matching how Quality's current system already labels
 records: **RMF** for any of the three novel scenarios, **RMS** for a
-regular repeat. Each pool is just a prefix plus a plain running number
+regular repeat (*superseded by §24: in the Access log RMS means a sample,
+and regular supplies are RMP*). Each pool is just a prefix plus a plain running number
 (`GET /api/import-code-schemes`, `PUT /api/import-code-schemes/:kind` —
 default `RMF{seq:04d}` / `RMS{seq:04d}`), not scoped to any one material or
 supplier — a material's first-ever receipt and a different material's
@@ -1537,7 +1538,277 @@ a real auth redesign (a new login flow, not just a guard clause) rather
 than a small fix, so it's flagged for a deliberate follow-up rather than
 rushed in alongside everything else here.
 
-## 24. Next Step
+## 24. Aligning with the Access log (سجل فحص المواد الخام)
+
+A read-through of Quality's actual Access database (`RM TEST.accdb` — the
+`RM MS Data` and `سجل فحص المواد الخام` forms, both over the `RM Master
+Data` table, ~2,400 records) showed the app disagreeing with it in ways
+that would have confused anyone using both during the transition:
+
+- **Three kinds of record, not two.** Access files every record as a
+  sample (عينة مادة خام), a first supply (اول توريد) or a regular supply
+  (توريد مادة خام), each with its own running code: **RMS**, **RMF**,
+  **RMP**. The app had used RMS for *repeat supplies* (§1.15) — in Access
+  that means a sample. Migration 0021 adds `receipt_lines.supply_kind` and
+  a single `code_pools` table (pattern + counter per pool, replacing
+  `import_code_schemes`/`import_code_counters`, which stay in place but
+  unused). Codes are now assigned **at receiving time**, as in Access:
+  samples draw RMS; a coded supply line is classified first/regular from
+  its material's history with the same three novelty checks as before
+  (any novelty → first/RMF, a plain repeat → regular/RMP; samples don't
+  count as history). An uncoded supply line gets its code when Quality
+  associates one. Quality can re-file any line at any time
+  (`PATCH /api/receipt-lines/:id/classification`) — the line draws the
+  next code from its new pool unless a code is typed in; moving a line
+  between sample and supply moves the whole receipt, since that boundary
+  decides what Warehouse may see. Codes > Numbering Schemes now shows each
+  pool's last-used number, editable, so numbering can continue from
+  Access.
+- **Internal batch numbers.** Access uses `MHND000926`: supplier
+  abbreviation + 4-digit sequence + 2-digit year, where the sequence
+  counts batches *of one material* from that abbreviation that year
+  (GF1000 and VX1001 from the same supplier each start at 0001). So the
+  same number legitimately appears on different materials, and two
+  suppliers sharing an abbreviation share its count. Migration 0022 adds
+  `suppliers.abbreviation` (Quality-only to set: Suppliers list, the
+  supplier Excel import's new Abbreviation column, or
+  `PATCH /api/suppliers/:code`), a `batch_seq_counters` table keyed by
+  (abbreviation, material, period), and replaces the global unique index
+  on `internal_batch_no` with a per-material check in `decideBatch`. The
+  default pattern is now `{supplier_abbr}{seq:04d}{YY}` (the migration
+  only switches the global scheme if it was still the old built-in
+  default); a month in the pattern makes the count restart monthly, a
+  year alone yearly. A supplier with no abbreviation yet falls back to its
+  code.
+- **Accepted with concession (مقبول بتجاوز).** Used 25 times in Access,
+  with the reason and who allowed it typed into free-text notes. Migration
+  0023 adds `concession`, `concession_reason` and `concession_approved_by`
+  on `receipt_batches`; the decision is stored as `approved` with the flag
+  set, so weigh-in, expiry alerts and pass rates treat it as accepted,
+  while the card, History export, dossier export and COA all show it as a
+  concession with its reason.
+- **Addition-note number (رقم اذن الاضافة).** Warehouse can now record it
+  when finalizing the actual quantity (0023, `addition_no`).
+
+Also fixed while testing: switching Codes subtabs while the previous
+subtab's data was still loading let the stale render land afterwards and
+wipe a half-filled form.
+
+All three migrations are written to be harmless on a repeat run (the
+deploy workflow re-runs every file): each starts with an `ALTER TABLE ...
+ADD COLUMN`, which fails on a second run before anything else in the file
+executes, and everything after it is `IF NOT EXISTS` / `INSERT OR IGNORE`
+/ fills only NULLs anyway.
+
+**Continuing from Access.** A one-time seed can be generated from the
+Access file (kept out of this public repo, since it holds supplier data):
+it raises the three pool counters to Access's last numbers, fills in each
+supplier's most-used abbreviation where the app has none, and seeds this
+year's per-material batch counters. It only ever raises counters, so it's
+safe to run twice. It matches suppliers by code, which assumes the app's
+supplier codes are Access's `S-Code` values. 15 Access suppliers used more
+than one abbreviation; the most-used one was picked and the rest listed
+for Quality to review.
+
+Deliberately not changed: Access's packaging list (11 free-text types)
+vs the app's five structured types, which drive the quantity breakdown —
+mapping those is part of migrating historical records, not of the
+day-to-day workflow; and the 23 positional `Result` columns, which the
+app's structured spec parameters already replace.
+
+## 25. Structured specs, modelled on the Access spec sheets
+
+Quality's Access spec tables (مواصفة مادة خام, 1,072 rows; مواصفة عينة مادة
+خام, 335 rows) have one row per code, 24 fixed test columns plus a method
+code per column (`W-QC-01-xx`), and every limit as free text — `68.00 -
+72.00 %`, `Max 0.05 %`, `1:30 - 1:50 Min Cup#8 ISO`, `Clear Transparent
+liquid`, `NA`. Of 14,532 cells, 12,082 are `NA`; of the 2,450 real limits
+about 97% follow a handful of patterns. The app keeps that shape and makes
+the limits real (migration 0024):
+
+- **Test catalog** (`test_catalog`, Specifications → Test list): Access's
+  tests in their original order, each with the method code from the same
+  position. A spec parameter picks a test, which fills in its name,
+  method and default unit. Access's "Comment" column is a note, not a
+  test (it becomes the spec's notes), and Gelling Time had no method
+  code. *The method codes were paired by column position — worth Quality
+  confirming against their method list.*
+- **Limit types** (`public/specLimits.js`, shared by the Worker and the
+  browser so they can't disagree): range, maximum only, minimum only,
+  target value, time range (stored in seconds, shown as m:ss), expected
+  appearance, compare with reference sample, pass/fail, and free text.
+  A **target** is Access's "absolute value" (a single number such as a
+  boiling point of 110 °C): without a tolerance Quality judges it; once a
+  ± tolerance is filled in it's judged automatically. Values of 1,000 and
+  up are shown with thousands separators, and a measured value with a
+  comma is read as thousands when the limit is in the thousands
+  (`214,500` cP) and as a decimal point otherwise (`1,02`).
+- **Remarks** on every parameter (e.g. "As per TDS"), shown on the spec
+  sheet and the test-results form.
+- **Variants** (`specs.variant`) are groundwork for codes shared by two
+  manufacturers (AD1040: BYK and ADDITOL). A named variant keeps its own
+  version history and prints on the spec sheet, but receipts are still
+  tested against the normal (unnamed) spec — choosing a variant needs the
+  receipt to record the manufacturer first.
+  `spec_parameters` and `subtype_spec_templates` were rebuilt for the new
+  types, with foreign-key checks deferred so `batch_test_results` keeps
+  pointing at the same rows. Time limits created before this change had
+  no fixed unit; they're now read as seconds (or minutes, if the
+  parameter's unit says "min") — worth a glance at any that exist.
+- **Test conditions** (cup, dilution, mixing recipe) have their own field
+  instead of living inside the limit, and print next to it on the spec
+  sheet and COA.
+- **Supply and sample specs** (`specs.scope`), as Access keeps two tables.
+  Each scope has its own active version and version numbers. A sample is
+  tested against the material's sample spec, falling back to its supply
+  spec. As in Access, a sample of an unknown material can be coded with
+  its own sample code (Associate a Code pre-fills it), and specs keyed by
+  such codes stay keyed by them.
+- **Change history**: a new version replacing an active one asks why
+  (`specs.change_reason`); Access overwrote specs in place.
+- **Automatic pass/fail**: for range, max, min and time limits the app
+  judges the measured value as it's typed (`68,5 %`, `1:35` both parse)
+  and picks the result. Recording the other result needs a reason;
+  `batch_test_results` keeps both the automatic result and the reason,
+  and the COA marks overridden results. Appearance, reference-sample and
+  pass/fail tests stay a person's call.
+- **Spec sheet** export prints both scopes with test, method, limit and
+  conditions. PDF text now goes through `pdfText()` (reportBuilders.ts):
+  the standard PDF fonts can't draw Arabic or `≥`, which used to fail the
+  whole export — those characters are now spelled out or replaced.
+- **Excel import/export** gained Scope, Test Code, Limit Type, Conditions,
+  Expected and Change Reason columns; time limits are written as m:ss.
+
+Quality reviewed the values the converter couldn't place (their remarks
+live in `specs-review.xlsx`; the resulting decisions in
+`specs-review-decisions.xlsx`, both outside this repo):
+
+- `STD` and `SD` both mean the standard (reference) sample.
+- The RS10xx nitrocellulose "Mix (6 N.C + 32 VX1000 + 62 VX1006)" is the
+  sample preparation — imported as test conditions with no limit.
+- Rotational-viscometer values (RMS0371: 216K cP, spindle 7, 30 RPM —
+  the sample spec's "16K" was a typo; RL2014: 65,066.66 cP, spindle 7,
+  60 RPM) became targets in cP with the spindle/speed as conditions.
+- Gardner colour written under Transparency became Max 2.0 / 6.0 with
+  conditions "Gardner"; RL2027's Gardner-Holdt "Y – Z2" stays text with
+  the remark "As per TDS".
+- Single numbers ("absolute values") became targets without a tolerance.
+- Obvious typos were fixed (AD1074, DR1005, AD1038); AD1040's two
+  manufacturers, RL2022's application test and the VX1022/VX1040 boiling
+  ranges stay as text for now.
+- Codes typed twice in one Access cell (RL4003, RL7001, VX1036) were
+  partial copies and are skipped. Codes missing from Access's materials
+  list are added as materials (placeholder names), ZV7000 without a spec,
+  and the truncated code `m` is kept as-is until Quality corrects it.
+
+Importing the Access specs goes through that same Excel import. A
+converter (kept outside this public repo, since it carries product data)
+turned the two tables into 586 specs / 2,340 limits with no import errors
+against a local copy: 985 appearance, 929 ranges, 178 maximum-only, 138
+time ranges, 31 compare-with-reference, 6 minimum-only, and 73 kept as
+free text for Quality to turn into proper limits (mostly mixing recipes
+written where the limit should be, plus one range written backwards).
+Specs whose code isn't in Access's own materials list (16) weren't
+converted. A materials file for the spec codes (sample codes included)
+has to be imported first; the materials import is an upsert, so rows for
+codes the app already has should be removed from that file before
+committing, or their type/function would be cleared.
+
+Also fixed while testing: route handlers were returned without `await`
+inside `fetch`'s try/catch, so any error they threw skipped the JSON error
+handler and surfaced as a raw error page (e.g. adding a supplier code that
+already exists). Routing now lives in `route()`, awaited inside the
+try/catch; a duplicate supplier code gets a clear 409.
+
+Also fixed while testing: a screen that finished loading after another
+screen had started (a reload landing on the same tab, a quick double
+click, the 20-second refresh) could draw over the newer one and wipe what
+had been typed into it. Only the most recently started screen render may
+now touch the page (`beginView`/`isStaleView` in app.js), replacing the
+Codes-only fix from §24.
+
+## 26. Product details on received lines (Quality only)
+
+Access's "RM MS Data" form keeps a product description (usually TDS
+text), the manufacturer and the country of origin on each inspection
+record — 1,344 records across 760 codes have a description, almost all
+samples and first supplies. They describe the specific product that
+arrived, not the code: 87 codes carry more than one different
+description. Migration 0025 adds `product_description`, `manufacturer`
+and `origin` to `receipt_lines`.
+
+Quality fills them in from a "Product details" button on each line, at
+any time (`PATCH /api/receipt-lines/:id/product-info`, Quality-only), and
+sees them on the receipt card and in the material history (and its
+export). Warehouse never sees them: `getReceipt` and
+`listReceiptsDetailed` null the three fields for Warehouse, and no
+Warehouse report selects them. The historical values come in with the
+inspection-log migration, which hasn't been built yet.
+
+## 27. Migrating the Access inspection history
+
+The 2,419 records of the Access inspection log (RM Master Data) come in as
+ordinary receipts — one receipt, line and batch per Access record — so
+To Do, History, the material history, reports and COAs all include them.
+The conversion runs outside this repo (it carries company data; see the
+`access-seed` folder's README for the run order) and produces a re-runnable
+SQL file set; the pieces the app itself needed:
+
+- **Migration 0026.** `receipts.legacy_ref` ("access:RM Master Data:<ID>",
+  unique) marks a migrated receipt and makes every insert skip records
+  already present, so the import can be run again. 686 records have no
+  date: `receipts.received_at_unknown` is set and `received_at` holds a
+  1970-01-01 placeholder, shown everywhere as "date unknown" and never
+  matched by date-range reports. `batch_test_results.result` may now be
+  NULL ("not judged"): Access stored values only.
+- **How records map.** Sample type → receipt type and sample / first /
+  regular; the Access sample code → the line's code (6 codes used twice
+  get a `-2` suffix; a code the app already issued makes the Access one
+  `-A`); مطابق / مقبول → approved, غير مطابق / مرفوض → rejected,
+  مقبول بتجاوز → approved with concession (reason from the notes), under
+  test → pending (open in To Do). The 517 records with no decision at all
+  (blank, or a stray "`") are Access's material registrations — the
+  RMF0002–RMF0548 block, with no date, quantity or batch, but description,
+  manufacturer, origin and (almost always) a spec — and come in as
+  accepted, with a remark saying so. Two under-test samples with no
+  supplier code, which the Access form hides, come in under "Unknown
+  supplier (Access)". Every imported record (decided or still under
+  test, supply or sample) counts as weighed at its Access quantity, since
+  Access has no separate weigh-in; Finalize Weight only applies to records
+  created after go-live.
+  Where Access filled the full quantity into both accepted and rejected,
+  the decision decides which one is real. Description, manufacturer and
+  origin fill the line's product details; drums and tanks map to the
+  app's packaging types, other packaging and the Access notes, status and
+  certificate number go into the batch remarks.
+- **Results.** Access's Result1–Result24 line up with its spec columns
+  (Result19 is the comment column and goes to the remarks). A value is
+  attached to the matching test of the material's imported spec and judged
+  automatically only when it is a single clean reading; anything else
+  ("(1.56 - ford) - (2:37 - iso)", "Colorless liquid") is kept as "not
+  judged". Values for tests a spec doesn't have are listed for review.
+- **Lists page on the server now.** To Do and History used to load the
+  newest 200 receipts and filter in the browser, which would have hidden
+  most of the ~1,000 open Access records. `GET /api/receipts/detailed`
+  now takes `bucket`, `q`, `limit` and `offset`, applies the To Do rule
+  and the search in SQL (Warehouse still can't search by a sample's
+  status), and the lists load 50 at a time with "Show more". Fixed on the
+  way: Warehouse's "still needs weighing" rule also caught approved
+  samples, which are never weighed. The rule's subquery writes `+rb.status` so SQLite finds
+  batches through their line instead of scanning every approved batch
+  for each receipt (about 1 s → under 10 ms with the history loaded).
+- **Attachments.** `scripts/extract-access-attachments.ps1` copies the
+  ~1,850 embedded TDS / MSDS / photo files (about 490 MB) out of Access
+  with a manifest; `scripts/upload-access-attachments.mjs` signs in as a
+  Quality user and uploads them through the normal attachment API,
+  finding each record with `GET /api/receipt-lines/by-legacy-ref`
+  (Quality-only) and skipping files already attached.
+- **Wrangler limits met on the way.** Local D1 runs a `--file` as a
+  single query (about 100 KB at most), and wrangler spends minutes
+  preparing multi-megabyte files, so the history is written as ~80 KB
+  parts run in order.
+
+## 28. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Things
@@ -1546,7 +1817,7 @@ business/QC vocabulary, not a certified translation, worth a native
 speaker's review before more staff rely on them day to day; Web Push
 (section 15) needs the three `VAPID_*` secrets set before it does
 anything beyond the in-app bell + polling refresh, which already work
-without them; the nightly backup (previous section) needs `BACKUP_TOKEN`
+without them; the nightly backup (section 23) needs `BACKUP_TOKEN`
 set as both a Worker secret and a GitHub Actions secret before it runs;
-and the deferred items listed at the end of the previous section are
+and the deferred items listed at the end of section 23 are
 worth a deliberate look before they're needed under pressure.

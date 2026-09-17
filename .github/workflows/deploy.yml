@@ -24,19 +24,16 @@ jobs:
       # Fails the deploy on a type error instead of shipping broken code.
       - run: npm run typecheck
 
-      # This step didn't exist before commit bf2a6e0 — the deploy pipeline
-      # only ever pushed code, never the schema it depends on, so every
-      # migration since 0015 sat applied locally (this session's own dev
-      # testing) but never on production. That's a real outage class: a
-      # migration merges and typechecks clean, the deploy "succeeds," and
-      # the first request touching the new column/table 500s in prod.
-      # `wrangler d1 execute --file` isn't idempotent (CREATE TABLE/ALTER
-      # TABLE both error if already applied), so each file's failure is
-      # logged but doesn't fail the job — the already-applied migrations
-      # (0001-0014 as of this fix) are expected to error every run. A
-      # genuinely new, broken migration's error will show here too; watch
-      # this step's log after adding one, don't assume silence means success.
-      - name: Apply D1 migrations (remote)
+      # Schema changes go out before the code that needs them. Migrations
+      # are applied with `wrangler d1 migrations apply`, which records each
+      # applied file in the d1_migrations table and only runs new ones; a
+      # failing migration fails the deploy, before the code goes live.
+      #
+      # Deploys used to run every file with `d1 execute` and ignore the
+      # errors, so production had 0001–0020 applied with no record of it.
+      # The baseline step records those (idempotent — safe on every run);
+      # see scripts/d1-migrations-baseline.sql.
+      - name: Record migrations applied before tracking (remote)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           # A scoped custom token still can't call Cloudflare's /memberships
@@ -45,12 +42,15 @@ jobs:
           # Setting the account id directly skips that lookup. Not a
           # secret (it's visible in the dashboard URL), so it's fine inline.
           CLOUDFLARE_ACCOUNT_ID: b7bd5f5cc893306ff1bcc06daed8dc74
-        run: |
-          for f in migrations/*.sql; do
-            echo "::group::$f"
-            npx wrangler d1 execute warehouse-quality-db --remote --file="$f" || echo "($f may already be applied — see output above)"
-            echo "::endgroup::"
-          done
+        run: npx wrangler d1 execute warehouse-quality-db --remote --file=scripts/d1-migrations-baseline.sql
+
+      - name: Apply D1 migrations (remote)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: b7bd5f5cc893306ff1bcc06daed8dc74
+          # Skips wrangler's "are you sure?" prompt in CI.
+          CI: "true"
+        run: npx wrangler d1 migrations apply warehouse-quality-db --remote
 
       - name: Deploy
         uses: cloudflare/wrangler-action@v3

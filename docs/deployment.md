@@ -99,17 +99,21 @@ remote database:
 npm run db:migrate:remote
 ```
 
-This runs every file in `migrations/` through `wrangler d1 execute --file`,
-in order — the same tested method used throughout this project's own
-development (not wrangler's own `d1 migrations apply` tracking system,
-which needs bookkeeping this project doesn't set up).
+This runs `wrangler d1 migrations apply`, which records each applied file
+in the database's `d1_migrations` table and only ever runs files it
+hasn't recorded — safe to run again at any time. The deploy workflow
+(`.github/workflows/deploy.yml`) runs it before every deploy, and a
+failing migration stops the deploy before the new code goes live.
 
-> **Only for the initial, from-scratch apply.** These scripts loop over
-> *every* file each time, so re-running `db:migrate:remote` against a
-> database that already has these tables will error on migration `0001`
-> (the table already exists) before it gets anywhere near a new one. Once
-> the initial set is applied, apply any *future* migration individually
-> instead — see "Adding a new migration" further down.
+> **Databases set up before migration tracking.** Deploys used to run
+> every file with `wrangler d1 execute` and ignore the errors, so a
+> database created that way has 0001–0020 applied with no record of it.
+> `scripts/d1-migrations-baseline.sql` records those (the deploy workflow
+> runs it every time; it changes nothing once they're recorded). Never run
+> it on a fresh database. For an existing *local* database, run it with
+> `--local` and, if you had already applied later files by hand, record
+> those too, e.g.
+> `INSERT OR IGNORE INTO d1_migrations (name) VALUES ('0021_supply_kind_code_pools.sql');`
 
 To sanity-check the migrations landed:
 
@@ -174,8 +178,8 @@ npx wrangler secret put VAPID_SUBJECT   # e.g. mailto:you@yourcompany.com — re
 ```
 
 Apply the `push_subscriptions` migration if you haven't already run all of
-step 5 (it's `migrations/0015_push_subscriptions.sql`, included in the
-loop `npm run db:migrate:remote` already runs).
+step 5 (it's `migrations/0015_push_subscriptions.sql`, applied by
+`npm run db:migrate:remote` along with the rest).
 
 No redeploy is required after setting secrets — take effect immediately.
 Once set, each user sees a bell-with-plus icon in the topbar to opt in
@@ -293,6 +297,24 @@ curl -u admin:<your-ADMIN_PASSWORD> \
 - Upload an attachment (a COA file on a decided batch) to confirm the R2
   binding works.
 
+## 9b. Bring over the Access history (one-time)
+
+The Access inspection log, its specs, suppliers and materials are loaded
+once, after the deploy that includes migrations 0021–0026. The data files
+and the step-by-step run order live outside this repository (they contain
+company data), in the `access-seed` folder next to it — see its README.
+In short:
+
+1. Import suppliers, materials and specifications through the app's own
+   Excel import screens (preview first).
+2. Run the numbering seed, then the history parts, with
+   `wrangler d1 execute warehouse-quality-db --remote --file=...`. Every
+   part is safe to run again.
+3. Extract and upload the old TDS / MSDS / photo files with
+   `scripts/extract-access-attachments.ps1` and
+   `scripts/upload-access-attachments.mjs` (signs in as a Quality user;
+   credentials come from environment variables).
+
 ## 10. Optional: a custom domain
 
 By default the app is only reachable at the `workers.dev` subdomain from
@@ -316,17 +338,17 @@ npm run deploy
 ```
 
 **Adding a new migration:** create the next-numbered file in `migrations/`
-(e.g. `0016_your_change.sql`), then apply it the same way as step 5, but
-only the new file:
+(e.g. `0027_your_change.sql`) and try it locally first:
 
 ```bash
-npx wrangler d1 execute warehouse-quality-db --remote --file=migrations/0016_your_change.sql
+npm run db:migrate:local
 ```
 
-Always apply new migrations to `--remote` (production) *and* run them
-against a local D1 (`--local`, or just delete `.wrangler/state` and let it
-rebuild) before deploying code that depends on the new schema, so you can
-catch mistakes against a throwaway copy first.
+Merging to the deploy branch applies it to production before the new
+code goes live (the same as `npm run db:migrate:remote`). A migration
+that fails stops the deploy; check what it left behind before retrying.
+Never edit a
+migration that has already been applied — add a new one.
 
 **Rotating the admin password:**
 

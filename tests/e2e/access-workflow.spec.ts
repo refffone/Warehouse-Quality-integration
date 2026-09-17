@@ -1,0 +1,198 @@
+import { expect, test } from "./fixtures";
+import { decideBatch, login, openReceiptCard, receiveMaterial, seedMaterial, seedSpec, seedSupplier } from "./helpers";
+
+// The Access-log alignment: sample / first supply / regular supply, each
+// with its own code pool (RMS / RMF / RMP); Access-format internal batch
+// numbers; and "accepted with concession". Codes namespaced AW1- through
+// AW3- since local D1 persists across tests within a run.
+
+const YY = String(new Date().getUTCFullYear()).slice(2);
+
+test.describe("Access workflow alignment", () => {
+  test("files supplies as first (RMF) then regular (RMP), and samples as RMS", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "AW1-MAT", name: "Access Flow Material", unit: "KG" });
+    await seedSupplier(page, "AW1-SUP", "Access Flow Supplier", "AWA");
+
+    await login(page, "warehouse");
+    const line = { code: "AW1-MAT", name: "Access Flow Material", unit: "KG" };
+    const first = await receiveMaterial(page, { supplierCode: "AW1-SUP", createdBy: "E2E Warehouse" }, [
+      { ...line, batches: [{ batchNo: "AW1-B1", qty: 100 }] },
+    ]);
+    const regular = await receiveMaterial(page, { supplierCode: "AW1-SUP", createdBy: "E2E Warehouse" }, [
+      { ...line, batches: [{ batchNo: "AW1-B2", qty: 100 }] },
+    ]);
+    const sample = await receiveMaterial(
+      page,
+      { type: "sample", supplierCode: "AW1-SUP", createdBy: "E2E Warehouse", sampleSentBy: "Rep" },
+      [{ ...line, batches: [{ batchNo: "AW1-S1", qty: 1 }] }]
+    );
+
+    await login(page, "quality");
+    let card = await openReceiptCard(page, "todo", first);
+    await expect(card.locator(".line-head .badge.flag")).toContainText(/RMF\d{4}/);
+    await expect(card.locator(".line-head .badge.flag")).toContainText("First supply");
+
+    card = await openReceiptCard(page, "todo", regular);
+    await expect(card.locator(".line-head .badge.repeat")).toContainText(/RMP\d{4}/);
+    await expect(card.locator(".line-head .badge.repeat")).toContainText("Regular supply");
+
+    card = await openReceiptCard(page, "todo", sample, "sample");
+    await expect(card.locator(".line-head .badge", { hasText: /RMS\d{4}/ })).toContainText("Sample");
+
+    // First supply batch gets an Access-format internal batch number:
+    // abbreviation + 4-digit sequence (per material) + 2-digit year.
+    card = await openReceiptCard(page, "todo", first);
+    await decideBatch(card, "[data-decide]", { decision: "approve", decidedBy: "E2E Quality" });
+    card = await openReceiptCard(page, "history", first);
+    await expect(card.locator(".batch-row")).toContainText(`AWA0001${YY}`);
+  });
+
+  test("accepts a batch with concession and shows why", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "AW2-MAT", name: "Concession Material", unit: "KG" });
+
+    await login(page, "warehouse");
+    await seedSupplier(page, "AW2-SUP", "Concession Supplier");
+    const receiptId = await receiveMaterial(page, { supplierCode: "AW2-SUP", createdBy: "E2E Warehouse" }, [
+      { code: "AW2-MAT", name: "Concession Material", unit: "KG", batches: [{ batchNo: "AW2-B1", qty: 50 }] },
+    ]);
+
+    await login(page, "quality");
+    let card = await openReceiptCard(page, "todo", receiptId);
+    await decideBatch(card, "[data-decide]", {
+      decision: "concession",
+      concessionReason: "Viscosity slightly low",
+      concessionApprovedBy: "Eng. Farouk",
+      decidedBy: "E2E Quality",
+    });
+
+    card = await openReceiptCard(page, "history", receiptId);
+    await expect(card.locator(".batch-row .status-pill.concession")).toBeVisible();
+    await expect(card).toContainText("Viscosity slightly low");
+    await expect(card).toContainText("Eng. Farouk");
+
+    // Warehouse still treats it as accepted: it's waiting to be weighed in.
+    await login(page, "warehouse");
+    card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card.locator("[data-finalize]")).toBeVisible();
+  });
+
+  test("lets Quality reclassify a regular supply as a first supply", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "AW3-MAT", name: "Reclassify Material", unit: "KG" });
+
+    await login(page, "warehouse");
+    await seedSupplier(page, "AW3-SUP", "Reclassify Supplier");
+    const line = { code: "AW3-MAT", name: "Reclassify Material", unit: "KG" };
+    await receiveMaterial(page, { supplierCode: "AW3-SUP", createdBy: "E2E Warehouse" }, [
+      { ...line, batches: [{ batchNo: "AW3-B1", qty: 10 }] },
+    ]);
+    const receiptId = await receiveMaterial(page, { supplierCode: "AW3-SUP", createdBy: "E2E Warehouse" }, [
+      { ...line, batches: [{ batchNo: "AW3-B2", qty: 10 }] },
+    ]);
+
+    await login(page, "quality");
+    const card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card.locator(".line-head .badge.repeat")).toContainText(/RMP\d{4}/);
+
+    await card.locator("[data-classify]").click();
+    const modal = page.locator("#classify-form");
+    await modal.locator('select[name="supply_kind"]').selectOption("first");
+    await modal.locator('button[type="submit"]').click();
+    await expect(modal).toBeHidden();
+
+    const refreshed = page.locator(`.receipt-card[data-receipt-id="${receiptId}"]`);
+    await expect(refreshed.locator(".line-head .badge.flag")).toContainText(/RMF\d{4}/);
+  });
+
+  test("judges measured values against the spec and asks why when overridden", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "AW4-MAT", name: "Spec Judge Material", unit: "KG" });
+    await seedSpec(page, "AW4-MAT", {
+      title: "Access-style spec",
+      created_by: "E2E Quality",
+      parameters: [
+        { test_code: "WATER_CONTENT", param_type: "max", max_value: 0.05 },
+        { test_code: "VISCOSITY", param_type: "time_range", min_value: 90, max_value: 110, conditions: "Cup #8 ISO" },
+      ],
+    });
+
+    await login(page, "warehouse");
+    await seedSupplier(page, "AW4-SUP", "Spec Judge Supplier");
+    const receiptId = await receiveMaterial(page, { supplierCode: "AW4-SUP", createdBy: "E2E Warehouse" }, [
+      { code: "AW4-MAT", name: "Spec Judge Material", unit: "KG", batches: [{ batchNo: "AW4-B1", qty: 20 }] },
+    ]);
+
+    await login(page, "quality");
+    const card = await openReceiptCard(page, "todo", receiptId);
+    await card.locator("[data-test]").click();
+    const modal = page.locator("#test-results-form");
+    const water = modal.locator("[data-result-row]").filter({ hasText: "Water Content" });
+    const viscosity = modal.locator("[data-result-row]").filter({ hasText: "Viscosity" });
+    await expect(water).toContainText("Max 0.05 %");
+    await expect(viscosity).toContainText("1:30 – 1:50");
+    await expect(viscosity).toContainText("Cup #8 ISO");
+
+    // Typing a value picks the result automatically.
+    await viscosity.locator('[data-f="measured_value"]').fill("1:40");
+    await expect(viscosity.locator('[data-f="result"]')).toHaveValue("pass");
+    await water.locator('[data-f="measured_value"]').fill("0.07");
+    await expect(water.locator('[data-f="result"]')).toHaveValue("fail");
+
+    // Disagreeing with the check needs a reason before it saves.
+    await water.locator('[data-f="result"]').selectOption("pass");
+    await expect(water.locator("[data-override-field]")).toBeVisible();
+    await modal.locator('input[name="tested_by"]').fill("E2E Quality");
+    await modal.locator('button[type="submit"]').click();
+    await expect(modal).toBeVisible();
+    await water.locator('[data-f="override_reason"]').fill("Retested on second instrument");
+    await modal.locator('button[type="submit"]').click();
+    await expect(modal).toBeHidden();
+
+    const refreshed = page.locator(`.receipt-card[data-receipt-id="${receiptId}"]`);
+    await refreshed.locator("[data-view-results]").click();
+    await expect(page.locator(".modal")).toContainText("Retested on second instrument");
+  });
+
+  test("Quality records product details that Warehouse never sees", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "AW5-MAT", name: "Product Info Material", unit: "KG" });
+
+    await login(page, "warehouse");
+    await seedSupplier(page, "AW5-SUP", "Product Info Supplier");
+    const receiptId = await receiveMaterial(page, { supplierCode: "AW5-SUP", createdBy: "E2E Warehouse" }, [
+      { code: "AW5-MAT", name: "Product Info Material", unit: "KG", batches: [{ batchNo: "AW5-B1", qty: 10 }] },
+    ]);
+    let card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card.locator("[data-product-info]")).toHaveCount(0);
+
+    await login(page, "quality");
+    card = await openReceiptCard(page, "todo", receiptId);
+    await card.locator("[data-product-info]").click();
+    const modal = page.locator("#product-info-form");
+    await modal.locator('[name="manufacturer"]').fill("Allnex");
+    await modal.locator('[name="origin"]').fill("Germany");
+    await modal.locator('[name="product_description"]').fill("Short oil alkyd resin with very good durability.");
+    await modal.locator('button[type="submit"]').click();
+    await expect(modal).toBeHidden();
+
+    card = page.locator(`.receipt-card[data-receipt-id="${receiptId}"]`);
+    await expect(card).toContainText("Allnex · Germany");
+    await expect(card).toContainText("Short oil alkyd resin");
+
+    // Warehouse sees the same receipt without any of it — not in the page,
+    // and not in the data the server sends.
+    await login(page, "warehouse");
+    card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card).not.toContainText("Allnex");
+    await expect(card).not.toContainText("Short oil alkyd resin");
+    const res = await page.request.get(`/api/receipts/${receiptId}`);
+    const line = (await res.json()).lines[0];
+    expect(line.manufacturer).toBeNull();
+    expect(line.origin).toBeNull();
+    expect(line.product_description).toBeNull();
+    const denied = await page.request.patch(`/api/receipt-lines/${line.id}/product-info`, { data: { manufacturer: "X" } });
+    expect(denied.status()).toBe(403);
+  });
+});

@@ -1,3 +1,5 @@
+import type { LimitType } from "../public/specLimits.js";
+
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
@@ -88,6 +90,8 @@ export interface Supplier {
   id: number;
   code: string;
   name: string;
+  /** Short prefix for internal batch numbers (e.g. "MHND"). */
+  abbreviation: string | null;
 }
 
 export interface Material {
@@ -119,16 +123,43 @@ export interface MaterialFunction {
   name: string;
 }
 
-export type ParamType = "numeric_range" | "pass_fail" | "time_range" | "text_value";
+/** How a spec parameter expresses its limit — see public/specLimits.js. */
+export type ParamType = LimitType;
+
+/** Supply specs apply to imports; sample specs to samples (falling back to
+ *  the supply spec when a material has no sample spec). */
+export type SpecScope = "supply" | "sample";
 
 export interface ParameterInput {
+  /** A test from the catalog; fills in name/method/unit when those are blank. */
+  test_code?: string | null;
   parameter_name: string;
   param_type: ParamType;
   method?: string | null;
+  /** Test conditions kept apart from the limit (cup, dilution, recipe). */
+  conditions?: string | null;
+  /** Numbers for numeric limits; seconds for time_range. */
   min_value?: number | null;
   max_value?: number | null;
   unit?: string | null;
+  /** Expected appearance / what to compare against the reference sample. */
+  expected_text?: string | null;
+  /** target limit: the value, and (once known) the allowed ± tolerance. */
+  target_value?: number | null;
+  tolerance?: number | null;
+  /** A note shown with the parameter, e.g. "As per TDS". */
+  remarks?: string | null;
   sort_order?: number;
+}
+
+export interface TestCatalogEntry {
+  code: string;
+  name: string;
+  method_code: string | null;
+  default_type: ParamType;
+  default_unit: string | null;
+  sort_order: number;
+  active: 0 | 1;
 }
 
 export interface Receipt {
@@ -141,9 +172,18 @@ export interface Receipt {
   created_at: string;
   /** Who physically sent the sample. Only meaningful when type is "sample". */
   sample_sent_by: string | null;
+  /** The Access record this receipt was migrated from, if any. */
+  legacy_ref: string | null;
+  /** 1 when Access had no date: received_at then holds a placeholder. */
+  received_at_unknown: 0 | 1;
 }
 
 export type ImportScenario = "new_material" | "new_supplier" | "new_name_variant" | "repeat";
+
+/** The Access log's three kinds of record, each with its own code pool:
+ *  sample -> RMS, first supply -> RMF, regular supply -> RMP. */
+export type SupplyKind = "sample" | "first" | "regular";
+export type CodePool = "RMS" | "RMF" | "RMP";
 
 /** How the material physically arrived. Drives which breakdown fields
  *  (container_qty, per_unit_weight, qty_secondary) the wizard asks for. */
@@ -168,6 +208,17 @@ export interface ReceiptLine {
   qty_basis: QtyBasis | null;
   import_code: string | null;
   import_scenario: ImportScenario | null;
+  supply_kind: SupplyKind | null;
+  /** Quality-only product details (never sent to Warehouse). */
+  product_description: string | null;
+  manufacturer: string | null;
+  origin: string | null;
+}
+
+export interface LineProductInfoInput {
+  product_description?: string | null;
+  manufacturer?: string | null;
+  origin?: string | null;
 }
 
 export interface ReceiptBatch {
@@ -202,6 +253,12 @@ export interface ReceiptBatch {
   /** Set when this batch is a resend/rework of a specific earlier
    *  rejected batch — e.g. the supplier fixed and resent the material. */
   retest_of_batch_id: number | null;
+  /** 1 when approved as "accepted with concession" (مقبول بتجاوز). */
+  concession: 0 | 1;
+  concession_reason: string | null;
+  concession_approved_by: string | null;
+  /** Warehouse addition-note number (رقم اذن الاضافة). */
+  addition_no: string | null;
 }
 
 export interface NewReceiptBatchInput {
@@ -242,7 +299,10 @@ export type TestResultOutcome = "pass" | "fail";
 export interface TestResultInput {
   spec_parameter_id: number;
   measured_value?: string | null;
-  result: TestResultOutcome;
+  /** null = recorded but not judged (needs a measured value). */
+  result: TestResultOutcome | null;
+  /** Required when `result` disagrees with the app's automatic judgement. */
+  override_reason?: string | null;
 }
 
 export interface BatchTestResult {
@@ -250,19 +310,26 @@ export interface BatchTestResult {
   batch_id: number;
   spec_parameter_id: number;
   measured_value: string | null;
-  result: TestResultOutcome;
+  /** null = not judged (e.g. an old Access value like "Colorless liquid"). */
+  result: TestResultOutcome | null;
+  auto_result: TestResultOutcome | null;
+  override_reason: string | null;
   created_at: string;
 }
 
 export interface BatchDecisionInput {
-  decision: "approve" | "reject" | "partial";
+  /** "concession" = accepted with concession (مقبول بتجاوز): stored as
+   *  status "approved" with the concession flag set. */
+  decision: "approve" | "concession" | "reject" | "partial";
+  concession_reason?: string;
+  concession_approved_by?: string;
   decided_by: string;
   qty_accepted?: number;
   qty_rejected?: number;
   expiry_date?: string | null;
   production_date?: string | null;
   internal_batch_no?: string; // override; auto-generated when omitted on approve/partial
-  import_code?: string; // override; auto-generated when omitted, only on the line's first decision
+  import_code?: string; // override; only applies to a line that has no code yet
   coa_remarks?: string | null;
 }
 
@@ -275,6 +342,14 @@ export interface RecordTestResultsInput {
 
 export interface FinalizeWeightInput {
   qty_actual_weighed: number;
+  /** Warehouse addition-note number (رقم اذن الاضافة). */
+  addition_no?: string | null;
+}
+
+export interface SetLineClassificationInput {
+  supply_kind: SupplyKind;
+  /** Replaces the line's code instead of drawing the next one from the pool. */
+  import_code?: string | null;
 }
 
 export type SpecStatus = "active" | "superseded";
@@ -282,10 +357,15 @@ export type SpecStatus = "active" | "superseded";
 export interface Spec {
   id: number;
   material_code: string;
+  scope: SpecScope;
+  /** null = the material's normal spec. A name (e.g. a manufacturer) marks
+   *  an alternative spec for a code shared by two sources. */
+  variant: string | null;
   version: number;
   status: SpecStatus;
   title: string;
   notes: string | null;
+  change_reason: string | null;
   created_by: string;
   created_at: string;
 }
@@ -293,12 +373,18 @@ export interface Spec {
 export interface SpecParameter {
   id: number;
   spec_id: number;
+  test_code: string | null;
   parameter_name: string;
   param_type: ParamType;
   method: string | null;
+  conditions: string | null;
   min_value: number | null;
   max_value: number | null;
   unit: string | null;
+  expected_text: string | null;
+  target_value: number | null;
+  tolerance: number | null;
+  remarks: string | null;
   sort_order: number;
 }
 
@@ -310,6 +396,10 @@ export interface NewSpecInput {
   title: string;
   notes?: string | null;
   created_by: string;
+  scope?: SpecScope;
+  variant?: string | null;
+  /** Why this version replaces the previous one. */
+  change_reason?: string | null;
   /** Omit to auto-prefill from the material's subtype template, if any. */
   parameters?: ParameterInput[];
 }
@@ -345,6 +435,7 @@ export interface DossierBatchSummary {
   status: BatchStatus;
   internal_batch_no: string | null;
   decided_at: string | null;
+  concession: 0 | 1;
 }
 
 export interface DossierImportEntry {
@@ -352,6 +443,9 @@ export interface DossierImportEntry {
   import_code: string;
   import_scenario: ImportScenario | null;
   material_name_text: string;
+  product_description: string | null;
+  manufacturer: string | null;
+  origin: string | null;
   receipt_id: number;
   received_at: string;
   supplier_id: number;
@@ -381,6 +475,7 @@ export interface MaterialDossier {
   names: DossierName[];
   specs: SpecWithParameters[];
   rmf: DossierImportEntry[];
+  rmp: DossierImportEntry[];
   rms: DossierImportEntry[];
   metrics: {
     overall: DossierStatusCounts;
