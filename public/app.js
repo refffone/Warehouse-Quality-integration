@@ -356,10 +356,12 @@ async function initPush() {
   const registration = await navigator.serviceWorker.register("/sw.js").catch(() => null);
   if (!registration) return;
 
+  // A push only updates the badges; the list itself changes when the
+  // user presses Refresh, so it never jumps while they're reading it.
   navigator.serviceWorker.addEventListener("message", (event) => {
     if (event.data?.type !== "push-received") return;
-    const tab = currentRoute();
-    if (tab === "todo" || tab === "history") refreshCurrentView();
+    refreshNotifCount();
+    refreshTodoCount();
   });
 
   const existing = await registration.pushManager.getSubscription().catch(() => null);
@@ -1934,8 +1936,11 @@ async function viewReceiptBucket({ role, bucket }) {
         <button class="subtab-btn${state.type === "import" ? " active" : ""}" data-t="import">${esc(t("bucket.imports"))}</button>
         <button class="subtab-btn${state.type === "sample" ? " active" : ""}" data-t="sample">${esc(t("bucket.samples"))}</button>
       </div>
-      <input type="search" class="search-input" id="receipt-search"
-        placeholder="${esc(t("bucket.searchPlaceholder"))}" value="${esc(state.query)}" />
+      <div class="list-actions">
+        <input type="search" class="search-input" id="receipt-search"
+          placeholder="${esc(t("bucket.searchPlaceholder"))}" value="${esc(state.query)}" />
+        <button type="button" class="btn ghost sm" id="receipt-refresh" title="${esc(t("bucket.refreshHint"))}">↻ ${esc(t("bucket.refresh"))}</button>
+      </div>
     </div>
     ${exportInfo ? exportBarHtml("bucket-export", { withPeriod: exportInfo.withPeriod }) : ""}
     <div id="receipt-list"></div>
@@ -1961,6 +1966,18 @@ async function viewReceiptBucket({ role, bucket }) {
     debounceTimer = setTimeout(() => {
       renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query, state });
     }, 250);
+  });
+
+  const refreshBtn = document.getElementById("receipt-refresh");
+  refreshBtn.addEventListener("click", async () => {
+    refreshBtn.disabled = true;
+    try {
+      await renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query, state });
+      refreshTodoCount();
+      refreshNotifCount();
+    } finally {
+      refreshBtn.disabled = false;
+    }
   });
 
   await renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query, state });
@@ -3506,15 +3523,10 @@ async function boot() {
   refreshNotifCount();
   initPush();
   setInterval(refreshNotifCount, 20000);
+  // Only the badges poll. The lists used to re-render every 20 s, which
+  // reset scroll and closed open records mid-work; they now reload with
+  // the Refresh button instead.
   setInterval(refreshTodoCount, 20000);
-  // Polling backstop for "refresh when a receipt is registered" — works
-  // even when push permission was never granted. Push (above) additionally
-  // triggers an instant refresh via initPush()'s service-worker message
-  // listener, so a subscribed device doesn't have to wait for this tick.
-  setInterval(() => {
-    const tab = currentRoute();
-    if (tab === "todo" || tab === "history") refreshCurrentView();
-  }, 20000);
 }
 
 boot();

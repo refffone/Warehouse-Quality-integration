@@ -513,6 +513,8 @@ const translations = {
     // Access history
     "bucket.showingOf": "Showing {shown} of {total}",
     "bucket.showMore": "Show more",
+    "bucket.refresh": "Refresh",
+    "bucket.refreshHint": "Load the latest records",
     "receipt.dateUnknown": "date unknown",
     "receipt.fromAccess": "From Access",
     "results.notJudged": "not judged",
@@ -1011,6 +1013,8 @@ const translations = {
     // Access history
     "bucket.showingOf": "عرض {shown} من {total}",
     "bucket.showMore": "عرض المزيد",
+    "bucket.refresh": "تحديث",
+    "bucket.refreshHint": "تحميل أحدث السجلات",
     "receipt.dateUnknown": "التاريخ غير معروف",
     "receipt.fromAccess": "من Access",
     "results.notJudged": "بدون حكم",
