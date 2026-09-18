@@ -1851,7 +1851,42 @@ Verified locally: the history rebuilt from the regenerated import files
 matches the migrated database receipt for receipt (2,166 receipts, 152
 multi-line, 470 open, serial continuing from 2302).
 
-## 29. Next Step
+## 29. Adding a spec from a received line
+
+A sample (RMS), or a first or regular supply (RMF/RMP), sometimes needs
+testing and a printable COA while its material has no spec yet. Quality
+can now write one from the line itself: **Add spec** appears next to
+"No active spec" (Quality only, coded lines only — deciding and printing a
+COA both need a material code, so an RMS that came in uncoded gets its code
+first through Associate a Code).
+
+- **Pick tests as cards.** Step 1 shows the test catalog as tick-cards
+  (name, method code, limit type), with a filter. Step 2 turns the ticked
+  tests into the same limit rows the Specifications screen uses
+  (`wireParamList`/`collectParams`), in catalog order, plus custom tests.
+- **Save once or save a version.** `POST /api/receipt-lines/:id/spec`
+  with `mode`:
+  - `one_time` — a spec for this line only (`createOneTimeSpec`). The
+    material stays without a spec.
+  - `version` — the material's new spec version (`createSpecVersion`),
+    sample or supply scope (defaults to the line's own), with a change
+    reason naming the line and receipt it was written for.
+  The endpoint refuses a line that already has a spec (409).
+- **Migration 0028.** A one-time spec is a spec row with
+  `receipt_line_id` set. Rebuilding `specs` to add a status value isn't
+  possible on D1 (dropping the table trips the foreign keys pointing at
+  it), so the material's rules exclude one-time specs instead: the
+  one-active-per-scope and version-number unique indexes are recreated
+  with `receipt_line_id IS NULL`, and so are the queries that mean "the
+  material's spec" (active spec lookup, version numbering, supersede, the
+  Specifications list, the import template, and the history import).
+- **Using it.** A line's one-time spec takes precedence wherever its spec
+  is resolved (receipt by id, lists, `recordTestResults`); the COA prints
+  from the recorded results and their spec lines, so it needs nothing
+  new. The card shows "One-time spec: …"; the test form says "for this
+  line only".
+
+## 30. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Things

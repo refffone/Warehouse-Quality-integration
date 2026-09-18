@@ -152,6 +152,20 @@ export interface ParameterInput {
   sort_order?: number;
 }
 
+/** POST /api/receipt-lines/:id/spec — a spec for a line whose material has
+ *  none: just for this line, or as the material's new version. */
+export interface AddLineSpecInput {
+  mode: "one_time" | "version";
+  /** For "version": which of the material's specs to create. Defaults to
+   *  the line's own (sample for a sample, supply otherwise). */
+  scope?: SpecScope;
+  title?: string | null;
+  notes?: string | null;
+  change_reason?: string | null;
+  created_by: string;
+  parameters: ParameterInput[];
+}
+
 export interface TestCatalogEntry {
   code: string;
   name: string;
@@ -378,6 +392,9 @@ export interface Spec {
   change_reason: string | null;
   created_by: string;
   created_at: string;
+  /** Set on a one-time spec: the received line it was written for. Null on
+   *  the material's own specs. */
+  receipt_line_id: number | null;
 }
 
 export interface SpecParameter {

@@ -1196,13 +1196,18 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
   const packagingBadge = line.packaging_type
     ? `<span class="badge neutral">${esc(t(PACKAGING_LABEL_KEYS[line.packaging_type]))}</span>`
     : "";
+  const specParams = spec
+    ? spec.parameters.map((p) => `${p.parameter_name}${p.unit ? " (" + p.unit + ")" : ""}`).join(", ") || t("line.noParameters")
+    : "";
+  const specLabelKey = spec?.receipt_line_id != null
+    ? "line.oneTimeSpec"
+    : spec?.scope === "sample" ? "line.sampleSpecVersion" : "line.specVersion";
   const specHtml = spec
-    ? `<span class="spec-chip">${esc(t(spec.scope === "sample" ? "line.sampleSpecVersion" : "line.specVersion", {
-        version: spec.version,
-        params: spec.parameters.map((p) => `${p.parameter_name}${p.unit ? " (" + p.unit + ")" : ""}`).join(", ") || t("line.noParameters"),
-      }))}</span>`
+    ? `<span class="spec-chip">${esc(t(specLabelKey, { version: spec.version, params: specParams }))}</span>`
     : line.material_code
-      ? `<span class="spec-chip muted">${esc(t("line.noActiveSpec"))}</span>`
+      ? `<span class="spec-chip muted">${esc(t("line.noActiveSpec"))}</span>${
+          role === "quality" ? `<button class="btn sm primary" data-add-spec="${line.id}">${esc(t("lineSpec.button"))}</button>` : ""
+        }`
       : "";
 
   const importBadge = supplyKindBadge(line, role);
@@ -1327,6 +1332,148 @@ function openProductInfoModal(line, onDone) {
   });
 }
 
+/** A spec for a line whose material has none yet (a sample or supply that
+ *  needs testing and a COA now). Step 1: tick the tests, as cards. Step 2:
+ *  set each test's limits, then save it for this line only (the material
+ *  stays without a spec) or as the material's new spec version. */
+async function openAddLineSpecModal(line, receiptType, onDone) {
+  const catalog = (await getTestCatalog()).filter((c) => c.active);
+  const lineScope = receiptType === "sample" ? "sample" : "supply";
+  const picked = new Set();
+  const subtitle = `<div class="small muted">${bdi(line.material_name_text)} · <bdi class="mono">${esc(line.material_code)}</bdi>${
+    line.import_code ? ` · <bdi class="mono">${esc(line.import_code)}</bdi>` : ""
+  }</div>`;
+
+  function renderPick() {
+    openModal(
+      esc(t("lineSpec.title")),
+      `${subtitle}
+      <div class="small muted">${esc(t("lineSpec.pickHint"))}</div>
+      <input type="search" class="search-input" id="line-spec-filter" placeholder="${esc(t("lineSpec.filter"))}" style="max-width:none" />
+      <div class="test-cards" id="line-spec-cards">
+        ${catalog
+          .map(
+            (c) => `
+          <label class="test-card" data-name="${esc(`${c.name} ${c.method_code || ""} ${c.code}`.toLowerCase())}">
+            <input type="checkbox" value="${esc(c.code)}" ${picked.has(c.code) ? "checked" : ""} />
+            <span class="test-card-body">
+              <span class="test-card-name">${esc(c.name)}</span>
+              <span class="test-card-meta">${c.method_code ? `<bdi class="mono">${esc(c.method_code)}</bdi> · ` : ""}${esc(t("paramType." + c.default_type))}${c.default_unit ? ` · ${esc(c.default_unit)}` : ""}</span>
+            </span>
+          </label>`
+          )
+          .join("")}
+      </div>
+      <div class="hstack" style="justify-content:space-between">
+        <span class="small muted" id="line-spec-count"></span>
+        <button type="button" class="btn primary" id="line-spec-next">${esc(t("lineSpec.next"))}</button>
+      </div>`
+    );
+    document.querySelector("#modal-root .modal").classList.add("modal-wide");
+    const cards = document.getElementById("line-spec-cards");
+    const next = document.getElementById("line-spec-next");
+    const count = document.getElementById("line-spec-count");
+    const syncCount = () => {
+      count.textContent = t("lineSpec.pickedCount", { count: picked.size });
+      next.disabled = picked.size === 0;
+    };
+    cards.querySelectorAll('input[type="checkbox"]').forEach((box) =>
+      box.addEventListener("change", () => {
+        box.checked ? picked.add(box.value) : picked.delete(box.value);
+        syncCount();
+      })
+    );
+    document.getElementById("line-spec-filter").addEventListener("input", (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      cards.querySelectorAll(".test-card").forEach((card) => (card.hidden = q !== "" && !card.dataset.name.includes(q)));
+    });
+    next.addEventListener("click", renderLimits);
+    syncCount();
+  }
+
+  function renderLimits() {
+    // Keep the catalog's order, not the order the boxes were ticked.
+    const initial = catalog
+      .filter((c) => picked.has(c.code))
+      .map((c) => ({ test_code: c.code, parameter_name: c.name, param_type: c.default_type, method: c.method_code, unit: c.default_unit }));
+    openModal(
+      esc(t("lineSpec.title")),
+      `<form class="form-grid" id="line-spec-form">
+        ${subtitle}
+        <div class="repeatable" id="line-spec-params"></div>
+        <button type="button" class="btn ghost sm" id="line-spec-add" style="align-self:flex-start">${esc(t("lineSpec.addOther"))}</button>
+        <fieldset class="save-mode">
+          <legend>${esc(t("lineSpec.saveAs"))}</legend>
+          <label class="radio-row"><input type="radio" name="mode" value="one_time" checked />
+            <span><b>${esc(t("lineSpec.oneTime"))}</b><span class="small muted">${esc(t("lineSpec.oneTimeHint"))}</span></span></label>
+          <label class="radio-row"><input type="radio" name="mode" value="version" />
+            <span><b>${esc(t("lineSpec.version"))}</b><span class="small muted">${esc(t("lineSpec.versionHint", { code: line.material_code }))}</span></span></label>
+          <div class="field" id="line-spec-scope-field" hidden style="max-width:240px">
+            <label>${esc(t("lineSpec.scope"))}</label>
+            <select name="scope">
+              <option value="sample" ${lineScope === "sample" ? "selected" : ""}>${esc(t("specs.scopeSample"))}</option>
+              <option value="supply" ${lineScope === "supply" ? "selected" : ""}>${esc(t("specs.scopeSupply"))}</option>
+            </select>
+          </div>
+        </fieldset>
+        <div class="field-row">
+          <div class="field"><label>${esc(t("lineSpec.specTitle"))}</label><input name="title" placeholder="${esc(t("lineSpec.specTitlePlaceholder"))}" /></div>
+          <div class="field"><label>${esc(t("receive.yourName"))}</label><input name="created_by" value="${esc(getRememberedName())}" required /></div>
+        </div>
+        <div class="hstack" style="justify-content:space-between">
+          <button type="button" class="btn ghost" id="line-spec-back">${esc(t("lineSpec.back"))}</button>
+          <button type="submit" class="btn primary">${esc(t("lineSpec.save"))}</button>
+        </div>
+      </form>`
+    );
+    document.querySelector("#modal-root .modal").classList.add("modal-wide");
+    const form = document.getElementById("line-spec-form");
+    const paramsEl = document.getElementById("line-spec-params");
+    const addRow = wireParamList(paramsEl, initial, catalog);
+    document.getElementById("line-spec-add").addEventListener("click", () => addRow({}));
+    document.getElementById("line-spec-back").addEventListener("click", () => {
+      // Going back keeps the ticks; rows removed here drop their tick.
+      picked.clear();
+      paramsEl.querySelectorAll('[data-f="test_code"]').forEach((sel) => sel.value && picked.add(sel.value));
+      renderPick();
+    });
+    form.querySelectorAll('input[name="mode"]').forEach((radio) =>
+      radio.addEventListener("change", () => {
+        document.getElementById("line-spec-scope-field").hidden = form.elements.mode.value !== "version";
+      })
+    );
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      let parameters;
+      try {
+        parameters = collectParams(paramsEl);
+      } catch (err) {
+        return toast(err.message, true);
+      }
+      if (!parameters.length) return toast(t("lineSpec.pickAtLeastOne"), true);
+      const mode = form.elements.mode.value;
+      const createdBy = form.elements.created_by.value.trim();
+      rememberName(createdBy);
+      try {
+        await api.post(`/api/receipt-lines/${line.id}/spec`, {
+          mode,
+          scope: mode === "version" ? form.elements.scope.value : undefined,
+          title: form.elements.title.value.trim() || null,
+          created_by: createdBy,
+          parameters,
+        });
+        toast(t(mode === "version" ? "lineSpec.savedVersion" : "lineSpec.savedOneTime"));
+        closeModal();
+        onDone();
+      } catch (err) {
+        toast(err.message, true);
+      }
+    });
+  }
+
+  renderPick();
+}
+
 const RECEIPT_PAGE_SIZE = 50;
 
 /** One page of a To Do / History list. The server decides what counts as
@@ -1439,6 +1586,11 @@ function buildReceiptCard(receipt, { role, type }) {
   );
   card.querySelectorAll("[data-product-info]").forEach((btn) =>
     btn.addEventListener("click", () => openProductInfoModal(linesById[btn.dataset.productInfo], () => refreshCurrentView()))
+  );
+  card.querySelectorAll("[data-add-spec]").forEach((btn) =>
+    btn.addEventListener("click", () =>
+      openAddLineSpecModal(linesById[btn.dataset.addSpec], type, () => refreshCurrentView())
+    )
   );
   // associate code
   card.querySelectorAll("[data-associate]").forEach((btn) =>
@@ -1592,7 +1744,11 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
   openModal(
     esc(t("test.title")),
     `<form class="form-grid" id="test-results-form">
-      <label class="small muted">${esc(t("test.headerForSpec", { title: spec.title, version: spec.version }))}${spec.scope === "sample" ? ` · ${esc(t("specs.scopeSample"))}` : ""}</label>
+      <label class="small muted">${
+        spec.receipt_line_id != null
+          ? esc(t("test.headerForOneTimeSpec", { title: spec.title }))
+          : `${esc(t("test.headerForSpec", { title: spec.title, version: spec.version }))}${spec.scope === "sample" ? ` · ${esc(t("specs.scopeSample"))}` : ""}`
+      }</label>
       <div class="repeatable">
         ${params
           .map((p) => {

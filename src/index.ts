@@ -50,6 +50,7 @@ import { listNotifications, markNotificationRead } from "./routes/notifications"
 import { getVapidPublicKey, subscribeToPush, unsubscribeFromPush } from "./push";
 import {
   associateCode,
+  addLineSpec,
   createReceipt,
   decideBatch,
   finalizeWeight,
@@ -390,6 +391,12 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (pathname === "/api/receipt-lines/by-legacy-ref" && method === "GET") {
     if (role !== "quality") return error("Only quality can look up migrated records", 403);
     return findLineByLegacyRef(env, url.searchParams.get("ref") ?? "");
+  }
+
+  const lineSpecMatch = pathname.match(/^\/api\/receipt-lines\/(\d+)\/spec$/);
+  if (lineSpecMatch && method === "POST") {
+    if (role !== "quality") return error("Only quality can write specs", 403);
+    return addLineSpec(request, env, Number(lineSpecMatch[1]));
   }
 
   const productInfoMatch = pathname.match(/^\/api\/receipt-lines\/(\d+)\/product-info$/);
