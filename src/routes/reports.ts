@@ -1,4 +1,5 @@
 import { getBranding } from "./admin";
+import { isStandInCode } from "../../public/materialCodes.js";
 import { getMaterialDossierData } from "./masterdata";
 import { formatLimit } from "../../public/specLimits.js";
 import { getActiveSpec, listSpecsForMaterial } from "./specs";
@@ -97,7 +98,9 @@ export async function exportReceivedLog(request: Request, env: Env): Promise<Res
   const shaped = (rows.results ?? []).map((r) => ({
     ...r,
     received_at: receivedLabel(r.received_at as string, fmtDateTime),
-    material: r.material_code ? `${r.material} (${r.material_code})` : `${r.material} (uncoded)`,
+    // Warehouse's own log: a real material code, or just the name until
+    // Quality links one (never a stand-in record number).
+    material: r.material_code && !isStandInCode(r.material_code) ? `${r.material} (${r.material_code})` : String(r.material),
     qty: `${r.qty} ${r.unit}`,
   }));
 

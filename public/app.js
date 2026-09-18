@@ -869,6 +869,8 @@ function batchStatusInline(b) {
 const SUPPLY_KINDS = ["sample", "first", "regular"];
 
 function supplyKindBadge(line, role) {
+  // Record codes and the first/regular/sample classification are Quality's.
+  if (role !== "quality") return "";
   if (!line.supply_kind && !line.import_code) return "";
   const kindLabel = line.supply_kind ? t(`kind.${line.supply_kind}`) : "";
   const scenario = role === "quality" && line.import_scenario ? t(`status.${line.import_scenario}`) : "";
@@ -1274,7 +1276,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
           ${esc(line.material_name_text)}
           ${
             !line.material_code
-              ? `<span class="badge neutral">${esc(t("line.uncoded"))}</span>`
+              ? role === "quality" ? `<span class="badge neutral">${esc(t("line.uncoded"))}</span>` : ""
               : isStandInCode(line.material_code)
                 ? `<span class="badge flag">${esc(t("line.notMatched"))}</span>`
                 : `<span class="code">${esc(line.material_code)}</span>`

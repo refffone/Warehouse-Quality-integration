@@ -1,6 +1,6 @@
 import { fetchByIds, resolveMaterialClassification } from "../db";
 import { error, json } from "../http";
-import { isRecordStyleCode } from "../../public/materialCodes.js";
+import { isRecordStyleCode, isStandInCode } from "../../public/materialCodes.js";
 import { buildTemplateXlsx, parseImportBoolean, parseXlsxRows, templateResponse } from "../xlsxImport";
 import { isUploadedFile } from "./attachments";
 import { listSpecsForMaterial } from "./specs";
@@ -840,6 +840,8 @@ export async function getSupplierWeightAssessment(env: Env, supplierCode: string
 
   const byMaterial: SupplierWeightVariance[] = (byMaterialRows.results ?? []).map((row) => ({
     ...row,
+    // Warehouse's report: a stand-in is a record number, not a material code.
+    material_code: isStandInCode(row.material_code) ? null : row.material_code,
     variance_pct: weightVariance(row.qty_as_received, row.qty_actual_weighed),
   }));
 
