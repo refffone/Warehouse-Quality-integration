@@ -155,7 +155,7 @@ export async function createSpecVersion(
 
   const nextVersionRow = await env.DB.prepare(
     `SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM specs
-     WHERE material_code = ? AND scope = ? AND COALESCE(variant, '') = ?`
+     WHERE material_code = ? AND scope = ? AND COALESCE(variant, '') = ? AND receipt_line_id IS NULL`
   )
     .bind(materialCode, scope, variant ?? "")
     .first<{ next_version: number }>();
@@ -164,7 +164,8 @@ export async function createSpecVersion(
   const [, insertResult] = await env.DB.batch<{ id: number }>([
     env.DB.prepare(
       `UPDATE specs SET status = 'superseded'
-       WHERE material_code = ? AND scope = ? AND COALESCE(variant, '') = ? AND status = 'active'`
+       WHERE material_code = ? AND scope = ? AND COALESCE(variant, '') = ? AND status = 'active'
+         AND receipt_line_id IS NULL`
     ).bind(materialCode, scope, variant ?? ""),
     env.DB.prepare(
       `INSERT INTO specs (material_code, scope, variant, version, status, title, notes, change_reason, created_by)
@@ -199,10 +200,12 @@ export async function listSpecs(env: Env, materialCode: string): Promise<Respons
   return json(await listSpecsForMaterial(env, materialCode));
 }
 
-/** Every version of both scopes, newest first within each scope. */
+/** Every version of both scopes, newest first within each scope. One-time
+ *  specs (written for a single received line) aren't the material's. */
 export async function listSpecsForMaterial(env: Env, materialCode: string): Promise<SpecWithParameters[]> {
   const specs = await env.DB.prepare(
-    "SELECT * FROM specs WHERE material_code = ? ORDER BY scope DESC, COALESCE(variant, '') ASC, version DESC"
+    `SELECT * FROM specs WHERE material_code = ? AND receipt_line_id IS NULL
+     ORDER BY scope DESC, COALESCE(variant, '') ASC, version DESC`
   )
     .bind(materialCode)
     .all<Spec>();
@@ -255,7 +258,9 @@ export async function getActiveSpecsForMaterials(
     env,
     // Variants aren't picked for receipts yet — that needs the receipt to
     // say which manufacturer it came from — so testing uses the normal spec.
-    (ph) => `SELECT * FROM specs WHERE status = 'active' AND variant IS NULL AND material_code IN (${ph})`,
+    (ph) =>
+      `SELECT * FROM specs
+       WHERE status = 'active' AND variant IS NULL AND receipt_line_id IS NULL AND material_code IN (${ph})`,
     codes
   );
   // Prefer the requested scope; a sample falls back to the supply spec.
@@ -271,6 +276,41 @@ export async function getActiveSpecsForMaterials(
   for (const spec of await attachParameters(env, [...chosen.values()])) {
     map.set(spec.material_code, spec);
   }
+  return map;
+}
+
+/** A spec written for one received line only — for a material that has no
+ *  spec yet but whose sample or supply needs testing and a COA now. It
+ *  never becomes the material's spec (see migration 0028). */
+export async function createOneTimeSpec(
+  env: Env,
+  line: { id: number; material_code: string },
+  scope: SpecScope,
+  input: { title: string; notes?: string | null; created_by: string; parameters: ParameterInput[] }
+): Promise<CreateSpecResult> {
+  if (!input.title || !input.created_by) {
+    return { ok: false, message: "title and created_by are required", status: 400 };
+  }
+  const completed = await completeParameters(env, input.parameters);
+  if (!completed.ok) return { ok: false, message: completed.message, status: 400 };
+
+  const row = await env.DB.prepare(
+    `INSERT INTO specs (material_code, scope, variant, version, status, title, notes, created_by, receipt_line_id)
+     VALUES (?, ?, NULL, 1, 'active', ?, ?, ?, ?)
+     RETURNING id`
+  )
+    .bind(line.material_code, scope, input.title, input.notes ?? null, input.created_by, line.id)
+    .first<{ id: number }>();
+  await insertParameters(env, row!.id, completed.params);
+  return { ok: true, spec: await getSpecWithParameters(env, row!.id) };
+}
+
+/** One-time specs of the given lines, by line id. */
+export async function getOneTimeSpecsForLines(env: Env, lineIds: number[]): Promise<Map<number, SpecWithParameters>> {
+  const map = new Map<number, SpecWithParameters>();
+  if (!lineIds.length) return map;
+  const specs = await fetchByIds<Spec>(env, (ph) => `SELECT * FROM specs WHERE receipt_line_id IN (${ph})`, lineIds);
+  for (const spec of await attachParameters(env, specs)) map.set(spec.receipt_line_id!, spec);
   return map;
 }
 
@@ -375,7 +415,7 @@ export async function specsImportTemplate(env: Env): Promise<Response> {
             sp.min_value, sp.max_value, sp.unit, sp.expected_text, sp.target_value, sp.tolerance, sp.remarks
      FROM specs s
      JOIN spec_parameters sp ON sp.spec_id = s.id
-     WHERE s.status = 'active'
+     WHERE s.status = 'active' AND s.receipt_line_id IS NULL
      ORDER BY s.material_code, s.scope DESC, COALESCE(s.variant, ''), sp.sort_order`
   ).all<Record<string, unknown>>();
   const shaped = (rows.results ?? []).map((r) =>

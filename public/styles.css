@@ -520,6 +520,28 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
   display: flex; flex-direction: column;
   animation: modal-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
 }
+.modal.modal-wide { max-width: 920px; }
+
+/* Test picker: one card per catalog test, ticked to include it. */
+.test-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.test-card {
+  display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; cursor: pointer;
+  border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); background: var(--surface-2);
+  transition: border-color 0.12s, background 0.12s;
+}
+.test-card[hidden] { display: none; }
+.test-card:hover { border-color: var(--accent); }
+.test-card:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface-2)); }
+.test-card input { margin-top: 3px; flex-shrink: 0; }
+.test-card-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.test-card-name { font-weight: 600; font-size: 0.86rem; }
+.test-card-meta { font-size: 0.74rem; color: var(--ink-muted); }
+
+.save-mode { border: 1px solid var(--rule); border-radius: var(--radius-sm); padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.save-mode legend { font-size: 0.8rem; color: var(--ink-muted); padding: 0 6px; }
+.radio-row { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.radio-row input { margin-top: 4px; }
+
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 22px; border-bottom: 1px solid var(--rule); flex-shrink: 0; }
 .modal-head h2 { font-size: 1.1rem; }
 .modal-body { padding: 18px 22px 22px; display: flex; flex-direction: column; gap: 16px; }
