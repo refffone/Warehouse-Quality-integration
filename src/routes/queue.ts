@@ -18,7 +18,7 @@ const QUEUE_CTE = `
     SELECT rb.id AS batch_id, rb.supplier_batch_no, rb.qty_as_received, rb.expiry_date, rb.retest_of_batch_id,
            rl.id AS line_id, rl.material_code, rl.material_name_text, rl.unit, rl.import_code, rl.supply_kind,
            rl.manufacturer, m.name AS material_name,
-           r.id AS receipt_id, r.receipt_no, r.type AS receipt_type, r.received_at, r.received_at_unknown,
+           r.id AS receipt_id, r.receipt_no, r.type AS receipt_type, r.received_at, r.received_at_unknown, r.received_by,
            CASE WHEN r.legacy_ref IS NULL THEN 0 ELSE 1 END AS from_access,
            s.id AS supplier_id, s.name AS supplier_name, s.code AS supplier_code,
            CASE
@@ -134,6 +134,98 @@ export async function qualityQueueCount(env: Env): Promise<number> {
      JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
      JOIN receipts r ON r.id = rl.receipt_id
      WHERE rb.status = 'pending' AND r.legacy_ref IS NULL`
+  ).first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+// ---------------------------------------------------------------- Warehouse
+
+const STAND_IN = "GLOB 'RM[SFP][0-9][0-9][0-9][0-9]*'";
+
+/** Warehouse's To Do. Its own job first: approved import batches still
+ *  needing an actual weight or count. Then what's still with Quality,
+ *  read-only, in plain words and without record codes or results.
+ *  Samples show only that they're with Quality (Warehouse never learns a
+ *  sample's status). Access records are left out of "with Quality" unless
+ *  asked for. */
+export async function listWarehouseQueue(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const get = (k: string) => (url.searchParams.get(k) ?? "").trim();
+  const includeAccess = get("include_access") === "1";
+  const offset = Math.max(0, Number(get("offset")) || 0);
+  const limit = Math.min(200, Math.max(1, Number(get("limit")) || 80));
+  const q = get("q").toLowerCase().replace(/^#/, "");
+  const like = `%${q}%`;
+  // Searches only what Warehouse can see: never record codes or stand-ins.
+  const search = (alias: { receipt: string; line: string; batch: string; supplier: string; material: string }) =>
+    q
+      ? `AND (LOWER(COALESCE(${alias.receipt}.receipt_no, '')) LIKE ? OR LOWER(${alias.line}.material_name_text) LIKE ?
+           OR LOWER(COALESCE(${alias.material}.name, '')) LIKE ? OR LOWER(COALESCE(${alias.batch}.supplier_batch_no, '')) LIKE ?
+           OR LOWER(${alias.supplier}.name) LIKE ?
+           OR (${alias.line}.material_code NOT ${STAND_IN} AND LOWER(COALESCE(${alias.line}.material_code, '')) LIKE ?))`
+      : "";
+  const searchParams = q ? [like, like, like, like, like, like] : [];
+
+  const toWeighSql = `
+    SELECT rb.id AS batch_id, rb.supplier_batch_no, rb.qty_as_received, rb.qty_accepted, rb.status, rb.concession,
+           rb.internal_batch_no, rb.decided_at, rb.expiry_date,
+           CASE WHEN rl.material_code ${STAND_IN} THEN NULL ELSE rl.material_code END AS material_code,
+           rl.id AS line_id, rl.material_name_text, rl.unit, rl.qty_basis, m.name AS material_name,
+           r.id AS receipt_id, r.receipt_no, r.received_at, r.received_at_unknown,
+           s.name AS supplier_name,
+           CAST(julianday('now') - julianday(rb.decided_at) AS INTEGER) AS waiting_days
+    FROM receipt_batches rb
+    JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
+    JOIN receipts r ON r.id = rl.receipt_id
+    JOIN suppliers s ON s.id = r.supplier_id
+    LEFT JOIN materials m ON m.code = rl.material_code
+    WHERE r.type = 'import' AND r.received_by = 'warehouse'
+      AND +rb.status IN ('approved', 'partial') AND rb.qty_actual_weighed IS NULL
+      ${search({ receipt: "r", line: "rl", batch: "rb", supplier: "s", material: "m" })}
+    ORDER BY rb.decided_at ASC, rb.id ASC`;
+
+  const withQualityWhere = `received_by = 'warehouse' ${includeAccess ? "" : "AND from_access = 0"}`;
+  const withQualitySearch = q
+    ? `AND (LOWER(COALESCE(receipt_no, '')) LIKE ? OR LOWER(material_name_text) LIKE ? OR LOWER(COALESCE(material_name, '')) LIKE ?
+         OR LOWER(COALESCE(supplier_batch_no, '')) LIKE ? OR LOWER(supplier_name) LIKE ?
+         OR (material_code NOT ${STAND_IN} AND LOWER(COALESCE(material_code, '')) LIKE ?))`
+    : "";
+
+  const [toWeigh, withQuality, withQualityCount, accessCount] = await env.DB.batch<Record<string, unknown>>([
+    env.DB.prepare(toWeighSql).bind(...searchParams),
+    env.DB.prepare(
+      `${QUEUE_CTE}
+       SELECT batch_id, supplier_batch_no, qty_as_received, unit, receipt_id, receipt_no, receipt_type,
+              received_at, received_at_unknown, supplier_name, material_name, material_name_text, waiting_days,
+              CASE WHEN material_code ${STAND_IN} THEN NULL ELSE material_code END AS material_code,
+              CASE WHEN receipt_type = 'sample' THEN 'sample' ELSE stage END AS stage
+       FROM q WHERE ${withQualityWhere} ${withQualitySearch}
+       ORDER BY received_at_unknown ASC, received_at ASC, batch_id ASC LIMIT ? OFFSET ?`
+    ).bind(...searchParams, limit, offset),
+    env.DB.prepare(`${QUEUE_CTE} SELECT COUNT(*) AS n FROM q WHERE ${withQualityWhere} ${withQualitySearch}`).bind(...searchParams),
+    env.DB.prepare(`${QUEUE_CTE} SELECT COUNT(*) AS n FROM q WHERE received_by = 'warehouse' AND from_access = 1`),
+  ]);
+
+  return json({
+    to_weigh: toWeigh.results ?? [],
+    with_quality: {
+      items: withQuality.results ?? [],
+      total: Number(withQualityCount.results?.[0]?.n ?? 0),
+      offset,
+      limit,
+    },
+    access_with_quality: Number(accessCount.results?.[0]?.n ?? 0),
+  });
+}
+
+/** Warehouse's To Do badge: its own job only (batches to weigh or count). */
+export async function warehouseQueueCount(env: Env): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM receipt_batches rb
+     JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
+     JOIN receipts r ON r.id = rl.receipt_id
+     WHERE r.type = 'import' AND r.received_by = 'warehouse'
+       AND +rb.status IN ('approved', 'partial') AND rb.qty_actual_weighed IS NULL`
   ).first<{ n: number }>();
   return row?.n ?? 0;
 }

@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures";
-import { goToNav, login, receiveMaterial, seedMaterial, seedSpec, seedSupplier } from "./helpers";
+import { decideBatch, goToNav, login, openReceiptCard, receiveMaterial, seedMaterial, seedSpec, seedSupplier } from "./helpers";
 
 // Quality's To Do as a work queue: one row per pending batch, grouped into
 // stages by what it needs next, worked from the row's own button. Codes
@@ -65,5 +65,44 @@ test.describe("Quality: work queue", () => {
     await expect(page.locator("#queue-panel .line-block.focused")).toContainText("Queue Mystery Powder");
     await page.locator("[data-close-panel]").click();
     await expect(page.locator("#queue-panel")).toBeHidden();
+  });
+
+  test("Warehouse weighs an approved batch in the row and follows the rest with Quality", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "SM9-WH", name: "Weigh Row Solvent", unit: "KG" });
+    await login(page, "warehouse");
+    await seedSupplier(page, "SM9-SUP", "Weigh Row Supplier");
+    const receiptId = await receiveMaterial(page, { supplierCode: "SM9-SUP", createdBy: "E2E Warehouse" }, [
+      { code: "SM9-WH", name: "Weigh Row Solvent", unit: "KG", batches: [{ batchNo: "QA9-W1", qty: 300 }, { batchNo: "QA9-W2", qty: 200 }] },
+    ]);
+
+    // Both batches wait with Quality: shown in plain words, no record codes.
+    await goToNav(page, "todo");
+    await page.locator("#wh-with-quality summary").click();
+    const withQuality = page.locator(`#wh-with-quality .wh-row[data-receipt-id="${receiptId}"]`);
+    await expect(withQuality).toHaveCount(2);
+    await expect(withQuality.first()).toContainText("Waiting for spec");
+    await expect(withQuality.first()).not.toContainText(/RM[FPS]\d{4}/);
+
+    // Quality approves one of them.
+    await login(page, "quality");
+    const card = await openReceiptCard(page, "todo", receiptId);
+    await decideBatch(card, '.batch-row:has-text("QA9-W1") [data-decide]', { decision: "approve", decidedBy: "E2E Quality" });
+
+    // It moves to Warehouse's own job, weighed right in the row.
+    await login(page, "warehouse");
+    await goToNav(page, "todo");
+    const toWeigh = page.locator(`.wh-table .wh-row[data-receipt-id="${receiptId}"]:has(form[data-weigh])`);
+    await expect(toWeigh).toHaveCount(1);
+    await expect(toWeigh).toContainText("QA9-W1");
+    // The badge counts Warehouse's own job: everything waiting to be weighed.
+    await expect(page.locator("#todo-tab-badge")).toHaveText(String(await page.locator("form[data-weigh]").count()));
+    await toWeigh.locator("input").fill("297.5");
+    await toWeigh.locator("input").press("Enter");
+    await expect(toWeigh).toHaveCount(0);
+
+    const receipt = await (await page.request.get(`/api/receipts/${receiptId}`)).json();
+    const weighed = receipt.lines[0].batches.find((b: { supplier_batch_no: string }) => b.supplier_batch_no === "QA9-W1");
+    expect(weighed.qty_actual_weighed).toBe(297.5);
   });
 });

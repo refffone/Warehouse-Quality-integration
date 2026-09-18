@@ -2453,6 +2453,222 @@ async function viewQualityQueue() {
   if (keepScroll) window.scrollTo(0, keepScroll);
 }
 
+// ---------------------------------------------------------------- view: Warehouse's To Do
+
+const WH_STAGE_TONE = { needs_code: "warn", needs_spec: "warn", to_test: "info", ready: "info", sample: "info" };
+const whState = { q: "", includeAccess: false, page: 0, open: false, selected: null, selectedRow: null };
+
+/** Material code as Warehouse sees it: a real one, or nothing. */
+function whMaterialCell(row) {
+  return `<b>${bdi(row.material_name || row.material_name_text)}</b>
+    <span class="small muted">${row.material_code ? `<bdi class="mono">${esc(row.material_code)}</bdi> · ` : ""}${bdi(row.supplier_name)} · ${receiptNoHtml(row)}</span>`;
+}
+
+function whWeighRowHtml(row) {
+  const isCount = (row.qty_basis || "weight") === "count";
+  return `
+    <tr class="queue-row wh-row" data-batch-id="${row.batch_id}" data-receipt-id="${row.receipt_id}" tabindex="0">
+      <td class="q-material">${whMaterialCell(row)}</td>
+      <td class="q-batch"><bdi class="mono">${esc(row.supplier_batch_no || "—")}</bdi>${row.internal_batch_no ? `<span class="small muted"><bdi class="mono">${esc(row.internal_batch_no)}</bdi></span>` : ""}</td>
+      <td class="q-status">${statusPill(row.concession ? "concession" : row.status)}</td>
+      <td class="q-qty num"><bdi>${esc(row.qty_as_received)} ${esc(row.unit)}</bdi></td>
+      <td class="q-weigh">
+        <form class="weigh-form" data-weigh="${row.batch_id}">
+          <label class="visually-hidden" for="weigh-${row.batch_id}">${esc(t(isCount ? "finalize.actualCount" : "finalize.actualQty"))}</label>
+          <input type="number" step="any" min="0" id="weigh-${row.batch_id}" name="qty" required placeholder="${esc(t(isCount ? "wh.actualCountPlaceholder" : "wh.actualPlaceholder", { unit: row.unit }))}" />
+          <button type="submit" class="btn sm primary">${esc(t("common.save"))}</button>
+        </form>
+      </td>
+    </tr>`;
+}
+
+function whQualityRowHtml(row) {
+  const waiting = row.waiting_days == null
+    ? `<span class="muted">—</span>`
+    : `<span class="queue-age${row.waiting_days > QUEUE_OVERDUE_DAYS ? " overdue" : ""}">${esc(t("queue.days", { n: row.waiting_days }))}</span>`;
+  return `
+    <tr class="queue-row wh-row" data-batch-id="${row.batch_id}" data-receipt-id="${row.receipt_id}" tabindex="0">
+      <td class="q-material">${whMaterialCell(row)}</td>
+      <td class="q-batch"><bdi class="mono">${esc(row.supplier_batch_no || "—")}</bdi></td>
+      <td class="q-qty num"><bdi>${esc(row.qty_as_received)} ${esc(row.unit)}</bdi></td>
+      <td class="q-status"><span class="pill ${WH_STAGE_TONE[row.stage]}">${esc(t(`wh.stage.${row.stage}`))}</span></td>
+      <td class="q-wait num">${waiting}</td>
+    </tr>`;
+}
+
+async function renderWarehousePanel(panel, row) {
+  panel.hidden = false;
+  panel.innerHTML = loadingState();
+  let receipt;
+  try {
+    receipt = await api.get(`/api/receipts/${row.receipt_id}`);
+  } catch (err) {
+    panel.innerHTML = errorState(err.message);
+    return;
+  }
+  if (!panel.isConnected || whState.selected !== row.batch_id) return;
+  panel.innerHTML = `
+    <div class="queue-panel-head">
+      <div>
+        <h2>${bdi(row.material_name || row.material_name_text)}</h2>
+        <div class="small muted">${receiptNoHtml(row)} · ${bdi(row.supplier_name)} · ${esc(fmtReceived(row.received_at))}</div>
+      </div>
+      <button type="button" class="icon-btn" data-close-panel aria-label="${esc(t("queue.close"))}">${icons.x}</button>
+    </div>
+    <div data-panel-card></div>`;
+  const card = buildReceiptCard(receipt, { role: "warehouse", type: receipt.type });
+  panel.querySelector("[data-panel-card]").appendChild(card);
+  enrichRetestLabels(card);
+  panel.querySelector("[data-close-panel]").addEventListener("click", () => {
+    whState.selected = null;
+    panel.hidden = true;
+    panel.innerHTML = "";
+    document.querySelectorAll(".wh-row.selected").forEach((r) => r.classList.remove("selected"));
+    document.body.classList.remove("queue-sheet-open");
+  });
+  document.body.classList.toggle("queue-sheet-open", window.matchMedia("(max-width: 900px)").matches);
+}
+
+async function viewWarehouseQueue() {
+  const generation = beginView();
+  const view = document.getElementById("view");
+  const keepScroll = document.getElementById("warehouse-queue") ? window.scrollY : 0;
+  if (!document.getElementById("warehouse-queue")) view.innerHTML = loadingState();
+
+  const s = whState;
+  const params = new URLSearchParams({ offset: String(s.page * RECEIPT_PAGE_SIZE), limit: String(RECEIPT_PAGE_SIZE) });
+  if (s.q) params.set("q", s.q);
+  if (s.includeAccess) params.set("include_access", "1");
+  let data;
+  try {
+    [data] = await Promise.all([api.get(`/api/warehouse-queue?${params}`), getSuppliers()]);
+  } catch (err) {
+    view.innerHTML = errorState(err.message);
+    return;
+  }
+  const wq = data.with_quality;
+  const pageCount = Math.ceil(wq.total / RECEIPT_PAGE_SIZE);
+  if (wq.total > 0 && s.page >= pageCount) {
+    s.page = pageCount - 1;
+    return viewWarehouseQueue();
+  }
+  if (isStaleView(generation)) return;
+
+  const first = s.page * RECEIPT_PAGE_SIZE + 1;
+  const last = s.page * RECEIPT_PAGE_SIZE + wq.items.length;
+  const rangeHtml = wq.total
+    ? `<span class="small muted">${esc(t("bucket.rangeOf", { from: first, to: last, total: wq.total }))}</span>${pagerHtml(s.page, pageCount)}`
+    : "";
+
+  view.innerHTML = `
+    <div id="warehouse-queue">
+      <div class="view-head"><div><h1>${esc(t("bucket.todoTitle"))}</h1><p>${esc(t("wh.copy"))}</p></div>
+        <button type="button" class="btn primary" id="wh-receive-btn">${esc(t("wh.receive"))}</button></div>
+      <div class="queue-filters">
+        <input type="search" class="search-input" id="receipt-search" placeholder="${esc(t("wh.searchPlaceholder"))}" value="${esc(s.q)}" />
+        <button type="button" class="btn ghost sm" id="receipt-refresh" title="${esc(t("bucket.refreshHint"))}">↻ ${esc(t("bucket.refresh"))}</button>
+      </div>
+      <div class="queue-layout">
+        <div class="queue-list" id="receipt-list">
+          <section class="wh-group">
+            <div class="wh-group-head"><h2>${esc(t("wh.toWeigh"))}</h2><span class="stage-n">${data.to_weigh.length}</span><span class="small muted">${esc(t("wh.toWeighHint"))}</span></div>
+            ${data.to_weigh.length ? `
+            <div class="queue-table-wrap">
+              <table class="queue-table wh-table">
+                <thead><tr><th>${esc(t("queue.col.material"))}</th><th class="q-batch">${esc(t("queue.col.batch"))}</th><th>${esc(t("wh.col.decision"))}</th>
+                  <th class="num q-qty">${esc(t("wh.col.asReceived"))}</th><th>${esc(t("wh.col.actual"))}</th></tr></thead>
+                <tbody>${data.to_weigh.map(whWeighRowHtml).join("")}</tbody>
+              </table>
+            </div>` : `<div class="wh-empty small muted">${esc(t("wh.nothingToWeigh"))}</div>`}
+          </section>
+          <details class="wh-group" id="wh-with-quality" ${s.open || s.q ? "open" : ""}>
+            <summary class="wh-group-head"><h2>${esc(t("wh.withQuality"))}</h2><span class="stage-n">${wq.total}</span><span class="small muted">${esc(t("wh.withQualityHint"))}</span></summary>
+            <label class="queue-check wh-access-toggle"><input type="checkbox" id="wh-include-access" ${s.includeAccess ? "checked" : ""} /> ${esc(t("wh.includeAccess", { count: data.access_with_quality }))}</label>
+            ${wq.items.length ? `
+            <div class="list-footer list-footer-top">${rangeHtml}</div>
+            <div class="queue-table-wrap">
+              <table class="queue-table wh-table">
+                <thead><tr><th>${esc(t("queue.col.material"))}</th><th class="q-batch">${esc(t("queue.col.batch"))}</th><th class="num q-qty">${esc(t("queue.col.qty"))}</th>
+                  <th>${esc(t("wh.col.stage"))}</th><th class="num">${esc(t("queue.col.waiting"))}</th></tr></thead>
+                <tbody>${wq.items.map(whQualityRowHtml).join("")}</tbody>
+              </table>
+            </div>
+            <div class="list-footer">${rangeHtml}</div>` : `<div class="wh-empty small muted">${esc(t("wh.nothingWithQuality"))}</div>`}
+          </details>
+        </div>
+        <aside class="queue-panel" id="queue-panel" hidden></aside>
+      </div>
+    </div>`;
+
+  const rerender = (changes) => {
+    Object.assign(whState, { page: 0, ...changes });
+    viewWarehouseQueue();
+  };
+  document.getElementById("wh-receive-btn").addEventListener("click", () => goTo("receive"));
+  document.getElementById("receipt-refresh").addEventListener("click", () => refreshCurrentView());
+  let searchTimer;
+  document.getElementById("receipt-search").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => rerender({ q: e.target.value.trim() }), 250);
+  });
+  document.getElementById("wh-with-quality").addEventListener("toggle", (e) => (whState.open = e.target.open));
+  document.getElementById("wh-include-access").addEventListener("change", (e) => rerender({ includeAccess: e.target.checked, open: true }));
+  view.querySelectorAll(".pager [data-page]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      whState.page = Number(btn.dataset.page);
+      viewWarehouseQueue().then(() => document.getElementById("wh-with-quality")?.scrollIntoView({ block: "start", behavior: "smooth" }));
+    })
+  );
+
+  // Weigh or count straight in the row: type the actual quantity, Enter or Save.
+  view.querySelectorAll("[data-weigh]").forEach((form) =>
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const input = form.querySelector("input");
+      const value = Number(input.value);
+      if (input.value.trim() === "" || !Number.isFinite(value) || value < 0) return toast(t("wh.enterQuantity"), true);
+      const btn = form.querySelector("button");
+      btn.disabled = true;
+      try {
+        await api.post(`/api/batches/${form.dataset.weigh}/finalize-weight`, { qty_actual_weighed: value });
+        toast(t("finalize.recorded"));
+        refreshCurrentView();
+      } catch (err) {
+        btn.disabled = false;
+        toast(err.message, true);
+      }
+    })
+  );
+
+  const rows = new Map([...data.to_weigh, ...wq.items].map((r) => [r.batch_id, r]));
+  const panel = document.getElementById("queue-panel");
+  const select = (row) => {
+    whState.selected = row.batch_id;
+    whState.selectedRow = row;
+    view.querySelectorAll(".wh-row").forEach((tr) => tr.classList.toggle("selected", Number(tr.dataset.batchId) === row.batch_id));
+    renderWarehousePanel(panel, row);
+  };
+  view.querySelectorAll(".wh-row").forEach((tr) => {
+    const row = rows.get(Number(tr.dataset.batchId));
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest("form, input, button")) return;
+      select(row);
+    });
+    tr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.target.closest("form, input, button")) select(row);
+    });
+  });
+  if (whState.selected) {
+    const row = rows.get(whState.selected) ?? whState.selectedRow;
+    whState.selectedRow = row;
+    if (row) {
+      view.querySelector(`.wh-row[data-batch-id="${row.batch_id}"]`)?.classList.add("selected");
+      renderWarehousePanel(panel, row);
+    }
+  }
+  if (keepScroll) window.scrollTo(0, keepScroll);
+}
+
 // ---------------------------------------------------------------- view: receipt buckets (To Do / History)
 
 // Remembers each role+bucket's last-used Imports/Samples toggle and search
@@ -4032,6 +4248,9 @@ async function renderView() {
     } else if (tab === "todo" && role === "quality") {
       lastRouteArgs = { fn: viewQualityQueue };
       await viewQualityQueue();
+    } else if (tab === "todo" && role === "warehouse") {
+      lastRouteArgs = { fn: viewWarehouseQueue };
+      await viewWarehouseQueue();
     } else if (tab === "todo") {
       lastRouteArgs = { fn: viewReceiptBucket, args: { role, bucket: "todo" } };
       await viewReceiptBucket({ role, bucket: "todo" });

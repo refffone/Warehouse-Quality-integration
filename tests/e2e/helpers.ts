@@ -210,7 +210,17 @@ export async function receiveMaterialWithNumber(
  *  that opens when the receipt's row is clicked. */
 export async function openReceiptCard(page: Page, bucket: "todo" | "history", receiptId: number, type: "import" | "sample" = "import") {
   await goToNav(page, bucket);
-  await page.locator("#quality-queue, .list-controls").first().waitFor();
+  await page.locator("#quality-queue, #warehouse-queue, .list-controls").first().waitFor();
+  if (bucket === "todo" && (await page.locator("#warehouse-queue").count())) {
+    // Warehouse's To Do: rows to weigh, then (collapsed) rows still with
+    // Quality. The card is the one in the side panel a row opens.
+    const withQuality = page.locator("#wh-with-quality");
+    if (!(await withQuality.getAttribute("open"))) await withQuality.locator("summary").click();
+    await page.locator(`.wh-row[data-receipt-id="${receiptId}"] .q-material`).first().click();
+    const card = page.locator(`#queue-panel .receipt-card[data-receipt-id="${receiptId}"]`);
+    await expect(card).toBeVisible();
+    return card;
+  }
   if (bucket === "todo" && (await page.locator("#quality-queue").count())) {
     // Test receipts are the newest, so they're on the first page.
     if ((await page.locator("#queue-sort").inputValue()) !== "newest") {
