@@ -3,6 +3,7 @@ import {
   decideBatch,
   login,
   openReceiptCard,
+  recordTestResults,
   receiveMaterial,
   receiveMaterialWithNumber,
   seedMaterial,
@@ -252,5 +253,90 @@ test.describe("Access workflow alignment", () => {
     expect(search.total).toBe(0);
     const own = await (await page.request.get(`/api/receipts/detailed?q=${encodeURIComponent(delivery.receiptNo)}&type=import`)).json();
     expect(own.items.some((r: { id: number }) => r.id === delivery.id)).toBe(true);
+  });
+
+  test("adds a one-time spec to a sample whose material has none, and prints its COA", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "AW7-MAT", name: "No Spec Sample Material", unit: "KG" });
+    await seedSupplier(page, "AW7-SUP", "No Spec Supplier");
+    const { id: receiptId } = await receiveMaterialWithNumber(
+      page,
+      { byQuality: true, supplierCode: "AW7-SUP", createdBy: "E2E Quality" },
+      [{ code: "AW7-MAT", name: "No Spec Sample Material", unit: "KG", batches: [{ batchNo: "AW7-S1", qty: 1 }] }]
+    );
+
+    let card = await openReceiptCard(page, "todo", receiptId, "sample");
+    await expect(card).toContainText("No active spec");
+    await card.locator("[data-add-spec]").click();
+
+    // Step 1: tick the tests as cards.
+    const cards = page.locator("#line-spec-cards");
+    await cards.locator(".test-card", { hasText: "Density" }).click();
+    await cards.locator(".test-card", { hasText: "Visual Check" }).click();
+    await expect(page.locator("#line-spec-count")).toContainText("2");
+    await page.click("#line-spec-next");
+
+    // Step 2: limits, in catalog order (Density, then Visual Check).
+    const form = page.locator("#line-spec-form");
+    const rows = form.locator(".param-item");
+    await expect(rows).toHaveCount(2);
+    await rows.nth(0).locator('[data-f="min_value"]').fill("0.95");
+    await rows.nth(0).locator('[data-f="max_value"]').fill("1.05");
+    await rows.nth(0).locator('[data-f="unit"]').fill("g/ml");
+    await rows.nth(1).locator('[data-f="expected_text"]').fill("Clear liquid");
+    await form.locator('input[name="created_by"]').fill("E2E Quality");
+    await form.locator('button[type="submit"]').click();
+    await expect(form).toBeHidden();
+
+    card = page.locator(`.receipt-card[data-receipt-id="${receiptId}"]`);
+    await expect(card).toContainText("One-time spec: Density (g/ml), Visual Check");
+    await expect(card.locator("[data-add-spec]")).toHaveCount(0);
+
+    await recordTestResults(card, "[data-test]", "E2E Quality", [
+      { parameterName: "Density", measuredValue: "1.01", result: "pass" },
+      { parameterName: "Visual Check", measuredValue: "Clear liquid", result: "pass" },
+    ]);
+    await decideBatch(card, "[data-decide]", { decision: "approve", decidedBy: "E2E Quality" });
+
+    const receipt = await (await page.request.get(`/api/receipts/${receiptId}`)).json();
+    const batch = receipt.lines[0].batches[0];
+    expect(batch.test_results.map((r: { result: string }) => r.result)).toEqual(["pass", "pass"]);
+    const coa = await page.request.get(`/api/batches/${batch.id}/coa?format=pdf`);
+    expect(coa.status()).toBe(200);
+    expect(coa.headers()["content-type"]).toContain("pdf");
+
+    // The material itself still has no spec.
+    expect(await (await page.request.get("/api/materials/AW7-MAT/specs")).json()).toEqual([]);
+  });
+
+  test("saves a spec written on a first supply as the material's new version", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "AW8-MAT", name: "First Supply No Spec", unit: "KG" });
+    await login(page, "warehouse");
+    await seedSupplier(page, "AW8-SUP", "First Supply Supplier");
+    const receiptId = await receiveMaterial(page, { supplierCode: "AW8-SUP", createdBy: "E2E Warehouse" }, [
+      { code: "AW8-MAT", name: "First Supply No Spec", unit: "KG", batches: [{ batchNo: "AW8-B1", qty: 200 }] },
+    ]);
+
+    await login(page, "quality");
+    const card = await openReceiptCard(page, "todo", receiptId);
+    await expect(card.locator(".line-head .badge.flag")).toContainText(/RMF\d{4}/);
+    await card.locator("[data-add-spec]").click();
+    await page.locator("#line-spec-cards .test-card", { hasText: "Solid Content" }).click();
+    await page.click("#line-spec-next");
+    const form = page.locator("#line-spec-form");
+    await form.locator('[data-f="min_value"]').fill("49");
+    await form.locator('[data-f="max_value"]').fill("51");
+    await form.locator('input[name="mode"][value="version"]').check();
+    await expect(form.locator('select[name="scope"]')).toHaveValue("supply");
+    await form.locator('input[name="created_by"]').fill("E2E Quality");
+    await form.locator('button[type="submit"]').click();
+    await expect(form).toBeHidden();
+
+    await expect(page.locator(`.receipt-card[data-receipt-id="${receiptId}"]`)).toContainText("Spec v1: Solid Content (%)");
+    const specs = await (await page.request.get("/api/materials/AW8-MAT/specs")).json();
+    expect(specs).toHaveLength(1);
+    expect(specs[0]).toMatchObject({ version: 1, scope: "supply", status: "active", receipt_line_id: null });
+    expect(specs[0].change_reason).toMatch(/^Written for RMF\d{4}/);
   });
 });

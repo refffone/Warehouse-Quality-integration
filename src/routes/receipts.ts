@@ -13,8 +13,15 @@ import {
 } from "../db";
 import { error, json } from "../http";
 import { autoJudge } from "../../public/specLimits.js";
-import { createSpecVersion, getActiveSpec, getActiveSpecsForMaterials } from "./specs";
+import {
+  createOneTimeSpec,
+  createSpecVersion,
+  getActiveSpec,
+  getActiveSpecsForMaterials,
+  getOneTimeSpecsForLines,
+} from "./specs";
 import type {
+  AddLineSpecInput,
   AssociateCodeInput,
   BatchDecisionInput,
   BatchTestResult,
@@ -347,14 +354,15 @@ export async function getReceipt(env: Env, role: Role, id: number): Promise<Resp
     .all<ReceiptLine>();
 
   const detail: ReceiptWithDetail = { ...(receipt as any), lines: [] };
+  const oneTimeSpecs = await getOneTimeSpecsForLines(env, (lines.results ?? []).map((l) => l.id));
 
   for (const line of lines.results ?? []) {
     const batches = await env.DB.prepare("SELECT * FROM receipt_batches WHERE receipt_line_id = ?")
       .bind(line.id)
       .all<ReceiptBatch>();
-    const spec = line.material_code
-      ? await getActiveSpec(env, line.material_code, specScopeFor(receipt.type as string))
-      : null;
+    const spec =
+      oneTimeSpecs.get(line.id) ??
+      (line.material_code ? await getActiveSpec(env, line.material_code, specScopeFor(receipt.type as string)) : null);
     const batchesWithResults = [];
     for (const b of batches.results ?? []) {
       const test_results = role === "quality" || receipt.type !== "sample" ? await getBatchTestResults(env, b.id) : [];
@@ -464,6 +472,7 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
     supply: await getActiveSpecsForMaterials(env, codesFor("supply"), "supply"),
     sample: await getActiveSpecsForMaterials(env, codesFor("sample"), "sample"),
   };
+  const oneTimeSpecs = await getOneTimeSpecsForLines(env, lineIds);
 
   const testResultsByBatch = new Map<number, TestResultWithParameter[]>();
   for (const r of testResultRows) {
@@ -483,9 +492,9 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
 
   const detailed = receipts.map((receipt) => {
     const receiptLines = (linesByReceipt.get(receipt.id) ?? []).map((line) => {
-      const spec = line.material_code
-        ? (specsByScope[specScopeFor(receipt.type)].get(line.material_code) ?? null)
-        : null;
+      const spec =
+        oneTimeSpecs.get(line.id) ??
+        (line.material_code ? (specsByScope[specScopeFor(receipt.type)].get(line.material_code) ?? null) : null);
       const lineBatches = (batchesByLine.get(line.id) ?? []).map((b) => {
         const test_results = role === "quality" || receipt.type !== "sample" ? (testResultsByBatch.get(b.id) ?? []) : [];
         return { ...redactBatchForRole(b, role, receipt.type), test_results };
@@ -789,13 +798,15 @@ export async function recordTestResults(
     return error("Provide at least one test result", 400);
   }
 
-  const spec = await getActiveSpec(env, batch.material_code, specScopeFor(batch.receipt_type));
+  const spec =
+    (await getOneTimeSpecsForLines(env, [batch.receipt_line_id])).get(batch.receipt_line_id) ??
+    (await getActiveSpec(env, batch.material_code, specScopeFor(batch.receipt_type)));
   const paramsById = new Map((spec?.parameters ?? []).map((p) => [p.id, p]));
   const rows: Array<{ id: number; measured: string | null; result: string | null; auto: string | null; reason: string | null }> = [];
   for (const r of input.results) {
     const param = paramsById.get(r.spec_parameter_id);
     if (!param) {
-      return error(`spec_parameter_id ${r.spec_parameter_id} is not on this material's active spec`, 400);
+      return error(`spec_parameter_id ${r.spec_parameter_id} is not on this line's spec`, 400);
     }
     const measured = r.measured_value?.trim() || null;
     // The app judges numeric and time limits itself; a person can still
@@ -1017,6 +1028,75 @@ export async function findLineByLegacyRef(env: Env, ref: string): Promise<Respon
     .first();
   if (!row) return error(`No migrated record for ${ref}`, 404);
   return json(row);
+}
+
+/** Quality writes a spec for a received line whose material has none yet —
+ *  typically a sample or first supply that needs testing and a printable
+ *  COA now. Either just for this line ("one_time": the material stays
+ *  without a spec) or as the material's new spec version ("version"). */
+export async function addLineSpec(request: Request, env: Env, lineId: number): Promise<Response> {
+  const input = await request.json<AddLineSpecInput>();
+  if (input.mode !== "one_time" && input.mode !== "version") {
+    return error("mode must be one_time or version", 400);
+  }
+  if (!input.created_by?.trim()) return error("created_by is required", 400);
+  if (!input.parameters?.length) return error("Pick at least one test", 400);
+
+  const line = await env.DB.prepare(
+    `SELECT rl.id, rl.material_code, rl.import_code, r.type AS receipt_type, r.receipt_no, m.name AS material_name
+     FROM receipt_lines rl
+     JOIN receipts r ON r.id = rl.receipt_id
+     LEFT JOIN materials m ON m.code = rl.material_code
+     WHERE rl.id = ?`
+  )
+    .bind(lineId)
+    .first<{
+      id: number;
+      material_code: string | null;
+      import_code: string | null;
+      receipt_type: string;
+      receipt_no: string | null;
+      material_name: string | null;
+    }>();
+  if (!line) return error("Receipt line not found", 404);
+  // Deciding a batch and printing its COA both need a material code.
+  if (!line.material_code) return error("Associate a material code on this line first", 400);
+
+  const lineScope = specScopeFor(line.receipt_type);
+  const existing =
+    (await getOneTimeSpecsForLines(env, [line.id])).get(line.id) ??
+    (await getActiveSpec(env, line.material_code, lineScope));
+  if (existing) {
+    return error("This line already has a spec — change it on the Specifications screen", 409);
+  }
+
+  const materialLabel = line.material_name ? `${line.material_name} (${line.material_code})` : line.material_code;
+  if (input.mode === "one_time") {
+    const title =
+      input.title?.trim() || `One-time spec · ${line.import_code ?? materialLabel}`;
+    const result = await createOneTimeSpec(env, { id: line.id, material_code: line.material_code }, lineScope, {
+      title,
+      notes: input.notes ?? null,
+      created_by: input.created_by.trim(),
+      parameters: input.parameters,
+    });
+    if (!result.ok) return error(result.message, result.status);
+    return json(result.spec, 201);
+  }
+
+  const scope = input.scope ?? lineScope;
+  const result = await createSpecVersion(env, line.material_code, {
+    scope,
+    title: input.title?.trim() || `${materialLabel} — ${scope} spec`,
+    notes: input.notes ?? null,
+    created_by: input.created_by.trim(),
+    change_reason:
+      input.change_reason?.trim() ||
+      `Written for ${line.import_code ?? "a received line"}${line.receipt_no ? ` (receipt #${line.receipt_no})` : ""}`,
+    parameters: input.parameters,
+  });
+  if (!result.ok) return error(result.message, result.status);
+  return json(result.spec, 201);
 }
 
 /** Quality records (or corrects) the product details of a received line,
