@@ -1,11 +1,12 @@
 import { getBranding } from "./admin";
 import { isStandInCode } from "../../public/materialCodes.js";
 import { getMaterialDossierData } from "./masterdata";
+import { historyRowsForExport } from "./history";
 import { formatLimit } from "../../public/specLimits.js";
 import { getActiveSpec, listSpecsForMaterial } from "./specs";
 import { error } from "../http";
 import { ReportPdf, buildReportXlsx, reportFilename, reportResponse, type ReportColumn } from "../reportBuilders";
-import type { Env } from "../types";
+import type { Env, Role } from "../types";
 
 type Format = "pdf" | "xlsx";
 
@@ -459,4 +460,73 @@ function fmtRangeLabel(from: string, to: string): string {
   const t = new Date(to);
   const sameDay = f.toDateString() === t.toDateString();
   return sameDay ? f.toLocaleDateString() : `${f.toLocaleDateString()} – ${t.toLocaleDateString()}`;
+}
+
+// ---------------------------------------------------------------- History register (both roles, filtered)
+
+const QUALITY_REGISTER_COLUMNS: ReportColumn[] = [
+  { key: "decided", header: "Decided", width: 58 },
+  { key: "record", header: "Record", width: 42 },
+  { key: "material", header: "Material", width: 100 },
+  { key: "supplier", header: "Supplier", width: 70 },
+  { key: "receipt", header: "Receipt #", width: 32 },
+  { key: "batch", header: "Batch #", width: 48 },
+  { key: "internal", header: "Internal #", width: 55 },
+  { key: "accepted", header: "Accepted", width: 42 },
+  { key: "decision", header: "Decision", width: 45 },
+];
+
+const WAREHOUSE_REGISTER_COLUMNS: ReportColumn[] = [
+  { key: "decided", header: "Decided", width: 58 },
+  { key: "material", header: "Material", width: 110 },
+  { key: "supplier", header: "Supplier", width: 72 },
+  { key: "receipt", header: "Receipt #", width: 32 },
+  { key: "batch", header: "Batch #", width: 48 },
+  { key: "as_received", header: "As received", width: 45 },
+  { key: "actual", header: "Actual", width: 45 },
+  { key: "difference", header: "Difference", width: 38 },
+  { key: "decision", header: "Decision", width: 45 },
+];
+
+/** What History shows, as PDF or Excel, with the same filters as the screen. */
+export async function exportHistoryRegister(request: Request, env: Env, role: Role): Promise<Response> {
+  const url = new URL(request.url);
+  const format = parseFormat(url);
+  if (!format) return error("format must be 'pdf' or 'xlsx'");
+  const rows = await historyRowsForExport(url, env, role);
+  const qty = (v: unknown, unit: unknown) => (v == null ? "" : `${v} ${unit ?? ""}`.trim());
+  const decision = (r: Record<string, unknown>) =>
+    r.status == null ? "" : r.concession ? "approved (concession)" : String(r.status);
+  const shaped = rows.map((r) => {
+    const name = String(r.material_name ?? r.material_name_text ?? "");
+    const base = {
+      decided: r.decided_at ? fmtDateTime(r.decided_at as string) : "—",
+      material: r.material_code ? `${name} (${r.material_code})` : name,
+      supplier: String(r.supplier_name ?? ""),
+      receipt: String(r.receipt_no ?? "—"),
+      batch: String(r.supplier_batch_no ?? ""),
+      decision: decision(r),
+    };
+    if (role === "quality") {
+      const accepted = r.status === "rejected" ? 0 : (r.qty_accepted ?? r.qty_as_received);
+      return { ...base, record: String(r.import_code ?? ""), internal: String(r.internal_batch_no ?? ""), accepted: qty(accepted, r.unit) };
+    }
+    const asReceived = Number(r.qty_as_received);
+    const actual = r.qty_actual_weighed == null ? null : Number(r.qty_actual_weighed);
+    return {
+      ...base,
+      as_received: qty(r.qty_as_received, r.unit),
+      actual: qty(actual, r.unit),
+      difference: actual == null || !asReceived ? "" : `${(((actual - asReceived) / asReceived) * 100).toFixed(1)}%`,
+    };
+  });
+  return renderTable(
+    env,
+    format,
+    "History",
+    `${shaped.length} decided batch${shaped.length === 1 ? "" : "es"}${rows.length >= 5000 ? " (first 5,000)" : ""}`,
+    role === "quality" ? QUALITY_REGISTER_COLUMNS : WAREHOUSE_REGISTER_COLUMNS,
+    shaped,
+    "history"
+  );
 }

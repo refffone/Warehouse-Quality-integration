@@ -105,4 +105,49 @@ test.describe("Quality: work queue", () => {
     const weighed = receipt.lines[0].batches.find((b: { supplier_batch_no: string }) => b.supplier_batch_no === "QA9-W1");
     expect(weighed.qty_actual_weighed).toBe(297.5);
   });
+
+  test("History lists decided batches with filters, per role", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "SM8-MAT", name: "History Register Pigment", unit: "KG" });
+    await login(page, "warehouse");
+    await seedSupplier(page, "SM8-SUP", "History Supplier");
+    const receiptId = await receiveMaterial(page, { supplierCode: "SM8-SUP", createdBy: "E2E Warehouse" }, [
+      { code: "SM8-MAT", name: "History Register Pigment", unit: "KG", batches: [{ batchNo: "SM8-B1", qty: 100 }, { batchNo: "SM8-B2", qty: 60 }] },
+    ]);
+    await login(page, "quality");
+    let card = await openReceiptCard(page, "todo", receiptId);
+    await decideBatch(card, '.batch-row:has-text("SM8-B1") [data-decide]', { decision: "approve", decidedBy: "E2E Quality" });
+    card = page.locator(`#queue-panel .receipt-card[data-receipt-id="${receiptId}"]`);
+    await decideBatch(card, '.batch-row:has-text("SM8-B2") [data-decide]', { decision: "reject", decidedBy: "E2E Quality" });
+
+    // Quality: one row per decided batch, record code and COA on the row.
+    await goToNav(page, "history");
+    const rows = page.locator(`.hist-row[data-receipt-id="${receiptId}"]`);
+    await expect(rows).toHaveCount(2);
+    await expect(rows.first().locator(".q-record")).toContainText(/RMF\d{4}/);
+    await expect(rows.filter({ hasText: "SM8-B1" }).locator("[data-coa]")).toHaveCount(2);
+    // The decision filter narrows it.
+    await page.click('[data-decision="rejected"]');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("SM8-B2");
+    await page.click('[data-decision=""]');
+    await expect(rows).toHaveCount(2);
+
+    // Warehouse: weighs the approved batch, then sees both in History with
+    // its own columns and no record codes.
+    await login(page, "warehouse");
+    await goToNav(page, "todo");
+    const weigh = page.locator(`.wh-row[data-receipt-id="${receiptId}"]:has(form[data-weigh])`);
+    await weigh.locator("input").fill("98");
+    await weigh.locator("input").press("Enter");
+    await expect(weigh).toHaveCount(0);
+    await goToNav(page, "history");
+    await expect(rows).toHaveCount(2);
+    await expect(page.locator("#history-register")).not.toContainText(/RM[FPS]\d{4}/);
+    await expect(rows.filter({ hasText: "SM8-B1" }).locator(".q-diff")).toContainText("-2.0%");
+
+    // The export follows the filters.
+    const exported = await page.request.get(`/api/reports/history-register?format=xlsx&q=SM8-B1`);
+    expect(exported.status()).toBe(200);
+  });
 });

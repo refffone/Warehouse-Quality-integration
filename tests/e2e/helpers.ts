@@ -210,7 +210,17 @@ export async function receiveMaterialWithNumber(
  *  that opens when the receipt's row is clicked. */
 export async function openReceiptCard(page: Page, bucket: "todo" | "history", receiptId: number, type: "import" | "sample" = "import") {
   await goToNav(page, bucket);
-  await page.locator("#quality-queue, #warehouse-queue, .list-controls").first().waitFor();
+  await page.locator("#quality-queue, #warehouse-queue, #history-register").first().waitFor();
+  if (bucket === "history") {
+    // History is a register of decided batches, newest first; the card is
+    // the one in the side panel a row opens.
+    await page.click(`.queue-filters [data-type="${type}"]`);
+    await expect(page.locator(`.queue-filters [data-type="${type}"]`)).toHaveClass("on");
+    await page.locator(`.hist-row[data-receipt-id="${receiptId}"] .q-material`).first().click();
+    const card = page.locator(`#queue-panel .receipt-card[data-receipt-id="${receiptId}"]`);
+    await expect(card).toBeVisible();
+    return card;
+  }
   if (bucket === "todo" && (await page.locator("#warehouse-queue").count())) {
     // Warehouse's To Do: rows to weigh, then (collapsed) rows still with
     // Quality. The card is the one in the side panel a row opens.
@@ -234,10 +244,7 @@ export async function openReceiptCard(page: Page, bucket: "todo" | "history", re
     await expect(card).toBeVisible();
     return card;
   }
-  await page.click(`[data-t="${type}"]`);
-  const card = page.locator(`.receipt-card[data-receipt-id="${receiptId}"]`);
-  await expect(card).toBeVisible();
-  return card;
+  throw new Error(`No To Do screen found for receipt ${receiptId}`);
 }
 
 export interface DecisionInput {

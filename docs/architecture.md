@@ -1979,7 +1979,33 @@ Step 2 of the overhaul. Warehouse's To Do has two groups
 - A row opens the receipt card in the same side panel as Quality's queue
   (full-screen sheet on a phone).
 
-## 33. Next Step
+## 33. History as a register (both roles)
+
+Step 3 of the overhaul. History lists decided **batches**, newest decision
+first (Access batches with no decision date last), 80 per page
+(`GET /api/history`, `src/routes/history.ts`, `viewHistoryRegister`).
+
+- **Filters** (`historyFilters`, shared by the list, the supplier facet
+  and the export): decision period (any time / this month / last 90 days
+  / this year / between two dates), decision (approved, partial,
+  rejected), Imports/Samples, kind (Quality only), supplier, search.
+- **Quality's columns:** decided, record code, material · supplier ·
+  receipt, batch and internal batch, accepted quantity, decision, COA
+  (PDF/Excel) on the row.
+- **Warehouse's columns:** decided, material (real code or none), batch,
+  as received, actual, difference (amber past 1%), decision. Its History
+  is what it received and has nothing left to do on (a sample, a rejected
+  batch or one it has weighed). No record codes, and a sample shows no
+  decision, as before; filtering by decision leaves samples out.
+- **Export this list** (`GET /api/reports/history-register`) exports
+  exactly what the filters show, with the role's columns (up to 5,000
+  rows). Warehouse keeps the Received Log export beside it.
+- A row opens the record in the same side panel as the To Do screens
+  (Quality also gets the line's files).
+- The old card-list screen (`viewReceiptBucket` and its helpers) is gone;
+  `/api/receipts/detailed` stays for API use.
+
+## 34. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Things
