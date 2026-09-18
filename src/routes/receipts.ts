@@ -413,8 +413,11 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
   if (bucket === "history") conditions.push(`NOT ${openReceiptSql(role)}`);
   if (query) {
     const like = `%${query.replace(/^#/, "")}%`;
-    // Warehouse never learns a sample's status, so it can't search by it either.
+    // Warehouse never learns a sample's status, so it can't search by it
+    // either; nor by record codes or stand-ins, which it never sees.
     const statusVisible = role === "quality" ? "1" : "r.type != 'sample'";
+    const recordCodesVisible = role === "quality" ? "1" : "0";
+    const materialCodeVisible = role === "quality" ? "1" : "ql.material_code NOT GLOB 'RM[SFP][0-9][0-9][0-9][0-9]*'";
     conditions.push(`(
       LOWER(COALESCE(r.receipt_no, '')) LIKE ?
       OR LOWER(s.name) LIKE ? OR LOWER(s.code) LIKE ?
@@ -423,8 +426,8 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
         SELECT 1 FROM receipt_lines ql
         LEFT JOIN receipt_batches qb ON qb.receipt_line_id = ql.id
         WHERE ql.receipt_id = r.id AND (
-          LOWER(COALESCE(ql.material_code, '')) LIKE ?
-          OR LOWER(COALESCE(ql.import_code, '')) LIKE ?
+          (${materialCodeVisible} AND LOWER(COALESCE(ql.material_code, '')) LIKE ?)
+          OR (${recordCodesVisible} AND LOWER(COALESCE(ql.import_code, '')) LIKE ?)
           OR LOWER(ql.material_name_text) LIKE ?
           OR LOWER(COALESCE(qb.supplier_batch_no, '')) LIKE ?
           OR LOWER(COALESCE(qb.internal_batch_no, '')) LIKE ?
@@ -1248,9 +1251,21 @@ export async function listSampleCandidates(request: Request, env: Env, lineId: n
 
 /** Product description, manufacturer and origin are Quality's notes on
  *  what arrived — Warehouse never receives them. */
+/** Warehouse sees the material code when there is a real one, and nothing
+ *  of Quality's: no record code (RMF/RMP/RMS), no first/regular/sample
+ *  classification, no stand-in, no product notes. */
 function redactLineForRole(line: ReceiptLine, role: Role): ReceiptLine {
   if (role === "quality") return line;
-  return { ...line, product_description: null, manufacturer: null, origin: null };
+  return {
+    ...line,
+    material_code: isStandInCode(line.material_code) ? null : line.material_code,
+    import_code: null,
+    supply_kind: null,
+    import_scenario: null,
+    product_description: null,
+    manufacturer: null,
+    origin: null,
+  };
 }
 
 /** The received line migrated from one Access record ("access:RM Master

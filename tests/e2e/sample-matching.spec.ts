@@ -123,6 +123,8 @@ test.describe("Sample matching", () => {
 
     card = page.locator(`.receipt-card[data-receipt-id="${supplyReceiptId}"]`);
     await expect(card.locator(".line-head .code")).toContainText("SM2-NEW");
+    const supplyAsQuality = await firstLine(page, supplyReceiptId);
+    const firstLineAsQuality = async () => supplyAsQuality;
     await expect(card.locator(".line-head .badge.flag")).toContainText(/RMF\d{4}/);
     await expect(card.locator(".line-head")).toContainText(`From sample ${sampleLine.import_code}`);
     await expect(card).toContainText("Spec v1: Solid Content (%)");
@@ -131,6 +133,20 @@ test.describe("Sample matching", () => {
     const specs = await (await page.request.get("/api/materials/SM2-NEW/specs")).json();
     expect(specs.map((s: { scope: string }) => s.scope).sort()).toEqual(["sample", "supply"]);
     for (const s of specs) expect(s.parameters[0]).toMatchObject({ parameter_name: "Solid Content", min_value: 49, max_value: 51 });
+
+    // Warehouse sees the supply's material code, never its record code or
+    // its first-supply label, and can't find it by that record code.
+    await login(page, "warehouse");
+    const whCard = await openReceiptCard(page, "todo", supplyReceiptId);
+    await expect(whCard.locator(".line-head .code")).toContainText("SM2-NEW");
+    await expect(whCard).not.toContainText(/RM[FPS]\d{4}/);
+    await expect(whCard).not.toContainText("First supply");
+    const whLine = (await (await page.request.get(`/api/receipts/${supplyReceiptId}`)).json()).lines[0];
+    expect(whLine).toMatchObject({ material_code: "SM2-NEW", import_code: null, supply_kind: null });
+    const recordCode = (await firstLineAsQuality()).import_code;
+    const found = await (await page.request.get(`/api/receipts/detailed?type=import&q=${recordCode}`)).json();
+    expect(found.items.some((r: { id: number }) => r.id === supplyReceiptId)).toBe(false);
+    await login(page, "quality");
 
     // The sample moved to the new code and points at the supply.
     const sampleCard = await openReceiptCard(page, "todo", sampleReceiptId, "sample");
