@@ -427,7 +427,9 @@ export async function exportCodesList(request: Request, env: Env): Promise<Respo
   const subtypeFilter = url.searchParams.get("subtype") ?? "";
   const functionFilter = url.searchParams.get("function") ?? "";
 
-  const rows = await env.DB.prepare("SELECT * FROM materials ORDER BY code").all<{
+  const rows = await env.DB.prepare(
+    "SELECT * FROM materials WHERE code NOT GLOB 'RM[SFP][0-9][0-9][0-9][0-9]*' ORDER BY code"
+  ).all<{
     code: string;
     name: string;
     unit: string;

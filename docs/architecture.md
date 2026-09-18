@@ -1886,7 +1886,52 @@ first through Associate a Code).
   new. The card shows "One-time spec: …"; the test form says "for this
   line only".
 
-## 30. Next Step
+## 30. Matching samples to materials; manual material codes
+
+A supplier's sample is sent to see whether it can replace a material
+already in use (an **alternative**) or is a **new material**. A new
+material is only coded when the supplier's first supply (RMF) arrives;
+then the supply and the sample(s) it came from get the same new code.
+
+- **Stand-ins** (`public/materialCodes.js`). A sample of a material
+  Quality doesn't know yet is registered with a stand-in material whose
+  code is its own RMS number (as Access did), so it can be spec'd, tested,
+  decided and printed. Stand-ins aren't materials: `/api/materials` and
+  the materials Excel template leave them out, and the card shows "Not
+  matched" instead of a code. The 544 migrated Access records coded with
+  their RMS/RMF number are stand-ins by the same rule.
+- **Material codes are typed by Quality.** Nothing proposes one any more
+  (the Associate form no longer pre-fills the RMS number), and the server
+  refuses any material code that looks like a record number
+  (`RMS/RMF/RMP` + digits): creating a material, the Excel import and
+  creating a code from a supply.
+- **Match to material** (`POST /api/receipt-lines/:id/associate-code`,
+  the old Associate a Code, now for uncoded *and* stand-in lines):
+  - *Sample → existing material.* Optionally (`manufacturer_spec`) the
+    spec the sample was tested against becomes the material's supply and
+    sample spec for the sample's manufacturer (a spec `variant` named
+    after it). A sample can't get a new code here.
+  - *Supply → existing or new material.* For a new code, the sample(s) it
+    came from are picked from `GET /api/receipt-lines/:id/sample-candidates`
+    (unmatched samples; same supplier and a similar name first, the best
+    one pre-ticked; searchable). The first picked sample's spec becomes the
+    new material's supply **and** sample spec. The samples move to the new
+    code and `receipt_lines.matched_supply_line_id` links each to the
+    supply (migration 0029); Quality's cards show "From sample …" and
+    "Led to RMF…".
+  - Moving a line off its stand-in (`moveLineToMaterial`): its one-time
+    spec goes with it; the stand-in's own spec is kept as the line's
+    one-time spec only if results were recorded against it, otherwise
+    dropped; the stand-in material is deleted once unused.
+- **Which spec a line is tested against** (`resolveLineSpecs`): its
+  one-time spec, else the material's spec for the line's manufacturer
+  (variant), else the material's normal spec; a sample falls back to the
+  supply spec at each level. Used by the receipt, the lists and test
+  results.
+- Unwanted samples simply stay as they are (To Do until decided, then
+  History), still matchable later.
+
+## 31. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Things

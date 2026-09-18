@@ -2,6 +2,7 @@ import { api, getRememberedName, rememberName, uploadFile } from "./api.js";
 import { t, getLang, setLang, applyDocumentDirection } from "./i18n.js";
 import { navIcon, icons } from "./icons.js";
 import { LIMIT_TYPES, autoJudge, formatLimit, formatSeconds, parseClock, validateLimit } from "./specLimits.js";
+import { isRecordStyleCode, isStandInCode } from "./materialCodes.js";
 
 // ---------------------------------------------------------------- session
 //
@@ -1271,13 +1272,22 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       <div class="line-head">
         <div class="line-material">
           ${esc(line.material_name_text)}
-          ${line.material_code ? `<span class="code">${esc(line.material_code)}</span>` : `<span class="badge neutral">${esc(t("line.uncoded"))}</span>`}
+          ${
+            !line.material_code
+              ? `<span class="badge neutral">${esc(t("line.uncoded"))}</span>`
+              : isStandInCode(line.material_code)
+                ? `<span class="badge flag">${esc(t("line.notMatched"))}</span>`
+                : `<span class="code">${esc(line.material_code)}</span>`
+          }
         </div>
         <div class="hstack">
           ${packagingBadge}
           ${importBadge}
           ${specHtml}
-          ${role === "quality" && !line.material_code ? `<button class="btn sm ghost" data-associate="${line.id}">${esc(t("line.associateACode"))}</button>` : ""}
+          ${matchLinksHtml(line)}
+          ${role === "quality" && (!line.material_code || isStandInCode(line.material_code))
+            ? `<button class="btn sm ghost" data-associate="${line.id}">${esc(t(receiptType === "sample" ? "match.sampleButton" : "match.supplyButton"))}</button>`
+            : ""}
           ${role === "quality" ? `<button class="btn sm ghost" data-classify="${line.id}">${esc(t("line.classify"))}</button>` : ""}
           ${role === "quality" ? `<button class="btn sm ghost" data-product-info="${line.id}">${esc(t("line.productInfo"))}</button>` : ""}
         </div>
@@ -1285,6 +1295,20 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       ${role === "quality" ? productInfoHtml(line) : ""}
       ${batchesHtml}
     </div>`;
+}
+
+/** Which supply a sample led to, and which samples a supply came from
+ *  (the server only sends these to Quality). */
+function matchLinksHtml(line) {
+  const label = (l) => `${l.import_code || "—"}${l.receipt_no ? ` · #${l.receipt_no}` : ""}`;
+  const out = [];
+  if (line.matched_supply) {
+    out.push(`<span class="badge neutral">${esc(t("match.ledTo", { code: label(line.matched_supply) }))}</span>`);
+  }
+  if (line.from_samples?.length) {
+    out.push(`<span class="badge neutral">${esc(t("match.fromSamples", { codes: line.from_samples.map(label).join(", ") }))}</span>`);
+  }
+  return out.join("");
 }
 
 /** Quality's notes on the product that arrived: manufacturer, origin and
@@ -1596,7 +1620,7 @@ function buildReceiptCard(receipt, { role, type }) {
   card.querySelectorAll("[data-associate]").forEach((btn) =>
     btn.addEventListener("click", () => {
       const line = linesById[btn.dataset.associate];
-      openAssociateModal(btn.dataset.associate, () => refreshCurrentView(), type === "sample" ? line?.import_code : null);
+      openAssociateModal(line, type, () => refreshCurrentView());
     })
   );
   // view test results (read-only)
@@ -2020,78 +2044,138 @@ function openFinalizeModal(batchId, qtyBasis, onDone) {
   });
 }
 
-async function openAssociateModal(lineId, onDone, sampleCode = null) {
-  const materials = await getMaterials();
-  const types = await getTypes();
-  const subtypes = await getSubtypes();
+/** Match a line to a real material. A sample is matched to an existing
+ *  material (an alternative), optionally saving its spec for its
+ *  manufacturer. A supply can also get a new code, typed by Quality, and
+ *  take the sample(s) it came from along with it. */
+async function openAssociateModal(line, receiptType, onDone) {
+  const isSample = receiptType === "sample";
+  const [materials, types, subtypes] = await Promise.all([getMaterials(), getTypes(), getSubtypes()]);
+  const canMfrSpec = isSample && !!line.manufacturer && !!line.spec?.parameters?.length;
+  const mfrHint = canMfrSpec ? "match.manufacturerSpecHint" : line.manufacturer ? "match.manufacturerSpecNoSpec" : "match.manufacturerSpecNoMfr";
   openModal(
-    esc(t("associate.title")),
+    esc(t("match.title")),
     `<div class="form-grid">
+      <div class="small muted">${bdi(line.material_name_text)}${line.import_code ? ` · <bdi class="mono">${esc(line.import_code)}</bdi>` : ""}</div>
       <div class="field">
         <label>${esc(t("associate.mode"))}</label>
         <select id="assoc-mode">
-          <option value="existing">${esc(t("associate.linkExisting"))}</option>
-          <option value="new">${esc(t("associate.createNew"))}</option>
+          <option value="existing">${esc(t(isSample ? "match.alternative" : "associate.linkExisting"))}</option>
+          ${isSample ? "" : `<option value="new">${esc(t("match.createCode"))}</option>`}
         </select>
       </div>
+      ${isSample ? `<p class="small muted">${esc(t("match.sampleNewHint"))}</p>` : ""}
       <div id="assoc-existing" class="form-grid">
         <div class="field">
           <label>${esc(t("associate.existingMaterial"))}</label>
           ${codeSearchHtml("assoc-material", t("common.searchByCodeOrName"), "material_code")}
         </div>
+        ${isSample ? `
+        <label class="radio-row"><input type="checkbox" id="assoc-mfr-spec" ${canMfrSpec ? "" : "disabled"} />
+          <span>${esc(t("match.manufacturerSpec", { manufacturer: line.manufacturer || "—" }))}<span class="small muted">${esc(t(mfrHint))}</span></span></label>` : ""}
       </div>
       <div id="assoc-new" class="form-grid" hidden>
         <div class="field-row">
-          <div class="field"><label>${esc(t("associate.newCode"))}</label><input type="text" name="new_code" value="${esc(sampleCode || "")}" /></div>
-          <div class="field"><label>${esc(t("common.name"))}</label><input type="text" name="new_name" /></div>
-          <div class="field" style="max-width:100px"><label>${esc(t("common.unit"))}</label><input type="text" name="new_unit" /></div>
+          <div class="field"><label>${esc(t("associate.newCode"))}</label><input type="text" name="new_code" placeholder="${esc(t("match.newCodePlaceholder"))}" /></div>
+          <div class="field"><label>${esc(t("common.name"))}</label><input type="text" name="new_name" value="${esc(line.material_name_text || "")}" /></div>
+          <div class="field" style="max-width:100px"><label>${esc(t("common.unit"))}</label><input type="text" name="new_unit" value="${esc(line.unit || "")}" /></div>
         </div>
         <div class="field-row">
           <div class="field"><label>${esc(t("common.type"))}</label><select name="new_type"><option value="">—</option>${types.map((ty) => `<option value="${esc(ty.code)}">${esc(ty.name)}</option>`).join("")}</select></div>
-          <div class="field"><label>${esc(t("common.subtype"))}</label><select name="new_subtype"><option value="">—</option>${subtypes.map((s) => `<option value="${esc(s.code)}">${esc(s.name)}</option>`).join("")}</select></div>
+          <div class="field"><label>${esc(t("common.subtype"))}</label><select name="new_subtype"><option value="">—</option>${subtypes.map((st) => `<option value="${esc(st.code)}">${esc(st.name)}</option>`).join("")}</select></div>
         </div>
         <div class="field"><label>${esc(t("associate.specTitle"))}</label><input type="text" name="spec_title" placeholder="${esc(t("associate.specTitlePlaceholder"))}" /></div>
-        <p class="small muted">${esc(t("associate.specHint"))}</p>
-        ${sampleCode ? `<p class="small muted">${esc(t("associate.sampleCodeHint"))}</p>` : ""}
+        <div class="field">
+          <label>${esc(t("match.samples"))}</label>
+          <input type="search" class="search-input" id="assoc-sample-search" placeholder="${esc(t("match.samplesSearch"))}" style="max-width:none" />
+          <div class="sample-picks" id="assoc-samples">${loadingState()}</div>
+          <p class="small muted">${esc(t("match.samplesHint"))}</p>
+        </div>
       </div>
       <div class="field"><label>${esc(t("associate.yourNameQuality"))}</label><input type="text" id="assoc-by" value="${esc(getRememberedName())}" /></div>
-      <button type="button" class="btn primary" id="assoc-submit">${esc(t("associate.submit"))}</button>
+      <button type="button" class="btn primary" id="assoc-submit">${esc(t("match.submit"))}</button>
     </div>`
   );
 
   const modeSelect = document.getElementById("assoc-mode");
-  modeSelect.addEventListener("change", () => {
-    document.getElementById("assoc-existing").hidden = modeSelect.value !== "existing";
-    document.getElementById("assoc-new").hidden = modeSelect.value !== "new";
-  });
-
   const assocMaterialInput = wireCodeSearch("assoc-material", materials, () => {});
   if (materials.length) assocMaterialInput.value = materials[0].code;
 
+  // Sample picker (new code only): suggestions first; ticks survive searches.
+  const picked = new Map();
+  let firstLoad = true;
+  const samplesEl = document.getElementById("assoc-samples");
+  const sampleRow = (c) => `
+    <label class="sample-pick">
+      <input type="checkbox" value="${c.line_id}" ${picked.has(c.line_id) ? "checked" : ""} />
+      <span><bdi class="mono">${esc(c.import_code || "—")}</bdi> ${bdi(c.material_name_text)}
+        <span class="small muted">· ${bdi(c.supplier_name)} · ${esc(fmtDate(c.received_at))}${c.receipt_no ? ` · #${esc(c.receipt_no)}` : ""}</span>
+        ${c.suggested ? `<span class="badge flag">${esc(t("match.suggested"))}</span>` : ""}</span>
+    </label>`;
+  async function loadSamples(q = "") {
+    let found = [];
+    try {
+      found = await api.get(`/api/receipt-lines/${line.id}/sample-candidates?q=${encodeURIComponent(q)}`);
+    } catch (err) {
+      samplesEl.innerHTML = `<div class="small muted">${esc(err.message)}</div>`;
+      return;
+    }
+    if (!samplesEl.isConnected) return;
+    if (firstLoad) {
+      firstLoad = false;
+      const top = found.find((c) => c.suggested);
+      if (top) picked.set(top.line_id, top);
+    }
+    const rows = [...picked.values(), ...found.filter((c) => !picked.has(c.line_id))];
+    samplesEl.innerHTML = rows.length ? rows.map(sampleRow).join("") : `<div class="small muted">${esc(t("match.noSamples"))}</div>`;
+    samplesEl.querySelectorAll('input[type="checkbox"]').forEach((box) =>
+      box.addEventListener("change", () => {
+        const c = rows.find((r) => String(r.line_id) === box.value);
+        box.checked ? picked.set(c.line_id, c) : picked.delete(c.line_id);
+      })
+    );
+  }
+  let searchTimer;
+  document.getElementById("assoc-sample-search").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => loadSamples(e.target.value.trim()), 250);
+  });
+
+  modeSelect.addEventListener("change", () => {
+    document.getElementById("assoc-existing").hidden = modeSelect.value !== "existing";
+    document.getElementById("assoc-new").hidden = modeSelect.value !== "new";
+    if (modeSelect.value === "new" && firstLoad) loadSamples();
+  });
+
   document.getElementById("assoc-submit").addEventListener("click", async () => {
-    const by = document.getElementById("assoc-by").value || "quality";
+    const by = document.getElementById("assoc-by").value.trim() || "quality";
     rememberName(by);
     let body;
     if (modeSelect.value === "existing") {
       const code = document.querySelector('#assoc-existing [name="material_code"]').value;
-      body = { mode: "existing", material_code: code };
+      body = { mode: "existing", material_code: code, created_by: by, manufacturer_spec: !!document.getElementById("assoc-mfr-spec")?.checked };
     } else {
-      const get = (n) => document.querySelector(`#assoc-new [name="${n}"]`).value;
+      const get = (n) => document.querySelector(`#assoc-new [name="${n}"]`).value.trim();
+      const code = get("new_code");
+      if (!code) return toast(t("match.codeRequired"), true);
+      if (isRecordStyleCode(code)) return toast(t("match.recordStyleCode"), true);
       body = {
         mode: "new",
+        created_by: by,
         new_material: {
-          code: get("new_code"),
+          code,
           name: get("new_name"),
           unit: get("new_unit"),
           type_code: get("new_type") || null,
           subtype_code: get("new_subtype") || null,
         },
-        spec: { title: get("spec_title") || t("associate.initialSpecTitle"), created_by: by },
+        sample_line_ids: [...picked.keys()],
+        spec: { title: get("spec_title") || null, created_by: by },
       };
     }
     try {
-      await api.post(`/api/receipt-lines/${lineId}/associate-code`, body);
-      toast(t("associate.codeAssociated"));
+      await api.post(`/api/receipt-lines/${line.id}/associate-code`, body);
+      toast(t("match.done"));
       await getMaterials(true);
       closeModal();
       onDone();

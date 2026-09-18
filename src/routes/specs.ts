@@ -305,6 +305,78 @@ export async function createOneTimeSpec(
   return { ok: true, spec: await getSpecWithParameters(env, row!.id) };
 }
 
+/** What resolveLineSpecs needs to know about a line. */
+export interface LineSpecKey {
+  id: number;
+  material_code: string | null;
+  /** Quality's note of who made it; picks a per-manufacturer spec. */
+  manufacturer: string | null;
+  scope: SpecScope;
+}
+
+const sameName = (a: string | null | undefined, b: string | null | undefined) =>
+  !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** The spec each line is tested against, in order of preference: the
+ *  line's own one-time spec; the material's spec for the line's
+ *  manufacturer (a variant named after it); the material's normal spec.
+ *  A sample falls back to the supply spec at each level. */
+export async function resolveLineSpecs(env: Env, lines: LineSpecKey[]): Promise<Map<number, SpecWithParameters | null>> {
+  const result = new Map<number, SpecWithParameters | null>();
+  if (!lines.length) return result;
+  const oneTime = await getOneTimeSpecsForLines(env, lines.map((l) => l.id));
+  const codes = [...new Set(lines.filter((l) => !oneTime.has(l.id) && l.material_code).map((l) => l.material_code!))];
+  const specs = codes.length
+    ? await fetchByIds<Spec>(
+        env,
+        (ph) => `SELECT * FROM specs WHERE status = 'active' AND receipt_line_id IS NULL AND material_code IN (${ph})`,
+        codes
+      )
+    : [];
+  const byMaterial = new Map<string, Spec[]>();
+  for (const s of specs) {
+    if (!byMaterial.has(s.material_code)) byMaterial.set(s.material_code, []);
+    byMaterial.get(s.material_code)!.push(s);
+  }
+
+  const chosen = new Map<number, Spec>();
+  for (const line of lines) {
+    if (oneTime.has(line.id) || !line.material_code) continue;
+    const own = byMaterial.get(line.material_code) ?? [];
+    const scopes: SpecScope[] = line.scope === "sample" ? ["sample", "supply"] : ["supply"];
+    const pick =
+      scopes.map((sc) => own.find((s) => s.scope === sc && sameName(s.variant, line.manufacturer))).find(Boolean) ??
+      scopes.map((sc) => own.find((s) => s.scope === sc && s.variant == null)).find(Boolean);
+    if (pick) chosen.set(line.id, pick);
+  }
+  const withParams = new Map(
+    (await attachParameters(env, [...new Map([...chosen.values()].map((s) => [s.id, s])).values()])).map((s) => [s.id, s])
+  );
+  for (const line of lines) {
+    result.set(line.id, oneTime.get(line.id) ?? (chosen.has(line.id) ? withParams.get(chosen.get(line.id)!.id)! : null));
+  }
+  return result;
+}
+
+/** A spec's limits in the shape createSpecVersion takes, to copy them. */
+export function parametersOf(spec: SpecWithParameters): ParameterInput[] {
+  return spec.parameters.map((p, i) => ({
+    test_code: p.test_code,
+    parameter_name: p.parameter_name,
+    param_type: p.param_type,
+    method: p.method,
+    conditions: p.conditions,
+    min_value: p.min_value,
+    max_value: p.max_value,
+    unit: p.unit,
+    expected_text: p.expected_text,
+    target_value: p.target_value,
+    tolerance: p.tolerance,
+    remarks: p.remarks,
+    sort_order: i,
+  }));
+}
+
 /** One-time specs of the given lines, by line id. */
 export async function getOneTimeSpecsForLines(env: Env, lineIds: number[]): Promise<Map<number, SpecWithParameters>> {
   const map = new Map<number, SpecWithParameters>();
