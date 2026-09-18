@@ -1,4 +1,5 @@
 import type { LimitType } from "../public/specLimits.js";
+import type { RateLimitBinding } from "./rateLimit";
 
 export interface Env {
   DB: D1Database;
@@ -20,6 +21,11 @@ export interface Env {
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
   VAPID_SUBJECT?: string;
+  /** Workers rate-limiting bindings (wrangler.toml, src/rateLimit.ts).
+   *  Optional so a missing binding never blocks a request. */
+  AUTH_LIMITER?: RateLimitBinding;
+  API_LIMITER?: RateLimitBinding;
+  HEAVY_LIMITER?: RateLimitBinding;
 }
 
 export type Role = "warehouse" | "quality";
