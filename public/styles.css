@@ -603,6 +603,22 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
 .muted { color: var(--ink-muted); }
 .text-bad { color: var(--bad); }
 .list-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding-block: 10px; }
+.list-footer-top { padding-block: 0 12px; }
+/* Receipt cards sit apart from each other instead of touching. */
+.receipt-list { display: flex; flex-direction: column; gap: 14px; }
+
+.pager { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.pager-btn {
+  min-width: 34px; height: 32px; padding: 0 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--rule-strong); background: var(--surface-2); color: var(--ink);
+  font-size: 0.8rem; font-variant-numeric: tabular-nums; cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.pager-btn:hover:not(:disabled):not(.active) { border-color: var(--accent); }
+.pager-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; cursor: default; }
+.pager-btn:disabled { opacity: 0.4; cursor: default; }
+.pager-btn:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.pager-gap { color: var(--ink-faint); padding: 0 2px; }
 .mono { font-family: var(--font-mono); white-space: nowrap; }
 .small { font-size: 0.78rem; }
 
