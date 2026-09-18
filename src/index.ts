@@ -1,4 +1,5 @@
 import { getSession } from "./auth";
+import { listQualityQueue, qualityQueueCount } from "./routes/queue";
 import { error, json } from "./http";
 import {
   adminCreateUser,
@@ -343,7 +344,12 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
   if (pathname === "/api/receipts/todo-count" && method === "GET") {
     if (!role) return error("Not signed in", 401);
+    if (role === "quality") return json({ count: await qualityQueueCount(env) });
     return getTodoCount(env, role);
+  }
+  if (pathname === "/api/queue" && method === "GET") {
+    if (role !== "quality") return error("Only quality has a work queue", 403);
+    return listQualityQueue(request, env);
   }
 
   const receiptMatch = pathname.match(/^\/api\/receipts\/(\d+)$/);

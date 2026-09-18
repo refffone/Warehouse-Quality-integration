@@ -205,9 +205,25 @@ export async function receiveMaterialWithNumber(
 }
 
 /** Navigates to To Do or History, switches to the Imports/Samples subtab,
- *  and returns the locator for one specific receipt's card. */
+ *  and returns the locator for one specific receipt's card. Quality's To Do
+ *  is a queue of batch rows: there the card is the one in the side panel
+ *  that opens when the receipt's row is clicked. */
 export async function openReceiptCard(page: Page, bucket: "todo" | "history", receiptId: number, type: "import" | "sample" = "import") {
   await goToNav(page, bucket);
+  await page.locator("#quality-queue, .list-controls").first().waitFor();
+  if (bucket === "todo" && (await page.locator("#quality-queue").count())) {
+    // Test receipts are the newest, so they're on the first page.
+    if ((await page.locator("#queue-sort").inputValue()) !== "newest") {
+      await page.locator("#queue-sort").selectOption("newest");
+      await expect(page.locator("#queue-sort")).toHaveValue("newest");
+    }
+    await page.click(`.queue-filters [data-t="${type}"]`);
+    await expect(page.locator(`.queue-filters [data-t="${type}"]`)).toHaveClass("on");
+    await page.locator(`.queue-row[data-receipt-id="${receiptId}"]`).first().click();
+    const card = page.locator(`#queue-panel .receipt-card[data-receipt-id="${receiptId}"]`);
+    await expect(card).toBeVisible();
+    return card;
+  }
   await page.click(`[data-t="${type}"]`);
   const card = page.locator(`.receipt-card[data-receipt-id="${receiptId}"]`);
   await expect(card).toBeVisible();

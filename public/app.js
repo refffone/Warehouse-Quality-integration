@@ -2187,6 +2187,272 @@ async function openAssociateModal(line, receiptType, onDone) {
   });
 }
 
+// ---------------------------------------------------------------- view: Quality's To Do (work queue)
+
+const QUEUE_STAGES = ["needs_code", "needs_spec", "to_test", "ready"];
+const QUEUE_STAGE_TONE = { needs_code: "bad", needs_spec: "warn", to_test: "info", ready: "good" };
+// Waiting longer than this many days shows in red.
+const QUEUE_OVERDUE_DAYS = 30;
+const queueState = { scope: "new", stage: "all", type: "", kind: "", supplier: "", notMatched: false, q: "", sort: "oldest", page: 0, selected: null, selectedRow: null };
+
+function queueParams(extra = {}) {
+  const s = queueState;
+  const p = { scope: s.scope, stage: s.stage, sort: s.sort, offset: String(s.page * RECEIPT_PAGE_SIZE), limit: String(RECEIPT_PAGE_SIZE), ...extra };
+  if (s.type) p.type = s.type;
+  if (s.kind) p.kind = s.kind;
+  if (s.supplier) p.supplier = s.supplier;
+  if (s.notMatched) p.not_matched = "1";
+  if (s.q) p.q = s.q;
+  return new URLSearchParams(p).toString();
+}
+
+function queueCodeBadge(row) {
+  if (!row.import_code) return `<span class="badge neutral">—</span>`;
+  const tone = row.supply_kind === "first" ? "flag" : row.supply_kind === "regular" ? "repeat" : "neutral";
+  return `<span class="badge ${tone}"><bdi>${esc(row.import_code)}</bdi></span>`;
+}
+
+function queueRowHtml(row) {
+  const standIn = isStandInCode(row.material_code);
+  const codeHtml = !row.material_code
+    ? `<span class="badge neutral">${esc(t("line.uncoded"))}</span>`
+    : standIn
+      ? `<span class="badge flag">${esc(t("line.notMatched"))}</span>`
+      : `<bdi class="mono">${esc(row.material_code)}</bdi>`;
+  const waiting = row.waiting_days == null
+    ? `<span class="muted">—</span>`
+    : `<span class="queue-age${row.waiting_days > QUEUE_OVERDUE_DAYS ? " overdue" : ""}">${esc(t("queue.days", { n: row.waiting_days }))}</span>`;
+  return `
+    <tr class="queue-row${queueState.selected === row.batch_id ? " selected" : ""}" data-batch-id="${row.batch_id}" data-receipt-id="${row.receipt_id}" tabindex="0">
+      <td class="q-record">${queueCodeBadge(row)}</td>
+      <td class="q-material">
+        <b>${bdi(row.material_name || row.material_name_text)}</b>
+        <span class="small muted">${codeHtml} · ${bdi(row.supplier_name)} · ${receiptNoHtml(row)}</span>
+      </td>
+      <td class="q-batch"><bdi class="mono">${esc(row.supplier_batch_no || "—")}</bdi>${row.expiry_date ? `<span class="small muted">${esc(t("line.exp", { date: fmtDate(row.expiry_date) }))}</span>` : ""}</td>
+      <td class="q-qty num"><bdi>${esc(row.qty_as_received)} ${esc(row.unit)}</bdi></td>
+      <td class="q-wait num">${waiting}</td>
+      <td class="q-next"><span class="pill ${QUEUE_STAGE_TONE[row.stage]} q-stage">${esc(t(`queue.stage.${row.stage}`))}</span><button type="button" class="btn sm primary" data-next="${row.batch_id}">${esc(t(`queue.action.${row.stage}`))}</button></td>
+    </tr>`;
+}
+
+/** The receipt behind a row, and the line and batch the row is about. */
+async function loadQueueTarget(row) {
+  const receipt = await api.get(`/api/receipts/${row.receipt_id}`);
+  const line = receipt.lines.find((l) => l.id === row.line_id);
+  const batch = line?.batches.find((b) => b.id === row.batch_id);
+  return { receipt, line, batch };
+}
+
+/** The row's one next step, straight from the list. */
+async function runQueueNextStep(row) {
+  try {
+    const { receipt, line, batch } = await loadQueueTarget(row);
+    const done = () => refreshCurrentView();
+    if (row.stage === "needs_code") openAssociateModal(line, receipt.type, done);
+    else if (row.stage === "needs_spec") openAddLineSpecModal(line, receipt.type, done);
+    else if (row.stage === "to_test") openTestResultsModal(batch.id, line.spec, batch.test_results, done);
+    else openDecideModal(batch.id, batch.test_results, done);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
+async function renderQueuePanel(panel, row) {
+  panel.hidden = false;
+  panel.innerHTML = loadingState();
+  let target;
+  try {
+    target = await loadQueueTarget(row);
+  } catch (err) {
+    panel.innerHTML = errorState(err.message);
+    return;
+  }
+  const attachments = await api.get(`/api/receipt-lines/${row.line_id}/attachments`).catch(() => []);
+  if (!panel.isConnected || queueState.selected !== row.batch_id) return;
+  const { receipt, line } = target;
+  panel.innerHTML = `
+    <div class="queue-panel-head">
+      <div>
+        ${queueCodeBadge(row)} <span class="pill ${QUEUE_STAGE_TONE[row.stage]}">${esc(t(`queue.stage.${row.stage}`))}</span>
+        <h2>${bdi(row.material_name || row.material_name_text)}</h2>
+        <div class="small muted">${receiptNoHtml(row)} · ${bdi(row.supplier_name)} · ${esc(fmtReceived(row.received_at))}</div>
+      </div>
+      <button type="button" class="icon-btn" data-close-panel aria-label="${esc(t("queue.close"))}">${icons.x}</button>
+    </div>
+    <div data-panel-card></div>
+    <div class="queue-panel-files" data-line-id="${line.id}">
+      <h3>${esc(t("queue.files"))}</h3>
+      ${attachmentsBlockHtml(attachments)}
+    </div>`;
+  const card = buildReceiptCard(receipt, { role: "quality", type: receipt.type });
+  card.querySelector(`.line-block[data-line-id="${line.id}"]`)?.classList.add("focused");
+  panel.querySelector("[data-panel-card]").appendChild(card);
+  enrichRetestLabels(card);
+  wireDossierImportEntries(panel.querySelector(".queue-panel-files"), () => refreshCurrentView());
+  panel.querySelector("[data-close-panel]").addEventListener("click", () => {
+    queueState.selected = null;
+    panel.hidden = true;
+    panel.innerHTML = "";
+    document.querySelectorAll(".queue-row.selected").forEach((r) => r.classList.remove("selected"));
+    document.body.classList.remove("queue-sheet-open");
+  });
+  document.body.classList.toggle("queue-sheet-open", window.matchMedia("(max-width: 900px)").matches);
+}
+
+async function viewQualityQueue() {
+  const generation = beginView();
+  const view = document.getElementById("view");
+  // Coming back after an action (refreshCurrentView) keeps the scroll.
+  const keepScroll = document.getElementById("quality-queue") ? window.scrollY : 0;
+  if (!document.getElementById("quality-queue")) view.innerHTML = loadingState();
+
+  let data;
+  try {
+    // The receipt card in the side panel names suppliers from this cache.
+    [data] = await Promise.all([api.get(`/api/queue?${queueParams()}`), getSuppliers()]);
+  } catch (err) {
+    view.innerHTML = errorState(err.message);
+    return;
+  }
+  // The page may have shrunk since (records decided): show its last page.
+  const pageCount = Math.ceil(data.total / RECEIPT_PAGE_SIZE);
+  if (data.total > 0 && queueState.page >= pageCount) {
+    queueState.page = pageCount - 1;
+    return viewQualityQueue();
+  }
+  if (isStaleView(generation)) return;
+  const s = queueState;
+
+  const stageChip = (stage) => `
+    <button type="button" class="stage-chip${s.stage === stage ? " active" : ""}" data-stage="${stage}">
+      ${stage === "all" ? "" : `<span class="stage-dot ${QUEUE_STAGE_TONE[stage]}"></span>`}${esc(t(`queue.stage.${stage}`))}
+      <span class="stage-n">${data.counts[stage]}</span>
+    </button>`;
+  const first = s.page * RECEIPT_PAGE_SIZE + 1;
+  const last = s.page * RECEIPT_PAGE_SIZE + data.items.length;
+  const rangeHtml = data.total
+    ? `<span class="small muted">${esc(t("bucket.rangeOf", { from: first, to: last, total: data.total }))}</span>${pagerHtml(s.page, pageCount)}`
+    : "";
+  const emptyHtml = s.q || s.type || s.kind || s.supplier || s.notMatched || s.stage !== "all"
+    ? emptyState(icons.search, t("queue.emptyFiltered"))
+    : s.scope === "new" && data.scopes.backlog
+      ? emptyState(icons.inbox, t("queue.emptyNew"), t("queue.emptyNewBacklog", { count: data.scopes.backlog }))
+      : emptyState(icons.inbox, t("queue.emptyNew"));
+
+  view.innerHTML = `
+    <div id="quality-queue" class="quality-queue">
+      <div class="view-head"><div><h1>${esc(t("bucket.todoTitle"))}</h1><p>${esc(t("queue.copy"))}</p></div>
+        <button type="button" class="btn primary" id="receive-sample-btn">${esc(t("receive.sampleButton"))}</button></div>
+      <div class="queue-controls">
+        <div class="queue-scope">
+          <span class="seg">
+            <button type="button" data-scope="new" class="${s.scope === "new" ? "on" : ""}">${esc(t("queue.scopeNew"))} <span class="stage-n">${data.scopes.new}</span></button>
+            <button type="button" data-scope="backlog" class="${s.scope === "backlog" ? "on" : ""}">${esc(t("queue.scopeBacklog"))} <span class="stage-n">${data.scopes.backlog}</span></button>
+          </span>
+        </div>
+        <div class="stage-chips">${[...QUEUE_STAGES, "all"].map(stageChip).join("")}</div>
+        <div class="queue-filters">
+          <span class="seg">
+            <button type="button" data-t="" class="${!s.type ? "on" : ""}">${esc(t("queue.typeAll"))}</button>
+            <button type="button" data-t="import" class="${s.type === "import" ? "on" : ""}">${esc(t("bucket.imports"))}</button>
+            <button type="button" data-t="sample" class="${s.type === "sample" ? "on" : ""}">${esc(t("bucket.samples"))}</button>
+          </span>
+          <select id="queue-kind" aria-label="${esc(t("queue.kind"))}">
+            <option value="">${esc(t("queue.kindAll"))}</option>
+            ${["first", "regular", "sample"].map((k) => `<option value="${k}" ${s.kind === k ? "selected" : ""}>${esc(t(`kind.${k}`))}</option>`).join("")}
+          </select>
+          <select id="queue-supplier" aria-label="${esc(t("queue.supplier"))}">
+            <option value="">${esc(t("queue.supplierAll"))}</option>
+            ${data.suppliers.map((sp) => `<option value="${sp.id}" ${String(sp.id) === String(s.supplier) ? "selected" : ""}>${esc(sp.name)} (${sp.n})</option>`).join("")}
+          </select>
+          <select id="queue-sort" aria-label="${esc(t("queue.sort"))}">
+            ${["oldest", "newest", "expiry"].map((k) => `<option value="${k}" ${s.sort === k ? "selected" : ""}>${esc(t(`queue.sort.${k}`))}</option>`).join("")}
+          </select>
+          <label class="queue-check"><input type="checkbox" id="queue-not-matched" ${s.notMatched ? "checked" : ""} /> ${esc(t("queue.notMatchedOnly"))}</label>
+          <input type="search" class="search-input" id="receipt-search" placeholder="${esc(t("bucket.searchPlaceholder"))}" value="${esc(s.q)}" />
+          <button type="button" class="btn ghost sm" id="receipt-refresh" title="${esc(t("bucket.refreshHint"))}">↻ ${esc(t("bucket.refresh"))}</button>
+        </div>
+      </div>
+      ${exportBarHtml("bucket-export", { withPeriod: false })}
+      <div class="queue-layout">
+        <div class="queue-list" id="receipt-list">
+          ${data.items.length ? `
+          <div class="list-footer list-footer-top">${rangeHtml}</div>
+          <div class="queue-table-wrap">
+            <table class="queue-table">
+              <thead><tr>
+                <th>${esc(t("queue.col.record"))}</th><th>${esc(t("queue.col.material"))}</th><th class="q-batch">${esc(t("queue.col.batch"))}</th>
+                <th class="num q-qty">${esc(t("queue.col.qty"))}</th><th class="num">${esc(t("queue.col.waiting"))}</th><th>${esc(t("queue.col.next"))}</th>
+              </tr></thead>
+              <tbody>${data.items.map(queueRowHtml).join("")}</tbody>
+            </table>
+          </div>
+          <div class="list-footer">${rangeHtml}</div>` : emptyHtml}
+        </div>
+        <aside class="queue-panel" id="queue-panel" hidden></aside>
+      </div>
+    </div>`;
+
+  const rerender = (changes) => {
+    Object.assign(queueState, { page: 0, ...changes });
+    viewQualityQueue();
+  };
+  view.querySelectorAll("[data-scope]").forEach((b) => b.addEventListener("click", () => rerender({ scope: b.dataset.scope, stage: "all", supplier: "" })));
+  view.querySelectorAll("[data-stage]").forEach((b) => b.addEventListener("click", () => rerender({ stage: b.dataset.stage })));
+  view.querySelectorAll(".queue-filters [data-t]").forEach((b) => b.addEventListener("click", () => rerender({ type: b.dataset.t })));
+  document.getElementById("queue-kind").addEventListener("change", (e) => rerender({ kind: e.target.value }));
+  document.getElementById("queue-supplier").addEventListener("change", (e) => rerender({ supplier: e.target.value }));
+  document.getElementById("queue-sort").addEventListener("change", (e) => rerender({ sort: e.target.value }));
+  document.getElementById("queue-not-matched").addEventListener("change", (e) => rerender({ notMatched: e.target.checked }));
+  let searchTimer;
+  document.getElementById("receipt-search").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => rerender({ q: e.target.value.trim() }), 250);
+  });
+  document.getElementById("receipt-refresh").addEventListener("click", () => refreshCurrentView());
+  document.getElementById("receive-sample-btn").addEventListener("click", () => {
+    receiveWizard = freshReceiveWizard();
+    goTo("receive");
+  });
+  wireExportBar("bucket-export", "todos", { withPeriod: false, filenamePrefix: "todo" });
+  view.querySelectorAll(".pager [data-page]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      queueState.page = Number(btn.dataset.page);
+      viewQualityQueue().then(() => document.getElementById("receipt-list")?.scrollIntoView({ block: "start", behavior: "smooth" }));
+    })
+  );
+
+  const rowsById = new Map(data.items.map((r) => [r.batch_id, r]));
+  const panel = document.getElementById("queue-panel");
+  const select = (row) => {
+    queueState.selected = row.batch_id;
+    queueState.selectedRow = row;
+    view.querySelectorAll(".queue-row").forEach((tr) => tr.classList.toggle("selected", Number(tr.dataset.batchId) === row.batch_id));
+    renderQueuePanel(panel, row);
+  };
+  view.querySelectorAll(".queue-row").forEach((tr) => {
+    const row = rowsById.get(Number(tr.dataset.batchId));
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest("[data-next]")) return;
+      select(row);
+    });
+    tr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.target.closest("button")) select(row);
+    });
+    tr.querySelector("[data-next]").addEventListener("click", () => runQueueNextStep(row));
+  });
+
+  // Keep the open record open across refreshes. A batch that has just been
+  // decided has left the queue; its panel stays up showing the decision.
+  if (queueState.selected) {
+    const row = rowsById.get(queueState.selected) ?? queueState.selectedRow;
+    queueState.selectedRow = row;
+    if (row) renderQueuePanel(panel, row);
+  }
+  if (keepScroll) window.scrollTo(0, keepScroll);
+}
+
 // ---------------------------------------------------------------- view: receipt buckets (To Do / History)
 
 // Remembers each role+bucket's last-used Imports/Samples toggle and search
@@ -3307,7 +3573,24 @@ function dossierImportEntryHtml(entry) {
       </div>`
     )
     .join("");
-  const attachmentRows = entry.attachments
+  return `
+    <div class="dossier-import-entry" data-line-id="${entry.receipt_line_id}">
+      <div class="line-head">
+        <div>
+          <bdi class="mono"><b>${esc(entry.import_code)}</b></bdi> ${scenarioBadge}
+          <div class="small muted">${bdi(entry.material_name_text)} · ${bdi(entry.supplier_name)} <span class="mono">(${esc(entry.supplier_code)})</span> · ${esc(t("masterdata.receivedOn", { date: fmtReceived(entry.received_at, fmtDate) }))}</div>
+          ${productInfoHtml(entry)}
+        </div>
+      </div>
+      <div style="margin-top:6px">${batchRows}</div>
+      ${attachmentsBlockHtml(entry.attachments)}
+    </div>`;
+}
+
+/** A line's photos/TDS/MSDS with the attach form. Must sit inside an
+ *  element carrying data-line-id; wired by wireDossierImportEntries. */
+function attachmentsBlockHtml(attachments) {
+  const attachmentRows = attachments
     .map(
       (a) => `
       <div class="attachment-row">
@@ -3321,15 +3604,6 @@ function dossierImportEntryHtml(entry) {
     .join("");
 
   return `
-    <div class="dossier-import-entry" data-line-id="${entry.receipt_line_id}">
-      <div class="line-head">
-        <div>
-          <bdi class="mono"><b>${esc(entry.import_code)}</b></bdi> ${scenarioBadge}
-          <div class="small muted">${bdi(entry.material_name_text)} · ${bdi(entry.supplier_name)} <span class="mono">(${esc(entry.supplier_code)})</span> · ${esc(t("masterdata.receivedOn", { date: fmtReceived(entry.received_at, fmtDate) }))}</div>
-          ${productInfoHtml(entry)}
-        </div>
-      </div>
-      <div style="margin-top:6px">${batchRows}</div>
       <div style="margin-top:8px">
         <div class="small muted" style="margin-bottom:4px">${esc(t("masterdata.attachments"))}</div>
         ${attachmentRows || `<div class="small muted">${esc(t("masterdata.attachmentsNone"))}</div>`}
@@ -3340,8 +3614,7 @@ function dossierImportEntryHtml(entry) {
           <div class="field field-file"><label>${esc(t("masterdata.file"))}</label><input type="file" data-f="file" required /></div>
           <button type="submit" class="btn ghost">${esc(t("masterdata.attach"))}</button>
         </form>
-      </div>
-    </div>`;
+      </div>`;
 }
 
 function wireDossierImportEntries(container, onDone) {
@@ -3756,6 +4029,9 @@ async function renderView() {
     if (tab === "receive") {
       lastRouteArgs = { fn: viewReceive, args: undefined };
       await viewReceive();
+    } else if (tab === "todo" && role === "quality") {
+      lastRouteArgs = { fn: viewQualityQueue };
+      await viewQualityQueue();
     } else if (tab === "todo") {
       lastRouteArgs = { fn: viewReceiptBucket, args: { role, bucket: "todo" } };
       await viewReceiptBucket({ role, bucket: "todo" });

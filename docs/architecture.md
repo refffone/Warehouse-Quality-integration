@@ -1931,7 +1931,36 @@ then the supply and the sample(s) it came from get the same new code.
 - Unwanted samples simply stay as they are (To Do until decided, then
   History), still matchable later.
 
-## 31. Next Step
+## 31. Quality's To Do as a work queue
+
+Quality's To Do lists pending **batches**, not receipts: one row each,
+grouped by what it needs next. Warehouse's To Do and both History screens
+are unchanged (steps 2–3 of the overhaul proposal).
+
+- **Stages** (`src/routes/queue.ts`, worked out in SQL for every pending
+  batch): *Needs a code* (no material code: an uncoded supply),
+  *Needs spec* (no spec resolves for the line; the SQL mirrors
+  `resolveLineSpecs`), *To test* (no results yet), *Ready to decide*
+  (results recorded). "Not matched" is a filter, not a stage, since a
+  sample can be tested and decided before it's matched.
+- **Access backlog.** Batches whose receipt came from Access
+  (`legacy_ref`) sit in their own scope, so they don't bury new work; the
+  To Do badge counts only new ones.
+- **`GET /api/queue`** (Quality only): `scope` (new/backlog), `stage`,
+  `type`, `kind`, `supplier`, `not_matched`, `q`, `sort`
+  (oldest/newest/expiry), `offset`/`limit`. Returns the rows, stage
+  counts under the current filters, both scope totals and a supplier list
+  for the filter.
+- **Screen** (`viewQualityQueue`): scope switch, stage chips with counts,
+  filters, 80 rows per page, waiting days (red past 30). Each row's one
+  button runs its next step (match, add spec, record results, decide) with
+  the existing modals. Clicking a row opens the side panel: the receipt's
+  full card (every existing action) with the row's line outlined, plus the
+  line's files. Refreshes keep the filters, page, scroll and the open
+  panel. On a phone, rows become two-line cards and the panel a
+  full-screen sheet.
+
+## 32. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Things
