@@ -1327,7 +1327,7 @@ function openProductInfoModal(line, onDone) {
   });
 }
 
-const RECEIPT_PAGE_SIZE = 50;
+const RECEIPT_PAGE_SIZE = 80;
 
 /** One page of a To Do / History list. The server decides what counts as
  *  still open (for Warehouse that includes an approved import that hasn't
@@ -1459,13 +1459,41 @@ function buildReceiptCard(receipt, { role, type }) {
   return card;
 }
 
+/** Numbered page buttons: first, last, and a window around the current
+ *  page, with gaps as "…". Pages are 0-based here, shown 1-based. */
+function pagerHtml(current, pageCount) {
+  if (pageCount <= 1) return "";
+  const pages = new Set([0, pageCount - 1]);
+  for (let p = current - 2; p <= current + 2; p++) if (p >= 0 && p < pageCount) pages.add(p);
+  const sorted = [...pages].sort((a, b) => a - b);
+  const parts = [];
+  sorted.forEach((p, i) => {
+    if (i > 0 && p - sorted[i - 1] > 1) parts.push(`<span class="pager-gap">…</span>`);
+    parts.push(
+      `<button type="button" class="pager-btn${p === current ? " active" : ""}" data-page="${p}" ${p === current ? 'aria-current="page"' : ""}>${p + 1}</button>`
+    );
+  });
+  return `
+    <nav class="pager" aria-label="${esc(t("bucket.pages"))}">
+      <button type="button" class="pager-btn" data-page="${current - 1}" ${current === 0 ? "disabled" : ""}>${esc(t("bucket.prevPage"))}</button>
+      ${parts.join("")}
+      <button type="button" class="pager-btn" data-page="${current + 1}" ${current >= pageCount - 1 ? "disabled" : ""}>${esc(t("bucket.nextPage"))}</button>
+    </nav>`;
+}
+
 async function renderReceiptsInto(container, { role, type, bucket, query, state }) {
   container.innerHTML = loadingState();
   await getSuppliers();
-  // A refresh keeps however many pages were already open.
-  const shown = Math.max(RECEIPT_PAGE_SIZE, state?.shown || 0);
-  const page = await fetchReceiptsBucket({ type, bucket, query, limit: shown });
+  // Refresh and coming back to the screen keep the page you were on.
+  let pageIndex = Math.max(0, state?.page || 0);
+  let page = await fetchReceiptsBucket({ type, bucket, query, offset: pageIndex * RECEIPT_PAGE_SIZE });
+  // The list may have shrunk since (records decided elsewhere): show its last page instead.
+  if (page.total > 0 && pageIndex * RECEIPT_PAGE_SIZE >= page.total) {
+    pageIndex = Math.ceil(page.total / RECEIPT_PAGE_SIZE) - 1;
+    page = await fetchReceiptsBucket({ type, bucket, query, offset: pageIndex * RECEIPT_PAGE_SIZE });
+  }
   if (!container.isConnected) return;
+  if (state) state.page = pageIndex;
 
   if (page.total === 0) {
     const key = query && query.trim()
@@ -1479,33 +1507,35 @@ async function renderReceiptsInto(container, { role, type, bucket, query, state 
     return;
   }
 
-  container.innerHTML = "";
-  const list = document.createElement("div");
-  const footer = document.createElement("div");
-  footer.className = "list-footer";
-  container.append(list, footer);
-  let loaded = 0;
+  // One page at a time, with the page controls above and below the list.
+  const pageCount = Math.ceil(page.total / RECEIPT_PAGE_SIZE);
+  const first = pageIndex * RECEIPT_PAGE_SIZE + 1;
+  const last = pageIndex * RECEIPT_PAGE_SIZE + page.items.length;
+  const footerHtml = `
+    <span class="small muted">${esc(t("bucket.rangeOf", { from: first, to: last, total: page.total }))}</span>
+    ${pagerHtml(pageIndex, pageCount)}`;
 
-  const append = (items) => {
-    for (const r of items) list.appendChild(buildReceiptCard(r, { role, type }));
-    loaded += items.length;
-    if (state) state.shown = loaded;
-    enrichRetestLabels(list);
-    footer.innerHTML = `
-      <span class="small muted">${esc(t("bucket.showingOf", { shown: loaded, total: page.total }))}</span>
-      ${loaded < page.total ? `<button type="button" class="btn ghost sm" data-more>${esc(t("bucket.showMore"))}</button>` : ""}`;
-    footer.querySelector("[data-more]")?.addEventListener("click", async (e) => {
-      e.target.disabled = true;
-      try {
-        const next = await fetchReceiptsBucket({ type, bucket, query, offset: loaded });
-        append(next.items);
-      } catch (err) {
-        e.target.disabled = false;
-        toast(err.message, true);
-      }
-    });
-  };
-  append(page.items);
+  container.innerHTML = "";
+  const top = document.createElement("div");
+  top.className = "list-footer list-footer-top";
+  top.innerHTML = footerHtml;
+  const list = document.createElement("div");
+  list.className = "receipt-list";
+  const bottom = document.createElement("div");
+  bottom.className = "list-footer";
+  bottom.innerHTML = footerHtml;
+  container.append(top, list, bottom);
+
+  for (const r of page.items) list.appendChild(buildReceiptCard(r, { role, type }));
+  enrichRetestLabels(list);
+
+  container.querySelectorAll(".pager [data-page]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      if (state) state.page = Number(btn.dataset.page);
+      await renderReceiptsInto(container, { role, type, bucket, query, state });
+      container.scrollIntoView({ block: "start", behavior: "smooth" });
+    })
+  );
 }
 
 /** A batch marked as a retest only carries the raw id of the batch it
@@ -1922,7 +1952,7 @@ async function openAssociateModal(lineId, onDone, sampleCode = null) {
 const listState = {};
 function getListState(role, bucket) {
   const key = `${role}:${bucket}`;
-  if (!listState[key]) listState[key] = { type: "import", query: "", shown: 0 };
+  if (!listState[key]) listState[key] = { type: "import", query: "", page: 0 };
   return listState[key];
 }
 
@@ -1974,7 +2004,7 @@ async function viewReceiptBucket({ role, bucket }) {
   view.querySelectorAll("[data-t]").forEach((btn) =>
     btn.addEventListener("click", () => {
       state.type = btn.dataset.t;
-      state.shown = 0;
+      state.page = 0;
       viewReceiptBucket({ role, bucket });
     })
   );
@@ -1990,7 +2020,7 @@ async function viewReceiptBucket({ role, bucket }) {
   let debounceTimer;
   document.getElementById("receipt-search").addEventListener("input", (e) => {
     state.query = e.target.value;
-    state.shown = 0;
+    state.page = 0;
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query, state });

@@ -515,8 +515,10 @@ const translations = {
     "productInfo.saved": "Product details saved",
 
     // Access history
-    "bucket.showingOf": "Showing {shown} of {total}",
-    "bucket.showMore": "Show more",
+    "bucket.rangeOf": "{from}–{to} of {total}",
+    "bucket.pages": "Pages",
+    "bucket.prevPage": "‹ Previous",
+    "bucket.nextPage": "Next ›",
     "bucket.refresh": "Refresh",
     "bucket.refreshHint": "Load the latest records",
     "receipt.dateUnknown": "date unknown",
@@ -1019,8 +1021,10 @@ const translations = {
     "productInfo.saved": "تم حفظ بيانات المنتج",
 
     // Access history
-    "bucket.showingOf": "عرض {shown} من {total}",
-    "bucket.showMore": "عرض المزيد",
+    "bucket.rangeOf": "{from}–{to} من {total}",
+    "bucket.pages": "الصفحات",
+    "bucket.prevPage": "› السابق",
+    "bucket.nextPage": "التالي ‹",
     "bucket.refresh": "تحديث",
     "bucket.refreshHint": "تحميل أحدث السجلات",
     "receipt.dateUnknown": "التاريخ غير معروف",
