@@ -714,3 +714,88 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
   .field-row { gap: 10px; }
   .field-row > * { min-width: 0 !important; flex-basis: 100% !important; }
 }
+
+/* ---------- Quality To Do: work queue ---------- */
+.queue-controls { display: flex; flex-direction: column; gap: 12px; }
+.queue-scope .seg, .queue-filters .seg { display: inline-flex; border: 1px solid var(--rule-strong); border-radius: var(--radius); overflow: hidden; }
+.seg button { padding: 7px 12px; font: 500 0.8rem/1.2 var(--font-body); background: var(--surface-2); color: var(--ink-muted); border: 0; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.seg button + button { border-inline-start: 1px solid var(--rule); }
+.seg button.on { background: var(--accent-soft); color: var(--accent-soft-ink); font-weight: 600; }
+.seg button:focus-visible, .stage-chip:focus-visible, .queue-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.stage-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.stage-chip {
+  display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--rule-strong); background: var(--surface-2); color: var(--ink); font: 500 0.82rem/1.2 var(--font-body);
+}
+.stage-chip:hover { border-color: var(--rule-hover); }
+.stage-chip.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-soft-ink); }
+.stage-n { font: 600 0.74rem/1 var(--font-mono); padding: 3px 7px; border-radius: 999px; background: var(--surface-solid); color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+.stage-dot { width: 8px; height: 8px; border-radius: 50%; }
+.stage-dot.bad { background: var(--bad); } .stage-dot.warn { background: var(--warn); }
+.stage-dot.info { background: var(--accent); } .stage-dot.good { background: var(--good); }
+.queue-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.queue-filters select { padding: 7px 10px; font-size: 0.8rem; }
+.queue-filters .search-input { flex: 1 1 220px; max-width: none; }
+.queue-check { display: inline-flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--ink-muted); cursor: pointer; }
+
+.queue-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+.queue-layout:has(.queue-panel:not([hidden])) { grid-template-columns: minmax(0, 1fr) minmax(360px, 440px); }
+/* With a record open, the list keeps what's needed to pick the next one. */
+.queue-layout:has(.queue-panel:not([hidden])) :is(.q-batch, .q-qty) { display: none; }
+.queue-table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius-lg); }
+.queue-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+.queue-table th { text-align: start; font: 600 0.66rem/1 var(--font-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); padding: 11px 12px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+.queue-table td { padding: 10px 12px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.queue-table tbody tr:last-child td { border-bottom: 0; }
+.queue-table .num { text-align: end; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.queue-row { cursor: pointer; transition: background 0.12s; }
+.queue-row:hover td { background: var(--accent-soft-row); }
+.queue-row.selected td { background: var(--accent-soft); }
+.q-material b { display: block; font-weight: 600; }
+.q-material .small { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.q-batch { white-space: nowrap; }
+.q-batch .small { display: block; }
+.q-next { text-align: end; white-space: nowrap; }
+.q-next .q-stage { display: none; }
+.queue-age { font: 500 0.78rem/1 var(--font-mono); }
+.queue-age.overdue { color: var(--bad); font-weight: 600; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 0.72rem; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill.good { background: var(--good-bg); color: var(--good); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.pill.info { background: var(--accent-soft); color: var(--accent-soft-ink); }
+
+.queue-panel {
+  position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow-y: auto;
+  background: var(--surface-solid); border: 1px solid var(--rule-strong); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover); padding: 16px; display: flex; flex-direction: column; gap: 14px;
+}
+.queue-panel[hidden] { display: none; }
+.queue-panel-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.queue-panel-head h2 { font-size: 1.1rem; margin-top: 8px; }
+.queue-panel .receipt-card { box-shadow: none; border-color: var(--rule); }
+.queue-panel .line-block.focused { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: var(--radius); }
+.queue-panel-files h3 { font-size: 0.9rem; }
+
+@media (max-width: 900px) {
+  .queue-layout:has(.queue-panel:not([hidden])) { grid-template-columns: minmax(0, 1fr); }
+  /* On a phone the record opens as a full-screen sheet. */
+  .queue-panel {
+    position: fixed; inset: 0; top: env(safe-area-inset-top, 0px); max-height: none; z-index: 40;
+    border-radius: 0; padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  }
+  body.queue-sheet-open { overflow: hidden; }
+  /* Rows become two-line cards. */
+  .queue-table thead { display: none; }
+  .queue-table, .queue-table tbody, .queue-table tr, .queue-table td { display: block; }
+  .queue-table tr { display: grid; grid-template-columns: auto 1fr auto; gap: 6px 10px; padding: 12px; border-bottom: 1px solid var(--rule); }
+  .queue-table td { padding: 0; border: 0; }
+  .queue-table .q-record { grid-column: 1; }
+  .queue-table .q-material { grid-column: 2 / 4; }
+  .queue-table .q-batch { grid-column: 1 / 3; }
+  .queue-table .q-wait { grid-column: 3; grid-row: 2; }
+  .queue-table .q-qty { grid-column: 1 / 3; text-align: start; }
+  .queue-table .q-next { grid-column: 1 / 4; display: flex; justify-content: space-between; align-items: center; }
+  .q-next .q-stage { display: inline-flex; }
+}
