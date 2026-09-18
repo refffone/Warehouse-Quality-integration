@@ -984,7 +984,7 @@ function periodRange(period, customDateStr) {
  *  custom date) plus PDF/Excel buttons, reused identically across every
  *  report (Received Log, To Do, History, Code Spec, Master Data,
  *  Suppliers, Codes) instead of building this seven times. */
-function exportBarHtml(id, { withPeriod }) {
+function exportBarHtml(id, { withPeriod, label }) {
   const periodHtml = withPeriod
     ? `
       <div class="subtabs" id="${id}-period">
@@ -997,7 +997,7 @@ function exportBarHtml(id, { withPeriod }) {
     : "";
   return `
     <div class="export-bar hstack" id="${id}">
-      <span class="small muted">${esc(t("reports.export"))}</span>
+      <span class="small muted">${esc(label || t("reports.export"))}</span>
       ${periodHtml}
       <button type="button" class="btn ghost sm" data-export="pdf">${esc(t("reports.pdf"))}</button>
       <button type="button" class="btn ghost sm" data-export="xlsx">${esc(t("reports.excel"))}</button>
@@ -1502,15 +1502,6 @@ async function openAddLineSpecModal(line, receiptType, onDone) {
 
 const RECEIPT_PAGE_SIZE = 80;
 
-/** One page of a To Do / History list. The server decides what counts as
- *  still open (for Warehouse that includes an approved import that hasn't
- *  been weighed yet), searches, and pages. */
-async function fetchReceiptsBucket({ type, bucket, query, offset = 0, limit = RECEIPT_PAGE_SIZE }) {
-  const params = { type, bucket, offset: String(offset), limit: String(limit) };
-  if (query && query.trim()) params.q = query.trim();
-  return api.get(`/api/receipts/detailed?${new URLSearchParams(params)}`);
-}
-
 function buildReceiptCard(receipt, { role, type }) {
   const canDecide = role === "quality";
   const canFinalize = role === "warehouse" && type === "import";
@@ -1657,63 +1648,6 @@ function pagerHtml(current, pageCount) {
       ${parts.join("")}
       <button type="button" class="pager-btn" data-page="${current + 1}" ${current >= pageCount - 1 ? "disabled" : ""}>${esc(t("bucket.nextPage"))}</button>
     </nav>`;
-}
-
-async function renderReceiptsInto(container, { role, type, bucket, query, state }) {
-  container.innerHTML = loadingState();
-  await getSuppliers();
-  // Refresh and coming back to the screen keep the page you were on.
-  let pageIndex = Math.max(0, state?.page || 0);
-  let page = await fetchReceiptsBucket({ type, bucket, query, offset: pageIndex * RECEIPT_PAGE_SIZE });
-  // The list may have shrunk since (records decided elsewhere): show its last page instead.
-  if (page.total > 0 && pageIndex * RECEIPT_PAGE_SIZE >= page.total) {
-    pageIndex = Math.ceil(page.total / RECEIPT_PAGE_SIZE) - 1;
-    page = await fetchReceiptsBucket({ type, bucket, query, offset: pageIndex * RECEIPT_PAGE_SIZE });
-  }
-  if (!container.isConnected) return;
-  if (state) state.page = pageIndex;
-
-  if (page.total === 0) {
-    const key = query && query.trim()
-      ? null
-      : bucket === "history"
-        ? type === "sample" ? "bucket.noDecidedSamples" : "bucket.noDecidedImports"
-        : type === "sample" ? "bucket.noPendingSamples" : "bucket.noPendingImports";
-    container.innerHTML = key
-      ? emptyState(icons.inbox, t(key))
-      : emptyState(icons.search, t("bucket.noResultsFor", { query }));
-    return;
-  }
-
-  // One page at a time, with the page controls above and below the list.
-  const pageCount = Math.ceil(page.total / RECEIPT_PAGE_SIZE);
-  const first = pageIndex * RECEIPT_PAGE_SIZE + 1;
-  const last = pageIndex * RECEIPT_PAGE_SIZE + page.items.length;
-  const footerHtml = `
-    <span class="small muted">${esc(t("bucket.rangeOf", { from: first, to: last, total: page.total }))}</span>
-    ${pagerHtml(pageIndex, pageCount)}`;
-
-  container.innerHTML = "";
-  const top = document.createElement("div");
-  top.className = "list-footer list-footer-top";
-  top.innerHTML = footerHtml;
-  const list = document.createElement("div");
-  list.className = "receipt-list";
-  const bottom = document.createElement("div");
-  bottom.className = "list-footer";
-  bottom.innerHTML = footerHtml;
-  container.append(top, list, bottom);
-
-  for (const r of page.items) list.appendChild(buildReceiptCard(r, { role, type }));
-  enrichRetestLabels(list);
-
-  container.querySelectorAll(".pager [data-page]").forEach((btn) =>
-    btn.addEventListener("click", async () => {
-      if (state) state.page = Number(btn.dataset.page);
-      await renderReceiptsInto(container, { role, type, bucket, query, state });
-      container.scrollIntoView({ block: "start", behavior: "smooth" });
-    })
-  );
 }
 
 /** A batch marked as a retest only carries the raw id of the batch it
@@ -2669,101 +2603,258 @@ async function viewWarehouseQueue() {
   if (keepScroll) window.scrollTo(0, keepScroll);
 }
 
-// ---------------------------------------------------------------- view: receipt buckets (To Do / History)
+// ---------------------------------------------------------------- view: History (register, both roles)
 
-// Remembers each role+bucket's last-used Imports/Samples toggle and search
-// text, so switching tabs and coming back doesn't lose your place.
-const listState = {};
-function getListState(role, bucket) {
-  const key = `${role}:${bucket}`;
-  if (!listState[key]) listState[key] = { type: "import", query: "", page: 0 };
-  return listState[key];
+const histState = { period: "all", from: "", to: "", decision: "", type: "", kind: "", supplier: "", q: "", page: 0, selected: null, selectedRow: null };
+
+/** The period filter as an ISO from/to range (local days). */
+function historyRange() {
+  const s = histState;
+  const now = new Date();
+  const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  if (s.period === "month") return { from: new Date(now.getFullYear(), now.getMonth(), 1).toISOString(), to: now.toISOString() };
+  if (s.period === "90") return { from: dayStart(new Date(now - 89 * 86400000)).toISOString(), to: now.toISOString() };
+  if (s.period === "year") return { from: new Date(now.getFullYear(), 0, 1).toISOString(), to: now.toISOString() };
+  if (s.period === "custom") {
+    const r = {};
+    if (s.from) r.from = new Date(`${s.from}T00:00:00`).toISOString();
+    if (s.to) r.to = new Date(`${s.to}T23:59:59`).toISOString();
+    return r;
+  }
+  return {};
 }
 
-const BUCKET_COPY = {
-  todo: { warehouse: "bucket.todoCopy.warehouse", quality: "bucket.todoCopy.quality" },
-  history: { warehouse: "bucket.historyCopy.warehouse", quality: "bucket.historyCopy.quality" },
-};
-
-/** Which report (if any) this role/bucket combination can export — the
- *  only three of the four combinations the user actually asked for:
- *  Warehouse's Received Log lives on their History tab (it is, in effect,
- *  a log of everything received over a period); Quality gets both their
- *  To Do (now, no period) and History (period) exported. */
-function bucketExport(role, bucket) {
-  if (role === "warehouse" && bucket === "history") return { path: "received-log", withPeriod: true, prefix: "received-log" };
-  if (role === "quality" && bucket === "todo") return { path: "todos", withPeriod: false, prefix: "todo" };
-  if (role === "quality" && bucket === "history") return { path: "history", withPeriod: true, prefix: "history" };
-  return null;
+function historyParams() {
+  const s = histState;
+  const p = { ...historyRange() };
+  for (const k of ["decision", "type", "kind", "supplier", "q"]) if (s[k]) p[k] = s[k];
+  return p;
 }
 
-async function viewReceiptBucket({ role, bucket }) {
-  beginView();
-  const state = getListState(role, bucket);
-  const view = document.getElementById("view");
-  const title = bucket === "history" ? t("bucket.historyTitle") : t("bucket.todoTitle");
-  const exportInfo = bucketExport(role, bucket);
+function historyDecisionHtml(row) {
+  if (!row.status) return `<span class="muted">—</span>`;
+  return statusPill(row.concession ? "concession" : row.status);
+}
 
-  const receiveSampleBtn =
-    role === "quality" && bucket === "todo"
-      ? `<button type="button" class="btn primary" id="receive-sample-btn">${esc(t("receive.sampleButton"))}</button>`
-      : "";
-  view.innerHTML = `
-    <div class="view-head"><div><h1>${esc(title)}</h1><p>${esc(t(BUCKET_COPY[bucket][role]))}</p></div>${receiveSampleBtn}</div>
-    <div class="list-controls">
-      <div class="subtabs">
-        <button class="subtab-btn${state.type === "import" ? " active" : ""}" data-t="import">${esc(t("bucket.imports"))}</button>
-        <button class="subtab-btn${state.type === "sample" ? " active" : ""}" data-t="sample">${esc(t("bucket.samples"))}</button>
+function historyRowHtml(row, role) {
+  const decided = row.decided_at ? esc(fmtDate(row.decided_at)) : `<span class="muted">—</span>`;
+  const qty = (v) => (v == null ? `<span class="muted">—</span>` : `<bdi>${esc(v)} ${esc(row.unit)}</bdi>`);
+  const material = `<b>${bdi(row.material_name || row.material_name_text)}</b>
+    <span class="small muted">${row.material_code ? `<bdi class="mono">${esc(row.material_code)}</bdi> · ` : ""}${bdi(row.supplier_name)} · ${receiptNoHtml(row)}</span>`;
+  const batch = `<bdi class="mono">${esc(row.supplier_batch_no || "—")}</bdi>${row.internal_batch_no ? `<span class="small muted"><bdi class="mono">${esc(row.internal_batch_no)}</bdi></span>` : ""}`;
+  if (role === "quality") {
+    const accepted = row.status === "rejected" ? 0 : (row.qty_accepted ?? row.qty_as_received);
+    return `
+      <tr class="queue-row hist-row" data-batch-id="${row.batch_id}" data-receipt-id="${row.receipt_id}" tabindex="0">
+        <td class="q-date">${decided}</td>
+        <td class="q-record">${queueCodeBadge(row)}</td>
+        <td class="q-material">${material}</td>
+        <td class="q-batch">${batch}</td>
+        <td class="q-qty num">${qty(accepted)}</td>
+        <td class="q-status">${historyDecisionHtml(row)}</td>
+        <td class="q-coa"><button type="button" class="btn sm ghost" data-coa="${row.batch_id}" data-format="pdf">${esc(t("reports.pdf"))}</button><button type="button" class="btn sm ghost" data-coa="${row.batch_id}" data-format="xlsx">${esc(t("reports.excel"))}</button></td>
+      </tr>`;
+  }
+  const diff = row.qty_actual_weighed == null || !Number(row.qty_as_received)
+    ? `<span class="muted">—</span>`
+    : (() => {
+        const pct = ((row.qty_actual_weighed - row.qty_as_received) / row.qty_as_received) * 100;
+        return `<span class="hist-diff${Math.abs(pct) >= 1 ? " off" : ""}">${pct > 0 ? "+" : ""}${pct.toFixed(1)}%</span>`;
+      })();
+  return `
+    <tr class="queue-row hist-row" data-batch-id="${row.batch_id}" data-receipt-id="${row.receipt_id}" tabindex="0">
+      <td class="q-date">${decided}</td>
+      <td class="q-material">${material}</td>
+      <td class="q-batch">${batch}</td>
+      <td class="q-qty num">${qty(row.qty_as_received)}</td>
+      <td class="q-actual num">${qty(row.qty_actual_weighed)}</td>
+      <td class="q-diff num">${diff}</td>
+      <td class="q-status">${historyDecisionHtml(row)}</td>
+    </tr>`;
+}
+
+async function renderHistoryPanel(panel, row, role) {
+  panel.hidden = false;
+  panel.innerHTML = loadingState();
+  let receipt;
+  try {
+    receipt = await api.get(`/api/receipts/${row.receipt_id}`);
+  } catch (err) {
+    panel.innerHTML = errorState(err.message);
+    return;
+  }
+  const attachments = role === "quality" ? await api.get(`/api/receipt-lines/${row.line_id}/attachments`).catch(() => []) : null;
+  if (!panel.isConnected || histState.selected !== row.batch_id) return;
+  panel.innerHTML = `
+    <div class="queue-panel-head">
+      <div>
+        ${role === "quality" ? queueCodeBadge(row) : ""} ${historyDecisionHtml(row)}
+        <h2>${bdi(row.material_name || row.material_name_text)}</h2>
+        <div class="small muted">${receiptNoHtml(row)} · ${bdi(row.supplier_name)} · ${esc(fmtReceived(row.received_at))}</div>
       </div>
-      <div class="list-actions">
-        <input type="search" class="search-input" id="receipt-search"
-          placeholder="${esc(t("bucket.searchPlaceholder"))}" value="${esc(state.query)}" />
-        <button type="button" class="btn ghost sm" id="receipt-refresh" title="${esc(t("bucket.refreshHint"))}">↻ ${esc(t("bucket.refresh"))}</button>
-      </div>
+      <button type="button" class="icon-btn" data-close-panel aria-label="${esc(t("queue.close"))}">${icons.x}</button>
     </div>
-    ${exportInfo ? exportBarHtml("bucket-export", { withPeriod: exportInfo.withPeriod }) : ""}
-    <div id="receipt-list"></div>
-  `;
+    <div data-panel-card></div>
+    ${attachments ? `<div class="queue-panel-files" data-line-id="${row.line_id}"><h3>${esc(t("queue.files"))}</h3>${attachmentsBlockHtml(attachments)}</div>` : ""}`;
+  const card = buildReceiptCard(receipt, { role, type: receipt.type });
+  card.querySelector(`.line-block[data-line-id="${row.line_id}"]`)?.classList.add("focused");
+  panel.querySelector("[data-panel-card]").appendChild(card);
+  enrichRetestLabels(card);
+  if (attachments) wireDossierImportEntries(panel.querySelector(".queue-panel-files"), () => refreshCurrentView());
+  panel.querySelector("[data-close-panel]").addEventListener("click", () => {
+    histState.selected = null;
+    panel.hidden = true;
+    panel.innerHTML = "";
+    document.querySelectorAll(".hist-row.selected").forEach((r) => r.classList.remove("selected"));
+    document.body.classList.remove("queue-sheet-open");
+  });
+  document.body.classList.toggle("queue-sheet-open", window.matchMedia("(max-width: 900px)").matches);
+}
 
-  view.querySelectorAll("[data-t]").forEach((btn) =>
+async function viewHistoryRegister() {
+  const generation = beginView();
+  const role = getRole();
+  const view = document.getElementById("view");
+  const keepScroll = document.getElementById("history-register") ? window.scrollY : 0;
+  if (!document.getElementById("history-register")) view.innerHTML = loadingState();
+
+  const s = histState;
+  const params = new URLSearchParams({ ...historyParams(), offset: String(s.page * RECEIPT_PAGE_SIZE), limit: String(RECEIPT_PAGE_SIZE) });
+  let data;
+  try {
+    [data] = await Promise.all([api.get(`/api/history?${params}`), getSuppliers()]);
+  } catch (err) {
+    view.innerHTML = errorState(err.message);
+    return;
+  }
+  const pageCount = Math.ceil(data.total / RECEIPT_PAGE_SIZE);
+  if (data.total > 0 && s.page >= pageCount) {
+    s.page = pageCount - 1;
+    return viewHistoryRegister();
+  }
+  if (isStaleView(generation)) return;
+
+  const first = s.page * RECEIPT_PAGE_SIZE + 1;
+  const last = s.page * RECEIPT_PAGE_SIZE + data.items.length;
+  const rangeHtml = data.total
+    ? `<span class="small muted">${esc(t("bucket.rangeOf", { from: first, to: last, total: data.total }))}</span>${pagerHtml(s.page, pageCount)}`
+    : "";
+  const quality = role === "quality";
+  const headHtml = quality
+    ? `<th class="q-date">${esc(t("hist.col.decided"))}</th><th>${esc(t("queue.col.record"))}</th><th>${esc(t("queue.col.material"))}</th><th class="q-batch">${esc(t("queue.col.batch"))}</th><th class="num q-qty">${esc(t("hist.col.accepted"))}</th><th>${esc(t("wh.col.decision"))}</th><th class="q-coa">${esc(t("hist.col.coa"))}</th>`
+    : `<th class="q-date">${esc(t("hist.col.decided"))}</th><th>${esc(t("queue.col.material"))}</th><th class="q-batch">${esc(t("queue.col.batch"))}</th><th class="num q-qty">${esc(t("wh.col.asReceived"))}</th><th class="num q-actual">${esc(t("wh.col.actual"))}</th><th class="num q-diff">${esc(t("hist.col.difference"))}</th><th>${esc(t("wh.col.decision"))}</th>`;
+  const seg = (key, options) => `
+    <span class="seg">${options.map(([value, label]) => `<button type="button" data-${key}="${value}" class="${s[key] === value ? "on" : ""}">${esc(label)}</button>`).join("")}</span>`;
+  const filtered = s.period !== "all" || s.decision || s.type || s.kind || s.supplier || s.q;
+
+  view.innerHTML = `
+    <div id="history-register">
+      <div class="view-head"><div><h1>${esc(t("bucket.historyTitle"))}</h1><p>${esc(t(quality ? "bucket.historyCopy.quality" : "bucket.historyCopy.warehouse"))}</p></div></div>
+      <div class="queue-controls">
+        <div class="queue-filters">
+          <select id="hist-period" aria-label="${esc(t("hist.period"))}">
+            ${["all", "month", "90", "year", "custom"].map((p) => `<option value="${p}" ${s.period === p ? "selected" : ""}>${esc(t(`hist.period.${p}`))}</option>`).join("")}
+          </select>
+          <span class="hist-custom" ${s.period === "custom" ? "" : "hidden"}>
+            <input type="date" id="hist-from" value="${esc(s.from)}" aria-label="${esc(t("hist.from"))}" />
+            <span class="muted">–</span>
+            <input type="date" id="hist-to" value="${esc(s.to)}" aria-label="${esc(t("hist.to"))}" />
+          </span>
+          ${seg("decision", [["", t("queue.typeAll")], ["approved", t("hist.decision.approved")], ["partial", t("hist.decision.partial")], ["rejected", t("hist.decision.rejected")]])}
+          ${seg("type", [["", t("queue.typeAll")], ["import", t("bucket.imports")], ["sample", t("bucket.samples")]])}
+          ${quality ? `<select id="hist-kind" aria-label="${esc(t("queue.kind"))}"><option value="">${esc(t("queue.kindAll"))}</option>${["first", "regular", "sample"].map((k) => `<option value="${k}" ${s.kind === k ? "selected" : ""}>${esc(t(`kind.${k}`))}</option>`).join("")}</select>` : ""}
+          <select id="hist-supplier" aria-label="${esc(t("queue.supplier"))}">
+            <option value="">${esc(t("queue.supplierAll"))}</option>
+            ${data.suppliers.map((sp) => `<option value="${sp.id}" ${String(sp.id) === String(s.supplier) ? "selected" : ""}>${esc(sp.name)} (${sp.n})</option>`).join("")}
+          </select>
+          <input type="search" class="search-input" id="receipt-search" placeholder="${esc(t(quality ? "bucket.searchPlaceholder" : "wh.searchPlaceholder"))}" value="${esc(s.q)}" />
+          <button type="button" class="btn ghost sm" id="receipt-refresh" title="${esc(t("bucket.refreshHint"))}">↻ ${esc(t("bucket.refresh"))}</button>
+        </div>
+        <div class="hist-exports">
+          ${exportBarHtml("history-export", { withPeriod: false, label: t("hist.exportList") })}
+          ${quality ? "" : exportBarHtml("received-log-export", { withPeriod: true, label: t("hist.receivedLog") })}
+        </div>
+      </div>
+      <div class="queue-layout">
+        <div class="queue-list" id="receipt-list">
+          ${data.items.length ? `
+          <div class="list-footer list-footer-top">${rangeHtml}</div>
+          <div class="queue-table-wrap">
+            <table class="queue-table hist-table ${quality ? "hist-quality" : "hist-warehouse"}">
+              <thead><tr>${headHtml}</tr></thead>
+              <tbody>${data.items.map((r) => historyRowHtml(r, role)).join("")}</tbody>
+            </table>
+          </div>
+          <div class="list-footer">${rangeHtml}</div>` : emptyState(filtered ? icons.search : icons.inbox, t(filtered ? "queue.emptyFiltered" : "hist.empty"))}
+        </div>
+        <aside class="queue-panel" id="queue-panel" hidden></aside>
+      </div>
+    </div>`;
+
+  const rerender = (changes) => {
+    Object.assign(histState, { page: 0, ...changes });
+    viewHistoryRegister();
+  };
+  document.getElementById("hist-period").addEventListener("change", (e) => {
+    if (e.target.value === "custom") {
+      histState.period = "custom";
+      view.querySelector(".hist-custom").hidden = false;
+      document.getElementById("hist-from").focus();
+      return;
+    }
+    rerender({ period: e.target.value });
+  });
+  document.getElementById("hist-from").addEventListener("change", (e) => rerender({ period: "custom", from: e.target.value }));
+  document.getElementById("hist-to").addEventListener("change", (e) => rerender({ period: "custom", to: e.target.value }));
+  view.querySelectorAll("[data-decision]").forEach((b) => b.addEventListener("click", () => rerender({ decision: b.dataset.decision })));
+  view.querySelectorAll(".queue-filters [data-type]").forEach((b) => b.addEventListener("click", () => rerender({ type: b.dataset.type })));
+  document.getElementById("hist-kind")?.addEventListener("change", (e) => rerender({ kind: e.target.value }));
+  document.getElementById("hist-supplier").addEventListener("change", (e) => rerender({ supplier: e.target.value }));
+  let searchTimer;
+  document.getElementById("receipt-search").addEventListener("input", (e) => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => rerender({ q: e.target.value.trim() }), 250);
+  });
+  document.getElementById("receipt-refresh").addEventListener("click", () => refreshCurrentView());
+  wireExportBar("history-export", "history-register", { withPeriod: false, getParams: historyParams, filenamePrefix: "history" });
+  if (!quality) wireExportBar("received-log-export", "received-log", { withPeriod: true, filenamePrefix: "received-log" });
+  view.querySelectorAll(".pager [data-page]").forEach((btn) =>
     btn.addEventListener("click", () => {
-      state.type = btn.dataset.t;
-      state.page = 0;
-      viewReceiptBucket({ role, bucket });
+      histState.page = Number(btn.dataset.page);
+      viewHistoryRegister().then(() => document.getElementById("receipt-list")?.scrollIntoView({ block: "start", behavior: "smooth" }));
     })
   );
+  view.querySelectorAll(".hist-row [data-coa]").forEach((btn) =>
+    btn.addEventListener("click", () => downloadCoa(btn.dataset.coa, btn.dataset.format))
+  );
 
-  if (exportInfo) {
-    wireExportBar("bucket-export", exportInfo.path, { withPeriod: exportInfo.withPeriod, filenamePrefix: exportInfo.prefix });
-  }
-  document.getElementById("receive-sample-btn")?.addEventListener("click", () => {
-    receiveWizard = freshReceiveWizard();
-    goTo("receive");
+  const rows = new Map(data.items.map((r) => [r.batch_id, r]));
+  const panel = document.getElementById("queue-panel");
+  const select = (row) => {
+    histState.selected = row.batch_id;
+    histState.selectedRow = row;
+    view.querySelectorAll(".hist-row").forEach((tr) => tr.classList.toggle("selected", Number(tr.dataset.batchId) === row.batch_id));
+    renderHistoryPanel(panel, row, role);
+  };
+  view.querySelectorAll(".hist-row").forEach((tr) => {
+    const row = rows.get(Number(tr.dataset.batchId));
+    tr.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      select(row);
+    });
+    tr.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.target.closest("button")) select(row);
+    });
   });
-
-  let debounceTimer;
-  document.getElementById("receipt-search").addEventListener("input", (e) => {
-    state.query = e.target.value;
-    state.page = 0;
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query, state });
-    }, 250);
-  });
-
-  const refreshBtn = document.getElementById("receipt-refresh");
-  refreshBtn.addEventListener("click", async () => {
-    refreshBtn.disabled = true;
-    try {
-      await renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query, state });
-      refreshTodoCount();
-      refreshNotifCount();
-    } finally {
-      refreshBtn.disabled = false;
+  if (histState.selected) {
+    const row = rows.get(histState.selected) ?? histState.selectedRow;
+    histState.selectedRow = row;
+    if (row) {
+      view.querySelector(`.hist-row[data-batch-id="${row.batch_id}"]`)?.classList.add("selected");
+      renderHistoryPanel(panel, row, role);
     }
-  });
-
-  await renderReceiptsInto(document.getElementById("receipt-list"), { role, type: state.type, bucket, query: state.query, state });
+  }
+  if (keepScroll) window.scrollTo(0, keepScroll);
 }
 
 // ---------------------------------------------------------------- view: Codes
@@ -4251,12 +4342,9 @@ async function renderView() {
     } else if (tab === "todo" && role === "warehouse") {
       lastRouteArgs = { fn: viewWarehouseQueue };
       await viewWarehouseQueue();
-    } else if (tab === "todo") {
-      lastRouteArgs = { fn: viewReceiptBucket, args: { role, bucket: "todo" } };
-      await viewReceiptBucket({ role, bucket: "todo" });
     } else if (tab === "history") {
-      lastRouteArgs = { fn: viewReceiptBucket, args: { role, bucket: "history" } };
-      await viewReceiptBucket({ role, bucket: "history" });
+      lastRouteArgs = { fn: viewHistoryRegister };
+      await viewHistoryRegister();
     } else if (role === "quality" && tab === "codes") {
       lastRouteArgs = { fn: viewCodes };
       await viewCodes();

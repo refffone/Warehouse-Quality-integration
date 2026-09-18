@@ -821,3 +821,21 @@ details.wh-group[open] > summary::before { transform: rotate(90deg); }
   .wh-table .q-weigh { grid-column: 1 / 4; }
   .weigh-form input { flex: 1; width: auto; }
 }
+
+/* ---------- History register ---------- */
+#history-register { display: flex; flex-direction: column; gap: 18px; }
+.hist-custom { display: inline-flex; align-items: center; gap: 6px; }
+.hist-custom[hidden] { display: none; }
+.hist-custom input { padding: 6px 9px; font-size: 0.8rem; }
+.hist-exports { display: flex; flex-wrap: wrap; gap: 8px 24px; }
+.hist-table .q-date { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hist-table .q-coa { white-space: nowrap; text-align: end; }
+.hist-table .q-coa .btn + .btn { margin-inline-start: 4px; }
+.hist-diff { font: 500 0.78rem/1 var(--font-mono); }
+.hist-diff.off { color: var(--warn); font-weight: 600; }
+.queue-layout:has(.queue-panel:not([hidden])) .hist-table :is(.q-batch, .q-qty, .q-actual, .q-coa) { display: none; }
+@media (max-width: 900px) {
+  .hist-table .q-date { grid-column: 1 / 3; }
+  .hist-table .q-status { grid-column: 3; grid-row: 1; text-align: end; }
+  .hist-table .q-coa, .hist-table .q-actual, .hist-table .q-diff { grid-column: auto; }
+}

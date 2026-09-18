@@ -1,4 +1,5 @@
 import { getSession } from "./auth";
+import { listHistory } from "./routes/history";
 import { listQualityQueue, listWarehouseQueue, qualityQueueCount, warehouseQueueCount } from "./routes/queue";
 import { error, json } from "./http";
 import {
@@ -72,6 +73,7 @@ import {
   exportCodeSpec,
   exportCodesList,
   exportHistory,
+  exportHistoryRegister,
   exportMasterData,
   exportReceivedLog,
   exportSuppliersList,
@@ -347,6 +349,14 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (role === "quality") return json({ count: await qualityQueueCount(env) });
     if (role === "warehouse") return json({ count: await warehouseQueueCount(env) });
     return getTodoCount(env, role);
+  }
+  if (pathname === "/api/history" && method === "GET") {
+    if (!role) return error("Not signed in", 401);
+    return listHistory(request, env, role);
+  }
+  if (pathname === "/api/reports/history-register" && method === "GET") {
+    if (!role) return error("Not signed in", 401);
+    return exportHistoryRegister(request, env, role);
   }
   if (pathname === "/api/warehouse-queue" && method === "GET") {
     if (role !== "warehouse") return error("Only warehouse has this list", 403);
