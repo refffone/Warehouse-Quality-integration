@@ -1587,8 +1587,9 @@ that would have confused anyone using both during the transition:
   set, so weigh-in, expiry alerts and pass rates treat it as accepted,
   while the card, History export, dossier export and COA all show it as a
   concession with its reason.
-- **Addition-note number (رقم اذن الاضافة).** Warehouse can now record it
-  when finalizing the actual quantity (0023, `addition_no`).
+- **Addition-note number (رقم اذن الاضافة).** Warehouse could record it
+  when finalizing the actual quantity (0023, `addition_no`). Superseded
+  by section 28: the addition number is now the receipt number itself.
 
 Also fixed while testing: switching Codes subtabs while the previous
 subtab's data was still loading let the stale render land afterwards and
@@ -1808,7 +1809,49 @@ SQL file set; the pieces the app itself needed:
   preparing multi-megabyte files, so the history is written as ~80 KB
   parts run in order.
 
-## 28. Next Step
+## 28. Receipt numbers, Quality-received samples, deliveries as receipts
+
+In the Access log, the addition-note number (رقم اذن الاضافة) is the
+warehouse's receipt number: records sharing it were one delivery. It runs
+as one continuous serial (about 34–1037 in 2024, 1046–1958 in 2025,
+1948–2302 in 2026). Migration 0027 makes the app work the same way.
+
+- **`receipts.receipt_no`** is the number people see ("Receipt #2303").
+  The app issues it (`nextReceiptNo` in `src/db.ts`) from
+  `receipt_number_series`: warehouse deliveries continue the addition-note
+  serial; a sample Quality received directly gets `QS-0001`, `QS-0002`, …
+  so the two can never collide. Numbers already on any receipt, including
+  migrated ones, are skipped, and app-issued numbers have a unique index.
+  The separate "addition note no." field on finalize-weight is gone.
+- **Quality receives samples directly.** A "Receive sample" button on
+  Quality's To Do opens the same Receive wizard with the type fixed to
+  sample. `receipts.received_by` records who registered it, and every
+  route Warehouse can reach filters with `visibleToSql(role)`: lists,
+  To Do count, search, receipt by id, sample sender, batch summary, the
+  retest picker and the received-log export. Warehouse gets a 404 for
+  such a receipt, as if it didn't exist. `POST /api/receipts` now accepts
+  Quality, for samples only.
+- **Deliveries as receipts.** Migrated records with the same addition
+  number, supplier, kind (supply/sample) and receiving day were merged
+  into one receipt with several lines: 405 records into 152 receipts, so
+  2,419 records are now 2,166 receipts. Undated records are never merged.
+  The merged receipt keeps the earliest time and stays open if any of its
+  records was still under test. Access reused about 113 numbers across
+  different suppliers or days (some are typos, e.g. 20701); those stay
+  separate receipts, listed for review outside the repo. Migrated records
+  Access never numbered show "No receipt #".
+- **Access references move to the line.** Each Access record is one line,
+  so `receipt_lines.legacy_ref` (unique) now identifies it; the receipt
+  keeps its first record's reference as the "From Access" marker. The
+  attachment lookup (`/api/receipt-lines/by-legacy-ref`) and the history
+  import's "already loaded" checks use the line reference, so re-running
+  the import after the merge adds nothing.
+
+Verified locally: the history rebuilt from the regenerated import files
+matches the migrated database receipt for receipt (2,166 receipts, 152
+multi-line, 470 open, serial continuing from 2302).
+
+## 29. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Things

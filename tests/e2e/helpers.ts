@@ -40,12 +40,6 @@ export async function goToNav(page: Page, tab: NavTab) {
   await page.click(`.tab-btn[data-tab="${tab}"]`);
 }
 
-async function currentToastText(page: Page): Promise<string> {
-  const toast = page.locator(".toast").last();
-  await expect(toast).toBeVisible();
-  return (await toast.textContent()) ?? "";
-}
-
 export interface BatchInput {
   batchNo: string;
   /** Filled directly into qty_as_received — for a plain batch this is the
@@ -81,16 +75,29 @@ export interface ReceiveDetails {
   createdBy: string;
   receivedAt?: string; // datetime-local value, defaults to "now" already prefilled by the app
   sampleSentBy?: string;
+  /** Quality registering a sample it received directly, from the To Do
+   *  screen's "Receive sample" button (the type is fixed to sample). */
+  byQuality?: boolean;
 }
 
 /** Drives the full two-step Receive wizard for one receipt (one or more
  *  material lines, each with one or more supplier batches) and returns
- *  the new receipt's id, read back from the confirmation toast. */
+ *  the new receipt's id. */
 export async function receiveMaterial(
   page: Page,
   details: ReceiveDetails,
   lines: MaterialLineInput[]
 ): Promise<number> {
+  return (await receiveMaterialWithNumber(page, details, lines)).id;
+}
+
+/** Same as receiveMaterial, also returning the receipt number it was given
+ *  (the warehouse serial, or QS-#### for a Quality-received sample). */
+export async function receiveMaterialWithNumber(
+  page: Page,
+  details: ReceiveDetails,
+  lines: MaterialLineInput[]
+): Promise<{ id: number; receiptNo: string }> {
   // app.js caches suppliers/materials in module-level variables and only
   // refetches when explicitly forced — the first render after login
   // (the To Do list, which needs supplier names for its cards) already
@@ -99,10 +106,14 @@ export async function receiveMaterial(
   // reload to reset it. A real user hitting this would just refresh, so
   // this is the equivalent click-free step of doing that.
   await page.reload({ waitUntil: "domcontentloaded" });
-  await goToNav(page, "receive");
-
-  if (details.type === "sample") {
-    await page.selectOption("#rf-type", "sample");
+  if (details.byQuality) {
+    await goToNav(page, "todo");
+    await page.click("#receive-sample-btn");
+  } else {
+    await goToNav(page, "receive");
+    if (details.type === "sample") {
+      await page.selectOption("#rf-type", "sample");
+    }
   }
   await page.fill('input[name="created_by"]', details.createdBy);
   // #rf-supplier is a live search-and-select combo, not a plain input —
@@ -180,11 +191,17 @@ export async function receiveMaterial(
     }
   }
 
+  // The toast shows the receipt number people use, not the internal id,
+  // so read both from the server's answer.
+  const created = page.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/api/receipts" && r.request().method() === "POST"
+  );
   await page.click('#receive-step2-form button[type="submit"]');
-  const text = await currentToastText(page);
-  const match = /#(\d+)/.exec(text);
-  if (!match) throw new Error(`Couldn't find a receipt id in toast: "${text}"`);
-  return Number(match[1]);
+  const res = await created;
+  if (!res.ok()) throw new Error(`Registering the receipt failed: ${res.status()} ${await res.text()}`);
+  const body = (await res.json()) as { id: number; receipt_no: string };
+  await expect(page.locator(".toast").last()).toContainText(body.receipt_no);
+  return { id: body.id, receiptNo: body.receipt_no };
 }
 
 /** Navigates to To Do or History, switches to the Imports/Samples subtab,

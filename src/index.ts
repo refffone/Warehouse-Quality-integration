@@ -202,7 +202,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   const rejectedBatchesMatch = pathname.match(/^\/api\/materials\/([^/]+)\/rejected-batches$/);
   if (rejectedBatchesMatch && method === "GET") {
     if (!role) return error("Not signed in", 401);
-    return listRejectedBatchesForMaterial(env, decodeURIComponent(rejectedBatchesMatch[1]));
+    return listRejectedBatchesForMaterial(env, role, decodeURIComponent(rejectedBatchesMatch[1]));
   }
   if (pathname === "/api/material-types" && method === "GET") {
     if (role !== "quality") return error("Material types are a quality-only view", 403);
@@ -326,8 +326,10 @@ async function route(request: Request, env: Env): Promise<Response> {
   // Receipts — everything below requires an X-Role header identifying
   // the caller as warehouse or quality (stand-in for real auth).
   if (pathname === "/api/receipts" && method === "POST") {
-    if (role !== "warehouse") return error("Only warehouse can register receipts", 403);
-    return createReceipt(request, env);
+    // Quality registers samples it received directly (createReceipt checks
+    // the type); everything else comes in through the warehouse.
+    if (!role) return error("Not signed in", 401);
+    return createReceipt(request, env, role);
   }
   if (pathname === "/api/receipts" && method === "GET") {
     if (!role) return error("Not signed in", 401);
@@ -357,7 +359,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   const batchSummaryMatch = pathname.match(/^\/api\/batches\/(\d+)\/summary$/);
   if (batchSummaryMatch && method === "GET") {
     if (!role) return error("Not signed in", 401);
-    return getBatchSummary(env, Number(batchSummaryMatch[1]));
+    return getBatchSummary(env, role, Number(batchSummaryMatch[1]));
   }
 
   // Test Incomings — Quality's third core function.
