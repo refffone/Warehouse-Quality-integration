@@ -799,3 +799,25 @@ table.data-table { width: 100%; min-width: 340px; border-collapse: collapse; fon
   .queue-table .q-next { grid-column: 1 / 4; display: flex; justify-content: space-between; align-items: center; }
   .q-next .q-stage { display: inline-flex; }
 }
+
+/* ---------- Warehouse To Do ---------- */
+#warehouse-queue { display: flex; flex-direction: column; gap: 18px; }
+.wh-group { display: flex; flex-direction: column; gap: 10px; }
+.wh-group + .wh-group { margin-top: 22px; }
+.wh-group-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.wh-group-head h2 { font-size: 1.05rem; }
+details.wh-group > summary { cursor: pointer; list-style: none; }
+details.wh-group > summary::-webkit-details-marker { display: none; }
+details.wh-group > summary::before { content: "▸"; color: var(--ink-faint); transition: transform 0.15s; display: inline-block; }
+details.wh-group[open] > summary::before { transform: rotate(90deg); }
+.wh-empty { padding: 14px 16px; border: 1px dashed var(--rule-strong); border-radius: var(--radius-lg); }
+.wh-access-toggle { align-self: flex-start; }
+.weigh-form { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.weigh-form input { width: 120px; padding: 6px 9px; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.queue-layout:has(.queue-panel:not([hidden])) .wh-table :is(.q-batch, .q-qty) { display: none; }
+@media (max-width: 900px) {
+  .wh-table .q-status { grid-column: 1 / 3; }
+  .wh-table .q-weigh { grid-column: 1 / 4; }
+  .weigh-form input { flex: 1; width: auto; }
+}

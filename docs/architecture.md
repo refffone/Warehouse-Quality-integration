@@ -1960,7 +1960,26 @@ are unchanged (steps 2–3 of the overhaul proposal).
   panel. On a phone, rows become two-line cards and the panel a
   full-screen sheet.
 
-## 32. Next Step
+## 32. Warehouse's To Do: weigh in the row, follow what's with Quality
+
+Step 2 of the overhaul. Warehouse's To Do has two groups
+(`GET /api/warehouse-queue`, `viewWarehouseQueue`):
+
+- **To weigh or count** — Warehouse's own job: approved/partial import
+  batches it received with no actual quantity yet. The actual weight or
+  count is typed into the row (Enter or Save), calling the existing
+  `finalize-weight` endpoint. The To Do badge counts only these.
+- **With Quality** (collapsed by default) — pending batches it received,
+  read-only, oldest first, with days waiting and the stage in plain words
+  (waiting for a code / for spec, testing, awaiting decision). A sample
+  only says it's with Quality. Access records are left out unless
+  "Include records from Access" is ticked; 80 per page.
+- No record codes anywhere: material codes are real ones or empty
+  (stand-ins are blanked), and search never matches record codes.
+- A row opens the receipt card in the same side panel as Quality's queue
+  (full-screen sheet on a phone).
+
+## 33. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Things

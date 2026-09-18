@@ -1,5 +1,5 @@
 import { getSession } from "./auth";
-import { listQualityQueue, qualityQueueCount } from "./routes/queue";
+import { listQualityQueue, listWarehouseQueue, qualityQueueCount, warehouseQueueCount } from "./routes/queue";
 import { error, json } from "./http";
 import {
   adminCreateUser,
@@ -345,7 +345,12 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (pathname === "/api/receipts/todo-count" && method === "GET") {
     if (!role) return error("Not signed in", 401);
     if (role === "quality") return json({ count: await qualityQueueCount(env) });
+    if (role === "warehouse") return json({ count: await warehouseQueueCount(env) });
     return getTodoCount(env, role);
+  }
+  if (pathname === "/api/warehouse-queue" && method === "GET") {
+    if (role !== "warehouse") return error("Only warehouse has this list", 403);
+    return listWarehouseQueue(request, env);
   }
   if (pathname === "/api/queue" && method === "GET") {
     if (role !== "quality") return error("Only quality has a work queue", 403);
