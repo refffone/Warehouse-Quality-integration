@@ -48,6 +48,7 @@ import {
   uploadAttachment,
 } from "./routes/attachments";
 import { downloadCoa } from "./routes/coa";
+import { listRounds, startRetest } from "./routes/retest";
 import { listNotifications, markNotificationRead } from "./routes/notifications";
 import { getVapidPublicKey, subscribeToPush, unsubscribeFromPush } from "./push";
 import {
@@ -439,10 +440,20 @@ async function route(request: Request, env: Env): Promise<Response> {
     return setLineClassification(request, env, Number(classificationMatch[1]));
   }
 
+  const retestMatch = pathname.match(/^\/api\/batches\/(\d+)\/retest$/);
+  if (retestMatch && method === "POST") {
+    if (role !== "quality") return error("Only quality can start a retest", 403);
+    return startRetest(request, env, Number(retestMatch[1]));
+  }
+  const roundsMatch = pathname.match(/^\/api\/batches\/(\d+)\/rounds$/);
+  if (roundsMatch && method === "GET") {
+    if (role !== "quality") return error("Only quality can see test rounds", 403);
+    return listRounds(env, Number(roundsMatch[1]));
+  }
   const coaMatch = pathname.match(/^\/api\/batches\/(\d+)\/coa$/);
   if (coaMatch && method === "GET") {
     if (role !== "quality") return error("Only quality can export a COA", 403);
-    return downloadCoa(env, Number(coaMatch[1]), url.searchParams.get("format") ?? "pdf");
+    return downloadCoa(env, Number(coaMatch[1]), url.searchParams.get("format") ?? "pdf", Number(url.searchParams.get("round")) || undefined);
   }
 
   // Reports — export as PDF/Excel, branded from Admin panel settings.

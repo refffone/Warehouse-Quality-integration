@@ -137,7 +137,7 @@ export async function exportTodos(request: Request, env: Env): Promise<Response>
     `SELECT COALESCE(r.receipt_no, '—') as receipt_id, r.type, r.received_at, s.name as supplier,
             COALESCE(m.name, rl.material_name_text) as material, rl.material_code,
             rb.supplier_batch_no as batch_no,
-            (SELECT COUNT(*) FROM batch_test_results WHERE batch_id = rb.id) as test_count
+            (SELECT COUNT(*) FROM batch_test_results WHERE batch_id = rb.id AND round_no IS NULL) as test_count
      FROM receipts r
      JOIN receipt_lines rl ON rl.receipt_id = r.id
      JOIN receipt_batches rb ON rb.receipt_line_id = rl.id

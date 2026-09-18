@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures";
-import { decideBatch, goToNav, login, openReceiptCard, receiveMaterial, seedMaterial, seedSpec, seedSupplier } from "./helpers";
+import { decideBatch, goToNav, login, openReceiptCard, receiveMaterial, recordTestResults, seedMaterial, seedSpec, seedSupplier } from "./helpers";
 
 // Quality's To Do as a work queue: one row per pending batch, grouped into
 // stages by what it needs next, worked from the row's own button. Codes
@@ -149,5 +149,94 @@ test.describe("Quality: work queue", () => {
     // The export follows the filters.
     const exported = await page.request.get(`/api/reports/history-register?format=xlsx&q=SM8-B1`);
     expect(exported.status()).toBe(200);
+  });
+
+  test("retests a decided batch from History as a new round", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "SM7-MAT", name: "Retest Binder", unit: "KG" });
+    await seedSpec(page, "SM7-MAT", {
+      title: "Retest spec",
+      created_by: "E2E Quality",
+      parameters: [{ parameter_name: "Purity", param_type: "numeric_range", min_value: 95, max_value: 100, unit: "%" }],
+    });
+    await login(page, "warehouse");
+    await seedSupplier(page, "SM7-SUP", "Retest Supplier");
+    const receiptId = await receiveMaterial(page, { supplierCode: "SM7-SUP", createdBy: "E2E Warehouse" }, [
+      { code: "SM7-MAT", name: "Retest Binder", unit: "KG", batches: [{ batchNo: "SM7-B1", qty: 500 }] },
+    ]);
+
+    // Round 1: tested, approved with an expiry date, weighed.
+    await login(page, "quality");
+    let card = await openReceiptCard(page, "todo", receiptId);
+    await recordTestResults(card, "[data-test]", "E2E Quality", [{ parameterName: "Purity", measuredValue: "97", result: "pass" }]);
+    await card.locator("[data-decide]").click();
+    let decide = page.locator("#decide-form");
+    await decide.locator('input[name="expiry_date"]').fill("2027-01-31");
+    await decide.locator('input[name="decided_by"]').fill("E2E Quality");
+    await decide.locator('button[type="submit"]').click();
+    await expect(decide).toBeHidden();
+    const batchId = (await (await page.request.get(`/api/receipts/${receiptId}`)).json()).lines[0].batches[0].id;
+    const firstNo = (await (await page.request.get(`/api/receipts/${receiptId}`)).json()).lines[0].batches[0].internal_batch_no;
+    await login(page, "warehouse");
+    await goToNav(page, "todo");
+    await page.locator(`.wh-row[data-receipt-id="${receiptId}"] form[data-weigh] input`).fill("499");
+    await page.locator(`.wh-row[data-receipt-id="${receiptId}"] form[data-weigh] input`).press("Enter");
+    await expect(page.locator(`.wh-row[data-receipt-id="${receiptId}"] form[data-weigh]`)).toHaveCount(0);
+
+    // Quality starts a retest from History, putting the stock on hold.
+    await login(page, "quality");
+    card = await openReceiptCard(page, "history", receiptId);
+    await card.locator("[data-retest]").click();
+    const retest = page.locator("#retest-form");
+    await retest.locator('select[name="reason"]').selectOption("shelf_life");
+    await expect(retest.locator('input[name="on_hold"]')).toBeChecked();
+    await retest.locator('input[name="started_by"]').fill("E2E Quality");
+    await retest.locator('button[type="submit"]').click();
+    await expect(retest).toBeHidden();
+
+    // It's back in Quality's To Do under Retest.
+    await goToNav(page, "todo");
+    await page.locator('[data-stage="retest"]').click();
+    const row = page.locator(`.queue-row[data-receipt-id="${receiptId}"]`);
+    await expect(row).toContainText("Retest · round 2 · Shelf life ending");
+    await expect(row.locator("[data-next]")).toHaveText("Record results");
+
+    // Warehouse sees it on hold, without the reason.
+    await login(page, "warehouse");
+    await goToNav(page, "todo");
+    await page.locator("#wh-with-quality summary").click();
+    const held = page.locator(`#wh-with-quality .wh-row[data-receipt-id="${receiptId}"]`);
+    await expect(held).toContainText("Retest · on hold");
+    await expect(held).not.toContainText("Shelf life");
+
+    // Round 2: new results, approved with a new expiry; same internal batch number.
+    await login(page, "quality");
+    card = await openReceiptCard(page, "todo", receiptId);
+    await recordTestResults(card, "[data-test]", "E2E Quality", [{ parameterName: "Purity", measuredValue: "96", result: "pass" }]);
+    await card.locator("[data-decide]").click();
+    decide = page.locator("#decide-form");
+    await expect(decide).toContainText("Retest, round 2");
+    await expect(decide.locator('input[name="expiry_date"]')).toHaveValue("2027-01-31");
+    await decide.locator('input[name="expiry_date"]').fill("2027-07-31");
+    await decide.locator('input[name="decided_by"]').fill("E2E Quality");
+    await decide.locator('button[type="submit"]').click();
+    await expect(decide).toBeHidden();
+
+    const batch = (await (await page.request.get(`/api/receipts/${receiptId}`)).json()).lines[0].batches[0];
+    expect(batch).toMatchObject({ status: "approved", current_round: 2, on_hold: 0, internal_batch_no: firstNo, qty_actual_weighed: 499 });
+    expect(batch.expiry_date).toContain("2027-07-31");
+    expect(batch.test_results.map((r: { measured_value: string }) => r.measured_value)).toEqual(["96"]);
+    const rounds = await (await page.request.get(`/api/batches/${batchId}/rounds`)).json();
+    expect(rounds).toHaveLength(2);
+    expect(rounds[0]).toMatchObject({ round_no: 1, status: "approved" });
+    expect(rounds[0].expiry_date).toContain("2027-01-31");
+    expect(rounds[1]).toMatchObject({ round_no: 2, reason: "shelf_life", status: "approved" });
+    // Both rounds print a COA.
+    expect((await page.request.get(`/api/batches/${batchId}/coa?format=pdf&round=1`)).status()).toBe(200);
+    expect((await page.request.get(`/api/batches/${batchId}/coa?format=pdf`)).status()).toBe(200);
+
+    // History's panel lists both rounds.
+    card = await openReceiptCard(page, "history", receiptId);
+    await expect(page.locator("#queue-panel .rounds-table tbody tr")).toHaveCount(2);
   });
 });

@@ -16,14 +16,15 @@ const STAGES: QueueStage[] = ["needs_code", "needs_spec", "to_test", "ready"];
 const QUEUE_CTE = `
   WITH q AS (
     SELECT rb.id AS batch_id, rb.supplier_batch_no, rb.qty_as_received, rb.expiry_date, rb.retest_of_batch_id,
+           rb.current_round, rb.retest_reason, rb.on_hold,
            rl.id AS line_id, rl.material_code, rl.material_name_text, rl.unit, rl.import_code, rl.supply_kind,
            rl.manufacturer, m.name AS material_name,
            r.id AS receipt_id, r.receipt_no, r.type AS receipt_type, r.received_at, r.received_at_unknown, r.received_by,
-           CASE WHEN r.legacy_ref IS NULL THEN 0 ELSE 1 END AS from_access,
+           CASE WHEN r.legacy_ref IS NULL OR rb.current_round > 1 THEN 0 ELSE 1 END AS from_access,
            s.id AS supplier_id, s.name AS supplier_name, s.code AS supplier_code,
            CASE
              WHEN rl.material_code IS NULL THEN 'needs_code'
-             WHEN EXISTS (SELECT 1 FROM batch_test_results t WHERE t.batch_id = rb.id) THEN 'ready'
+             WHEN EXISTS (SELECT 1 FROM batch_test_results t WHERE t.batch_id = rb.id AND t.round_no IS NULL) THEN 'ready'
              WHEN NOT EXISTS (
                SELECT 1 FROM specs sp
                WHERE sp.status = 'active' AND (
@@ -56,7 +57,7 @@ export async function listQualityQueue(request: Request, env: Env): Promise<Resp
   const get = (k: string) => (url.searchParams.get(k) ?? "").trim();
   const scope = get("scope") === "backlog" ? 1 : 0;
   const stage = get("stage");
-  if (stage && stage !== "all" && !STAGES.includes(stage as QueueStage)) return error("Unknown stage", 400);
+  if (stage && stage !== "all" && stage !== "retest" && !STAGES.includes(stage as QueueStage)) return error("Unknown stage", 400);
   const sort = SORTS[get("sort")] ?? SORTS.oldest;
   const offset = Math.max(0, Number(get("offset")) || 0);
   const limit = Math.min(200, Math.max(1, Number(get("limit")) || 80));
@@ -92,8 +93,9 @@ export async function listQualityQueue(request: Request, env: Env): Promise<Resp
     params.push(like, like, like, like, like, like, like, like);
   }
   const filtered = where.join(" AND ");
-  const listWhere = stage && stage !== "all" ? `${filtered} AND stage = ?` : filtered;
-  const listParams = stage && stage !== "all" ? [...params, stage] : params;
+  const listWhere =
+    stage === "retest" ? `${filtered} AND current_round > 1` : stage && stage !== "all" ? `${filtered} AND stage = ?` : filtered;
+  const listParams = stage && stage !== "all" && stage !== "retest" ? [...params, stage] : params;
 
   const [items, stageRows, scopeRows, supplierRows] = await env.DB.batch<Record<string, unknown>>([
     env.DB.prepare(`${QUEUE_CTE} SELECT * FROM q WHERE ${listWhere} ORDER BY ${sort} LIMIT ? OFFSET ?`).bind(
@@ -101,7 +103,9 @@ export async function listQualityQueue(request: Request, env: Env): Promise<Resp
       limit,
       offset
     ),
-    env.DB.prepare(`${QUEUE_CTE} SELECT stage, COUNT(*) AS n FROM q WHERE ${filtered} GROUP BY stage`).bind(...params),
+    env.DB.prepare(
+      `${QUEUE_CTE} SELECT stage, COUNT(*) AS n, SUM(current_round > 1) AS retests FROM q WHERE ${filtered} GROUP BY stage`
+    ).bind(...params),
     env.DB.prepare(`${QUEUE_CTE} SELECT from_access, COUNT(*) AS n FROM q GROUP BY from_access`),
     env.DB.prepare(
       `${QUEUE_CTE} SELECT supplier_id AS id, supplier_name AS name, COUNT(*) AS n FROM q
@@ -109,8 +113,11 @@ export async function listQualityQueue(request: Request, env: Env): Promise<Resp
     ).bind(scope),
   ]);
 
-  const counts: Record<string, number> = { needs_code: 0, needs_spec: 0, to_test: 0, ready: 0 };
-  for (const r of stageRows.results ?? []) counts[r.stage as string] = Number(r.n);
+  const counts: Record<string, number> = { needs_code: 0, needs_spec: 0, to_test: 0, ready: 0, retest: 0 };
+  for (const r of stageRows.results ?? []) {
+    counts[r.stage as string] = Number(r.n);
+    counts.retest += Number(r.retests ?? 0);
+  }
   counts.all = STAGES.reduce((sum, s) => sum + counts[s], 0);
   const scopes = { new: 0, backlog: 0 };
   for (const r of scopeRows.results ?? []) scopes[Number(r.from_access) ? "backlog" : "new"] = Number(r.n);
@@ -133,7 +140,7 @@ export async function qualityQueueCount(env: Env): Promise<number> {
     `SELECT COUNT(*) AS n FROM receipt_batches rb
      JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
      JOIN receipts r ON r.id = rl.receipt_id
-     WHERE rb.status = 'pending' AND r.legacy_ref IS NULL`
+     WHERE rb.status = 'pending' AND (r.legacy_ref IS NULL OR rb.current_round > 1)`
   ).first<{ n: number }>();
   return row?.n ?? 0;
 }
@@ -198,7 +205,9 @@ export async function listWarehouseQueue(request: Request, env: Env): Promise<Re
        SELECT batch_id, supplier_batch_no, qty_as_received, unit, receipt_id, receipt_no, receipt_type,
               received_at, received_at_unknown, supplier_name, material_name, material_name_text, waiting_days,
               CASE WHEN material_code ${STAND_IN} THEN NULL ELSE material_code END AS material_code,
-              CASE WHEN receipt_type = 'sample' THEN 'sample' ELSE stage END AS stage
+              CASE WHEN receipt_type = 'sample' THEN 'sample'
+                   WHEN current_round > 1 AND on_hold = 1 THEN 'retest_hold'
+                   WHEN current_round > 1 THEN 'retest' ELSE stage END AS stage
        FROM q WHERE ${withQualityWhere} ${withQualitySearch}
        ORDER BY received_at_unknown ASC, received_at ASC, batch_id ASC LIMIT ? OFFSET ?`
     ).bind(...searchParams, limit, offset),

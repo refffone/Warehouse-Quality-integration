@@ -277,6 +277,14 @@ export interface ReceiptBatch {
   /** Set when this batch is a resend/rework of a specific earlier
    *  rejected batch — e.g. the supplier fixed and resent the material. */
   retest_of_batch_id: number | null;
+  /** 1 for the first decision; each retest from History adds a round. */
+  current_round: number;
+  retest_reason: "shelf_life" | "complaint" | "doubt" | "other" | null;
+  retest_note: string | null;
+  retest_started_by: string | null;
+  retest_started_at: string | null;
+  /** Stock held while a retest runs; lifted when it's decided. */
+  on_hold: 0 | 1;
   /** 1 when approved as "accepted with concession" (مقبول بتجاوز). */
   concession: 0 | 1;
   concession_reason: string | null;
