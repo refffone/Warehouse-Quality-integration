@@ -52,6 +52,7 @@ import {
   associateCode,
   addLineSpec,
   createReceipt,
+  listSampleCandidates,
   decideBatch,
   finalizeWeight,
   getBatchSummary,
@@ -380,6 +381,12 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (finalizeMatch && method === "POST") {
     if (role !== "warehouse") return error("Only warehouse finalizes actual weight", 403);
     return finalizeWeight(request, env, Number(finalizeMatch[1]));
+  }
+
+  const candidatesMatch = pathname.match(/^\/api\/receipt-lines\/(\d+)\/sample-candidates$/);
+  if (candidatesMatch && method === "GET") {
+    if (role !== "quality") return error("Only quality can match samples", 403);
+    return listSampleCandidates(request, env, Number(candidatesMatch[1]));
   }
 
   const associateMatch = pathname.match(/^\/api\/receipt-lines\/(\d+)\/associate-code$/);

@@ -535,9 +535,18 @@ export interface SupplierAssessment {
  *  an existing one (whose active spec then applies) or a brand-new one,
  *  which requires creating its first spec version in the same step. */
 export type AssociateCodeInput =
-  | { mode: "existing"; material_code: string }
+  | {
+      mode: "existing";
+      material_code: string;
+      created_by?: string | null;
+      /** A sample only: save its spec as the material's spec for its manufacturer. */
+      manufacturer_spec?: boolean;
+    }
   | {
       mode: "new";
+      created_by?: string | null;
+      /** Unmatched samples this supply came from; they move to the new code. */
+      sample_line_ids?: number[];
       new_material: {
         code: string;
         name: string;
@@ -546,5 +555,5 @@ export type AssociateCodeInput =
         type_code?: string | null;
         subtype_code?: string | null;
       };
-      spec: { title: string; notes?: string | null; created_by: string; parameters?: ParameterInput[] };
+      spec?: { title?: string; notes?: string | null; created_by?: string; parameters?: ParameterInput[] };
     };

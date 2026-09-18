@@ -1,5 +1,6 @@
 import { fetchByIds, resolveMaterialClassification } from "../db";
 import { error, json } from "../http";
+import { isRecordStyleCode } from "../../public/materialCodes.js";
 import { buildTemplateXlsx, parseImportBoolean, parseXlsxRows, templateResponse } from "../xlsxImport";
 import { isUploadedFile } from "./attachments";
 import { listSpecsForMaterial } from "./specs";
@@ -186,7 +187,8 @@ export async function importSuppliers(request: Request, env: Env, role: Role, co
 }
 
 export async function listMaterials(_request: Request, env: Env): Promise<Response> {
-  const rows = await env.DB.prepare("SELECT * FROM materials ORDER BY name").all();
+  // Stand-ins (a sample's RMS number, until it's matched) aren't materials.
+  const rows = await env.DB.prepare("SELECT * FROM materials WHERE code NOT GLOB 'RM[SFP][0-9][0-9][0-9][0-9]*' ORDER BY name").all();
   return json(rows.results ?? []);
 }
 
@@ -202,6 +204,9 @@ export async function upsertMaterial(request: Request, env: Env): Promise<Respon
   }>();
   if (!input.code || !input.name || !input.unit) {
     return error("code, name and unit are required");
+  }
+  if (isRecordStyleCode(input.code)) {
+    return error("Material codes can't look like a record number (RMS/RMF/RMP…)", 400);
   }
 
   const classification = await resolveMaterialClassification(env, input.type_code, input.subtype_code);
@@ -239,7 +244,7 @@ export async function upsertMaterial(request: Request, env: Env): Promise<Respon
 
 export async function materialsImportTemplate(env: Env): Promise<Response> {
   const rows = await env.DB.prepare(
-    "SELECT code, name, function_code, type_code, subtype_code, unit, requires_expiry FROM materials ORDER BY name"
+    "SELECT code, name, function_code, type_code, subtype_code, unit, requires_expiry FROM materials WHERE code NOT GLOB 'RM[SFP][0-9][0-9][0-9][0-9]*' ORDER BY name"
   ).all<{
     code: string;
     name: string;
@@ -320,6 +325,7 @@ export async function importMaterials(request: Request, env: Env, commit: boolea
 
     if (!code || !name || !unit) return fail("Code, Name and Unit are required");
     if (seenInFile.has(code)) return fail("Duplicate code — already on an earlier row in this file");
+    if (isRecordStyleCode(code)) return fail("Material codes can't look like a record number (RMS/RMF/RMP…)");
     if (subtypeCode && !subtypeToType.has(subtypeCode)) return fail(`Unknown subtype code: ${subtypeCode}`);
     if (subtypeCode && typeCode && subtypeToType.get(subtypeCode) !== typeCode) {
       return fail(`Subtype ${subtypeCode} belongs to type ${subtypeToType.get(subtypeCode)}, not ${typeCode}`);

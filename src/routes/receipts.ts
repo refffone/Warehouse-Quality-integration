@@ -7,6 +7,7 @@ import {
   isImportCodeTaken,
   isInternalBatchNoTaken,
   nextReceiptNo,
+  normalizeName,
   notify,
   POOL_FOR_KIND,
   resolveMaterialClassification,
@@ -16,10 +17,10 @@ import { autoJudge } from "../../public/specLimits.js";
 import {
   createOneTimeSpec,
   createSpecVersion,
-  getActiveSpec,
-  getActiveSpecsForMaterials,
-  getOneTimeSpecsForLines,
+  parametersOf,
+  resolveLineSpecs,
 } from "./specs";
+import { isRecordStyleCode, isStandInCode } from "../../public/materialCodes.js";
 import type {
   AddLineSpecInput,
   AssociateCodeInput,
@@ -175,7 +176,16 @@ export async function createReceipt(request: Request, env: Env, role: Role): Pro
   const lineCodes: Array<{ kind: SupplyKind | null; scenario: string | null; code: string | null }> = [];
   for (const line of input.lines) {
     if (input.type === "sample") {
-      lineCodes.push({ kind: "sample", scenario: null, code: await drawPoolCode(env, "RMS") });
+      const code = await drawPoolCode(env, "RMS");
+      // A sample of a material Quality doesn't know yet carries a stand-in
+      // (its RMS number) until it's matched — see public/materialCodes.js.
+      if (!line.material_code) {
+        await env.DB.prepare("INSERT OR IGNORE INTO materials (code, name, unit, requires_expiry) VALUES (?, ?, ?, 0)")
+          .bind(code, line.material_name_text, line.unit)
+          .run();
+        line.material_code = code;
+      }
+      lineCodes.push({ kind: "sample", scenario: null, code });
     } else if (line.material_code) {
       const c = await classifySupplyLine(env, line.material_code, line.material_name_text, supplier.id, receiptId);
       lineCodes.push({ kind: c.kind, scenario: c.scenario, code: await drawPoolCode(env, POOL_FOR_KIND[c.kind]) });
@@ -354,21 +364,23 @@ export async function getReceipt(env: Env, role: Role, id: number): Promise<Resp
     .all<ReceiptLine>();
 
   const detail: ReceiptWithDetail = { ...(receipt as any), lines: [] };
-  const oneTimeSpecs = await getOneTimeSpecsForLines(env, (lines.results ?? []).map((l) => l.id));
+  const lineSpecs = await resolveLineSpecs(
+    env,
+    (lines.results ?? []).map((l) => ({ ...l, scope: specScopeFor(receipt.type as string) }))
+  );
+  const links = role === "quality" ? await getMatchLinks(env, (lines.results ?? []).map((l) => l.id)) : null;
 
   for (const line of lines.results ?? []) {
     const batches = await env.DB.prepare("SELECT * FROM receipt_batches WHERE receipt_line_id = ?")
       .bind(line.id)
       .all<ReceiptBatch>();
-    const spec =
-      oneTimeSpecs.get(line.id) ??
-      (line.material_code ? await getActiveSpec(env, line.material_code, specScopeFor(receipt.type as string)) : null);
+    const spec = lineSpecs.get(line.id) ?? null;
     const batchesWithResults = [];
     for (const b of batches.results ?? []) {
       const test_results = role === "quality" || receipt.type !== "sample" ? await getBatchTestResults(env, b.id) : [];
       batchesWithResults.push({ ...redactBatchForRole(b, role, receipt.type as string), test_results });
     }
-    detail.lines.push({ ...redactLineForRole(line, role), spec, batches: batchesWithResults });
+    detail.lines.push({ ...redactLineForRole(line, role), ...links?.(line.id), spec, batches: batchesWithResults });
   }
 
   return json(detail);
@@ -464,15 +476,11 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
   );
 
   const receiptTypeById = new Map(receipts.map((r) => [r.id, r.type]));
-  const codesFor = (scope: SpecScope) =>
-    lines
-      .filter((l) => l.material_code && specScopeFor(receiptTypeById.get(l.receipt_id)!) === scope)
-      .map((l) => l.material_code as string);
-  const specsByScope: Record<SpecScope, Map<string, SpecWithParameters>> = {
-    supply: await getActiveSpecsForMaterials(env, codesFor("supply"), "supply"),
-    sample: await getActiveSpecsForMaterials(env, codesFor("sample"), "sample"),
-  };
-  const oneTimeSpecs = await getOneTimeSpecsForLines(env, lineIds);
+  const lineSpecs = await resolveLineSpecs(
+    env,
+    lines.map((l) => ({ ...l, scope: specScopeFor(receiptTypeById.get(l.receipt_id)!) }))
+  );
+  const links = role === "quality" ? await getMatchLinks(env, lineIds) : null;
 
   const testResultsByBatch = new Map<number, TestResultWithParameter[]>();
   for (const r of testResultRows) {
@@ -492,14 +500,12 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
 
   const detailed = receipts.map((receipt) => {
     const receiptLines = (linesByReceipt.get(receipt.id) ?? []).map((line) => {
-      const spec =
-        oneTimeSpecs.get(line.id) ??
-        (line.material_code ? (specsByScope[specScopeFor(receipt.type)].get(line.material_code) ?? null) : null);
+      const spec = lineSpecs.get(line.id) ?? null;
       const lineBatches = (batchesByLine.get(line.id) ?? []).map((b) => {
         const test_results = role === "quality" || receipt.type !== "sample" ? (testResultsByBatch.get(b.id) ?? []) : [];
         return { ...redactBatchForRole(b, role, receipt.type), test_results };
       });
-      return { ...redactLineForRole(line, role), spec, batches: lineBatches };
+      return { ...redactLineForRole(line, role), ...links?.(line.id), spec, batches: lineBatches };
     });
     return { ...receipt, lines: receiptLines };
   });
@@ -779,14 +785,14 @@ export async function recordTestResults(
   const input = await request.json<RecordTestResultsInput>();
 
   const batch = await env.DB.prepare(
-    `SELECT rb.*, rl.material_code, r.type AS receipt_type
+    `SELECT rb.*, rl.material_code, rl.manufacturer, r.type AS receipt_type
      FROM receipt_batches rb
      JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
      JOIN receipts r ON r.id = rl.receipt_id
      WHERE rb.id = ?`
   )
     .bind(batchId)
-    .first<ReceiptBatch & { material_code: string | null; receipt_type: string }>();
+    .first<ReceiptBatch & { material_code: string | null; manufacturer: string | null; receipt_type: string }>();
   if (!batch) return error("Batch not found", 404);
   if (!batch.material_code) {
     return error("Associate a material code on this line before testing it", 400);
@@ -798,9 +804,16 @@ export async function recordTestResults(
     return error("Provide at least one test result", 400);
   }
 
-  const spec =
-    (await getOneTimeSpecsForLines(env, [batch.receipt_line_id])).get(batch.receipt_line_id) ??
-    (await getActiveSpec(env, batch.material_code, specScopeFor(batch.receipt_type)));
+  const spec = (
+    await resolveLineSpecs(env, [
+      {
+        id: batch.receipt_line_id,
+        material_code: batch.material_code,
+        manufacturer: batch.manufacturer,
+        scope: specScopeFor(batch.receipt_type),
+      },
+    ])
+  ).get(batch.receipt_line_id);
   const paramsById = new Map((spec?.parameters ?? []).map((p) => [p.id, p]));
   const rows: Array<{ id: number; measured: string | null; result: string | null; auto: string | null; reason: string | null }> = [];
   for (const r of input.results) {
@@ -911,9 +924,19 @@ export async function setSampleSender(
   return json({ id: receiptId, sample_sent_by: input.sample_sent_by });
 }
 
-/** Quality resolves an uncoded receipt line ("Associate a Code") either by
- *  linking it to an existing material (its spec then applies as-is) or by
- *  creating a brand-new material together with its spec. */
+/** Quality matches a line to a real material. The line is either uncoded
+ *  (a supply that arrived without a code) or carries a stand-in (a sample
+ *  of a material not matched yet, or a migrated Access record — see
+ *  public/materialCodes.js).
+ *
+ *  - "existing": the material exists. For a sample this means it's an
+ *    alternative to that material; with manufacturer_spec, the limits the
+ *    sample was tested against become that material's spec for the
+ *    sample's manufacturer, used for its future receipts.
+ *  - "new": a supply line (typically the first supply after a sample was
+ *    approved) gets a code Quality types. The sample(s) it came from move
+ *    to the same code and are linked to it, and the first sample's spec
+ *    becomes the new material's supply and sample spec. */
 export async function associateCode(request: Request, env: Env, lineId: number): Promise<Response> {
   const input = await request.json<AssociateCodeInput>();
 
@@ -924,46 +947,88 @@ export async function associateCode(request: Request, env: Env, lineId: number):
     .first<ReceiptLine & { receipt_type: string }>();
   if (!line) return error("Receipt line not found", 404);
   const scope = specScopeFor(line.receipt_type);
-  if (line.material_code !== null) {
-    return error("This line already has a material code associated", 409);
+  const isSample = line.receipt_type === "sample";
+  if (line.material_code !== null && !isStandInCode(line.material_code)) {
+    return error("This line is already matched to a material", 409);
   }
+  const createdBy = (input.created_by ?? (input.mode === "new" ? input.spec?.created_by : null))?.trim() || "quality";
 
   let materialCode: string;
-  let spec: SpecWithParameters | null;
+  let samples: Array<ReceiptLine> = [];
 
   if (input.mode === "existing") {
     if (!input.material_code) return error("material_code is required");
+    if (isStandInCode(input.material_code)) return error("Pick a real material, not a record number", 400);
     const material = await env.DB.prepare("SELECT code FROM materials WHERE code = ?")
       .bind(input.material_code)
       .first<{ code: string }>();
     if (!material) return error(`Unknown material code: ${input.material_code}`, 404);
     materialCode = material.code;
-    spec = await getActiveSpec(env, materialCode, scope);
+
+    if (input.manufacturer_spec) {
+      if (!isSample) return error("Only a sample's spec can be saved for its manufacturer", 400);
+      if (!line.manufacturer?.trim()) return error("Record the sample's manufacturer (Product details) first", 400);
+      const source = (await resolveLineSpecs(env, [{ ...line, scope }])).get(line.id);
+      if (!source?.parameters.length) return error("This sample has no spec to save for its manufacturer", 400);
+      for (const sc of ["supply", "sample"] as SpecScope[]) {
+        const r = await createSpecVersion(env, materialCode, {
+          scope: sc,
+          variant: line.manufacturer.trim(),
+          title: `${materialCode} — ${line.manufacturer.trim()}`,
+          created_by: createdBy,
+          change_reason: `From sample ${line.import_code ?? ""}`.trim(),
+          parameters: parametersOf(source),
+        });
+        if (!r.ok) return error(r.message, r.status);
+      }
+    }
   } else if (input.mode === "new") {
+    if (isSample) {
+      return error("A sample is matched to an existing material; a new code is created from its first supply", 400);
+    }
     const { new_material, spec: specInput } = input;
-    if (!new_material?.code || !new_material.name || !new_material.unit) {
+    if (!new_material?.code?.trim() || !new_material.name || !new_material.unit) {
       return error("new_material requires code, name and unit");
     }
-    if (!specInput?.title || !specInput.created_by) {
-      return error("spec (title, created_by) is required when creating a new code");
+    const code = new_material.code.trim();
+    if (isRecordStyleCode(code)) {
+      return error("Material codes are typed by Quality and can't look like a record number (RMS/RMF/RMP…)", 400);
     }
-    const existing = await env.DB.prepare("SELECT code FROM materials WHERE code = ?")
-      .bind(new_material.code)
-      .first();
-    if (existing) return error(`Material code ${new_material.code} already exists`, 409);
+    const existing = await env.DB.prepare("SELECT code FROM materials WHERE code = ?").bind(code).first();
+    if (existing) return error(`Material code ${code} already exists`, 409);
 
-    const classification = await resolveMaterialClassification(
-      env,
-      new_material.type_code,
-      new_material.subtype_code
-    );
+    const sampleIds = [...new Set(input.sample_line_ids ?? [])];
+    if (sampleIds.length) {
+      samples = await fetchByIds<ReceiptLine & { receipt_type: string }>(
+        env,
+        (ph) =>
+          `SELECT rl.*, r.type AS receipt_type FROM receipt_lines rl JOIN receipts r ON r.id = rl.receipt_id
+           WHERE rl.id IN (${ph})`,
+        sampleIds
+      );
+      const bad = sampleIds.find((id) => {
+        const s = samples.find((x) => x.id === id) as (ReceiptLine & { receipt_type: string }) | undefined;
+        return !s || s.receipt_type !== "sample" || (s.material_code !== null && !isStandInCode(s.material_code));
+      });
+      if (bad !== undefined) return error(`Line ${bad} is not an unmatched sample`, 400);
+      samples.sort((a, b) => sampleIds.indexOf(a.id) - sampleIds.indexOf(b.id));
+    }
+
+    const classification = await resolveMaterialClassification(env, new_material.type_code, new_material.subtype_code);
     if (!classification.ok) return error(classification.message, classification.status);
+
+    // The first picked sample's spec (read before the sample moves).
+    const sampleSpecs = await resolveLineSpecs(
+      env,
+      samples.map((sm) => ({ ...sm, scope: "sample" as SpecScope }))
+    );
+    const seed = samples.map((sm) => ({ sm, spec: sampleSpecs.get(sm.id) })).find((x) => x.spec?.parameters.length);
 
     await env.DB.prepare(
       "INSERT INTO materials (code, name, unit, requires_expiry, type_code, subtype_code) VALUES (?, ?, ?, ?, ?, ?)"
     )
       .bind(
-        new_material.code,
+        code,
         new_material.name,
         new_material.unit,
         new_material.requires_expiry === false ? 0 : 1,
@@ -971,17 +1036,31 @@ export async function associateCode(request: Request, env: Env, lineId: number):
         classification.subtype_code
       )
       .run();
-    materialCode = new_material.code;
+    materialCode = code;
 
-    const specResult = await createSpecVersion(env, materialCode, { scope, ...specInput });
-    if (!specResult.ok) return error(specResult.message, specResult.status);
-    spec = specResult.spec;
+    const title = specInput?.title?.trim() || `${new_material.name} (${code})`;
+    if (seed) {
+      for (const sc of ["supply", "sample"] as SpecScope[]) {
+        const r = await createSpecVersion(env, materialCode, {
+          scope: sc,
+          title,
+          created_by: createdBy,
+          change_reason: `From sample ${seed.sm.import_code ?? ""}`.trim(),
+          parameters: parametersOf(seed.spec!),
+        });
+        if (!r.ok) return error(r.message, r.status);
+      }
+    } else {
+      const r = await createSpecVersion(env, materialCode, { scope, title, created_by: createdBy });
+      if (!r.ok) return error(r.message, r.status);
+    }
   } else {
     return error("mode must be 'existing' or 'new'");
   }
 
   // A supply line registered without a code couldn't be classified at
-  // receiving time — now that its material is known, it can be.
+  // receiving time — now that its material is known, it can be. (Samples
+  // don't count towards first/regular, so moving them doesn't change this.)
   let supplyKind = line.supply_kind;
   let importScenario = line.import_scenario;
   let importCode = line.import_code;
@@ -998,14 +1077,173 @@ export async function associateCode(request: Request, env: Env, lineId: number):
     }
     importCode = await drawPoolCode(env, POOL_FOR_KIND[supplyKind]);
   }
-
-  await env.DB.prepare(
-    "UPDATE receipt_lines SET material_code = ?, supply_kind = ?, import_scenario = ?, import_code = ? WHERE id = ?"
-  )
-    .bind(materialCode, supplyKind, importScenario, importCode, lineId)
+  await env.DB.prepare("UPDATE receipt_lines SET supply_kind = ?, import_scenario = ?, import_code = ? WHERE id = ?")
+    .bind(supplyKind, importScenario, importCode, lineId)
     .run();
 
-  return json({ receipt_line_id: lineId, material_code: materialCode, spec, supply_kind: supplyKind, import_code: importCode });
+  const moved = await moveLineToMaterial(env, line, materialCode);
+  if (!moved.ok) return error(moved.message, 409);
+  for (const sm of samples) {
+    const r = await moveLineToMaterial(env, sm, materialCode);
+    if (!r.ok) return error(r.message, 409);
+    await env.DB.prepare("UPDATE receipt_lines SET matched_supply_line_id = ? WHERE id = ?").bind(lineId, sm.id).run();
+  }
+
+  const spec = (await resolveLineSpecs(env, [{ ...line, material_code: materialCode, scope }])).get(lineId) ?? null;
+  return json({
+    receipt_line_id: lineId,
+    material_code: materialCode,
+    spec,
+    supply_kind: supplyKind,
+    import_code: importCode,
+    matched_samples: samples.map((sm) => sm.id),
+  });
+}
+
+/** Moves a line from its stand-in (or no code) to a real material. Its
+ *  one-time spec goes with it. The stand-in's own spec is kept as the
+ *  line's one-time spec only if results were recorded against it (so the
+ *  results and COA still match what was tested); otherwise it's dropped.
+ *  The stand-in material is deleted once nothing uses it. */
+async function moveLineToMaterial(
+  env: Env,
+  line: { id: number; material_code: string | null },
+  target: string
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const old = line.material_code;
+  const statements = [
+    env.DB.prepare("UPDATE specs SET material_code = ? WHERE receipt_line_id = ?").bind(target, line.id),
+    env.DB.prepare("UPDATE receipt_lines SET material_code = ? WHERE id = ?").bind(target, line.id),
+  ];
+  if (old && isStandInCode(old)) {
+    const others = await env.DB.prepare("SELECT COUNT(*) AS n FROM receipt_lines WHERE material_code = ? AND id != ?")
+      .bind(old, line.id)
+      .first<{ n: number }>();
+    if (!others?.n) {
+      const specs = await env.DB.prepare(
+        `SELECT s.id,
+                (SELECT COUNT(*) FROM batch_test_results btr JOIN spec_parameters sp ON sp.id = btr.spec_parameter_id
+                 WHERE sp.spec_id = s.id) AS results
+         FROM specs s WHERE s.material_code = ? AND s.receipt_line_id IS NULL`
+      )
+        .bind(old)
+        .all<{ id: number; results: number }>();
+      const hasOneTime = await env.DB.prepare("SELECT 1 FROM specs WHERE receipt_line_id = ?").bind(line.id).first();
+      let kept = !!hasOneTime;
+      for (const sp of specs.results ?? []) {
+        if (sp.results > 0) {
+          if (kept) return { ok: false, message: `${old}: more than one spec has results — move them by hand` };
+          kept = true;
+          statements.push(
+            env.DB.prepare(
+              "UPDATE specs SET material_code = ?, receipt_line_id = ?, status = 'active', variant = NULL, version = 1 WHERE id = ?"
+            ).bind(target, line.id, sp.id)
+          );
+        } else {
+          statements.push(env.DB.prepare("DELETE FROM spec_parameters WHERE spec_id = ?").bind(sp.id));
+          statements.push(env.DB.prepare("DELETE FROM specs WHERE id = ?").bind(sp.id));
+        }
+      }
+      statements.push(env.DB.prepare("DELETE FROM materials WHERE code = ?").bind(old));
+    }
+  }
+  await env.DB.batch(statements);
+  return { ok: true };
+}
+
+/** For Quality's cards: which supply a sample led to, and which samples a
+ *  supply came from. Returns a lookup by line id. */
+async function getMatchLinks(
+  env: Env,
+  lineIds: number[]
+): Promise<(lineId: number) => { matched_supply?: MatchLink; from_samples?: MatchLink[] }> {
+  const select = (where: string) => (ph: string) =>
+    `SELECT s.id AS sample_line_id, s.matched_supply_line_id AS supply_line_id,
+            sup.import_code AS supply_code, sr.receipt_no AS supply_receipt_no, sr.id AS supply_receipt_id,
+            s.import_code AS sample_code, smr.receipt_no AS sample_receipt_no, smr.id AS sample_receipt_id
+     FROM receipt_lines s
+     JOIN receipts smr ON smr.id = s.receipt_id
+     JOIN receipt_lines sup ON sup.id = s.matched_supply_line_id
+     JOIN receipts sr ON sr.id = sup.receipt_id
+     WHERE ${where} IN (${ph})`;
+  const [asSample, asSupply] = await Promise.all([
+    fetchByIds<MatchLinkRow>(env, select("s.id"), lineIds),
+    fetchByIds<MatchLinkRow>(env, select("s.matched_supply_line_id"), lineIds),
+  ]);
+  const rows = [...asSample, ...asSupply];
+  return (lineId) => {
+    const out: { matched_supply?: MatchLink; from_samples?: MatchLink[] } = {};
+    const led = rows.find((r) => r.sample_line_id === lineId);
+    if (led) out.matched_supply = { line_id: led.supply_line_id, import_code: led.supply_code, receipt_id: led.supply_receipt_id, receipt_no: led.supply_receipt_no };
+    const from = rows.filter((r) => r.supply_line_id === lineId);
+    if (from.length) {
+      out.from_samples = from.map((r) => ({ line_id: r.sample_line_id, import_code: r.sample_code, receipt_id: r.sample_receipt_id, receipt_no: r.sample_receipt_no }));
+    }
+    return out;
+  };
+}
+
+interface MatchLink {
+  line_id: number;
+  import_code: string | null;
+  receipt_id: number;
+  receipt_no: string | null;
+}
+
+interface MatchLinkRow {
+  sample_line_id: number;
+  supply_line_id: number;
+  supply_code: string | null;
+  supply_receipt_no: string | null;
+  supply_receipt_id: number;
+  sample_code: string | null;
+  sample_receipt_no: string | null;
+  sample_receipt_id: number;
+}
+
+/** Unmatched samples a new material's first supply may have come from —
+ *  the same supplier and a similar name first, searchable by name, RMS
+ *  number or supplier. */
+export async function listSampleCandidates(request: Request, env: Env, lineId: number): Promise<Response> {
+  const line = await env.DB.prepare(
+    "SELECT rl.material_name_text, r.supplier_id FROM receipt_lines rl JOIN receipts r ON r.id = rl.receipt_id WHERE rl.id = ?"
+  )
+    .bind(lineId)
+    .first<{ material_name_text: string; supplier_id: number }>();
+  if (!line) return error("Receipt line not found", 404);
+  const q = (new URL(request.url).searchParams.get("q") ?? "").trim().toLowerCase();
+
+  const rows = await env.DB.prepare(
+    `SELECT rl.id AS line_id, rl.import_code, rl.material_name_text, rl.manufacturer,
+            r.id AS receipt_id, r.receipt_no, r.received_at, r.supplier_id, s.name AS supplier_name
+     FROM receipt_lines rl
+     JOIN receipts r ON r.id = rl.receipt_id
+     JOIN suppliers s ON s.id = r.supplier_id
+     WHERE r.type = 'sample' AND rl.matched_supply_line_id IS NULL
+       AND (rl.material_code IS NULL OR rl.material_code GLOB 'RM[SFP][0-9][0-9][0-9][0-9]*')
+       AND (? = '' OR LOWER(rl.material_name_text) LIKE ? OR LOWER(COALESCE(rl.import_code, '')) LIKE ? OR LOWER(s.name) LIKE ?)`
+  )
+    .bind(q, `%${q}%`, `%${q}%`, `%${q}%`)
+    .all<{ line_id: number; material_name_text: string; supplier_id: number; received_at: string }>();
+
+  const tokens = (v: string) => new Set(normalizeName(v).split(/[^\p{L}\p{N}]+/u).filter((x: string) => x.length > 1 && !/^\d+$/.test(x)));
+  const want = tokens(line.material_name_text);
+  const scored = (rows.results ?? []).map((r) => {
+    const have = tokens(r.material_name_text);
+    const shared = [...want].filter((x) => have.has(x)).length;
+    const nameScore = normalizeName(r.material_name_text) === normalizeName(line.material_name_text)
+      ? 1
+      : shared / Math.max(1, Math.min(want.size, have.size));
+    const sameSupplier = r.supplier_id === line.supplier_id;
+    return { ...r, same_supplier: sameSupplier, name_score: Math.round(nameScore * 100) / 100, suggested: sameSupplier && nameScore >= 0.5 };
+  });
+  scored.sort(
+    (a, b) =>
+      Number(b.same_supplier) - Number(a.same_supplier) ||
+      b.name_score - a.name_score ||
+      String(b.received_at).localeCompare(String(a.received_at))
+  );
+  return json(scored.slice(0, 40));
 }
 
 /** Product description, manufacturer and origin are Quality's notes on
@@ -1043,7 +1281,7 @@ export async function addLineSpec(request: Request, env: Env, lineId: number): P
   if (!input.parameters?.length) return error("Pick at least one test", 400);
 
   const line = await env.DB.prepare(
-    `SELECT rl.id, rl.material_code, rl.import_code, r.type AS receipt_type, r.receipt_no, m.name AS material_name
+    `SELECT rl.id, rl.material_code, rl.import_code, rl.manufacturer, r.type AS receipt_type, r.receipt_no, m.name AS material_name
      FROM receipt_lines rl
      JOIN receipts r ON r.id = rl.receipt_id
      LEFT JOIN materials m ON m.code = rl.material_code
@@ -1054,6 +1292,7 @@ export async function addLineSpec(request: Request, env: Env, lineId: number): P
       id: number;
       material_code: string | null;
       import_code: string | null;
+      manufacturer: string | null;
       receipt_type: string;
       receipt_no: string | null;
       material_name: string | null;
@@ -1063,9 +1302,7 @@ export async function addLineSpec(request: Request, env: Env, lineId: number): P
   if (!line.material_code) return error("Associate a material code on this line first", 400);
 
   const lineScope = specScopeFor(line.receipt_type);
-  const existing =
-    (await getOneTimeSpecsForLines(env, [line.id])).get(line.id) ??
-    (await getActiveSpec(env, line.material_code, lineScope));
+  const existing = (await resolveLineSpecs(env, [{ ...line, scope: lineScope }])).get(line.id);
   if (existing) {
     return error("This line already has a spec — change it on the Specifications screen", 409);
   }

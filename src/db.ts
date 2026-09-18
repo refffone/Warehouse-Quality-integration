@@ -207,7 +207,7 @@ function renderPattern(pattern: string, values: Record<string, string | number>)
   });
 }
 
-function normalizeName(name: string): string {
+export function normalizeName(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, " ");
 }
 
