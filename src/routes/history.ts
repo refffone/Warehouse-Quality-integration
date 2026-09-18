@@ -16,7 +16,9 @@ export interface HistoryFilters {
 /** The WHERE clause shared by the list, its supplier facet and the export. */
 export function historyFilters(url: URL, role: Role, { skipSupplier = false } = {}): HistoryFilters {
   const get = (k: string) => (url.searchParams.get(k) ?? "").trim();
-  const where: string[] = ["rb.status != 'pending'"];
+  // Quality also sees a batch whose retest is under way (it was decided
+  // before); Warehouse follows those on its To Do instead.
+  const where: string[] = [role === "quality" ? "(rb.status != 'pending' OR rb.current_round > 1)" : "rb.status != 'pending'"];
   const params: Array<string | number> = [];
   if (role === "warehouse") {
     // Warehouse's History: what it received and has nothing left to do on
@@ -90,7 +92,8 @@ function selectFor(role: Role): string {
   const quality = role === "quality";
   return `
     SELECT rb.id AS batch_id, rb.supplier_batch_no, rb.internal_batch_no, rb.qty_as_received, rb.qty_accepted,
-           rb.qty_rejected, rb.qty_actual_weighed, rb.decided_at, rb.decided_by,
+           rb.qty_rejected, rb.qty_actual_weighed, COALESCE(rb.decided_at, rb.retest_started_at) AS decided_at, rb.decided_by,
+           rb.current_round, rb.retest_reason, rb.on_hold,
            ${quality ? "rb.status, rb.concession" : "CASE WHEN r.type = 'sample' THEN NULL ELSE rb.status END AS status, CASE WHEN r.type = 'sample' THEN 0 ELSE rb.concession END AS concession"},
            rl.id AS line_id, rl.material_name_text, rl.unit, m.name AS material_name,
            ${quality ? "rl.material_code" : `CASE WHEN rl.material_code ${STAND_IN} THEN NULL ELSE rl.material_code END AS material_code`},
@@ -99,7 +102,8 @@ function selectFor(role: Role): string {
            s.id AS supplier_id, s.name AS supplier_name`;
 }
 
-const ORDER = "ORDER BY rb.decided_at IS NULL, datetime(rb.decided_at) DESC, rb.id DESC";
+const ORDER =
+  "ORDER BY COALESCE(rb.decided_at, rb.retest_started_at) IS NULL, datetime(COALESCE(rb.decided_at, rb.retest_started_at)) DESC, rb.id DESC";
 
 export async function listHistory(request: Request, env: Env, role: Role): Promise<Response> {
   const url = new URL(request.url);

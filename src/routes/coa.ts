@@ -3,7 +3,8 @@ import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import * as XLSX from "xlsx";
 import { error } from "../http";
 import { pdfText } from "../reportBuilders";
-import { getBatchTestResults, type TestResultWithParameter } from "./receipts";
+import { RESULT_PARAMETER_COLUMNS, getBatchTestResults, type TestResultWithParameter } from "./receipts";
+import { RETEST_REASON_LABELS, type RetestReason } from "./retest";
 import type { Env } from "../types";
 
 interface CoaData {
@@ -25,16 +26,18 @@ interface CoaData {
   testedBy: string | null;
   testedAt: string | null;
   results: TestResultWithParameter[];
+  /** Set from round 2 on: "Retest, round 2 (Shelf life ending)". */
+  retestLine: string | null;
 }
 
-async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
+async function getCoaData(env: Env, batchId: number, round?: number): Promise<CoaData | null> {
   const row = await env.DB.prepare(
     `SELECT rb.supplier_batch_no, rb.internal_batch_no, rb.qty_as_received, rb.qty_accepted,
             CASE WHEN rb.status = 'approved' AND rb.concession = 1
                  THEN 'approved with concession: ' || COALESCE(rb.concession_reason, '') || ' (authorized by ' || COALESCE(rb.concession_approved_by, '') || ')'
                  ELSE rb.status END AS status,
             rb.qty_actual_weighed, rb.expiry_date, rb.production_date, rb.decided_by, rb.decided_at,
-            rb.tested_by, rb.tested_at,
+            rb.tested_by, rb.tested_at, rb.current_round, rb.retest_reason,
             rl.unit, rl.material_code, r.id as receipt_id, s.name as supplier_name,
             COALESCE(m.name, rl.material_name_text) as material_name
      FROM receipt_batches rb
@@ -58,6 +61,8 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
       decided_at: string | null;
       tested_by: string | null;
       tested_at: string | null;
+      current_round: number;
+      retest_reason: string | null;
       unit: string;
       material_code: string | null;
       receipt_id: number;
@@ -66,7 +71,42 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
     }>();
   if (!row || !row.material_code) return null;
 
-  const results = await getBatchTestResults(env, batchId);
+  let results = await getBatchTestResults(env, batchId);
+  let roundNo = row.current_round;
+  let reason = row.retest_reason;
+  // An earlier round prints as it was decided, with its own results.
+  if (round && round < row.current_round) {
+    const past = await env.DB.prepare("SELECT * FROM batch_rounds WHERE batch_id = ? AND round_no = ?")
+      .bind(batchId, round)
+      .first<Record<string, string | number | null>>();
+    if (!past) return null;
+    const pastResults = await env.DB.prepare(
+      `SELECT btr.*, ${RESULT_PARAMETER_COLUMNS} FROM batch_test_results btr
+       JOIN spec_parameters sp ON sp.id = btr.spec_parameter_id
+       WHERE btr.batch_id = ? AND btr.round_no = ? ORDER BY sp.sort_order`
+    )
+      .bind(batchId, round)
+      .all<TestResultWithParameter>();
+    results = pastResults.results ?? [];
+    roundNo = round;
+    reason = past.reason as string | null;
+    Object.assign(row, {
+      internal_batch_no: past.internal_batch_no,
+      qty_accepted: past.qty_accepted,
+      status:
+        past.status === "approved" && past.concession
+          ? `approved with concession: ${past.concession_reason ?? ""} (authorized by ${past.concession_approved_by ?? ""})`
+          : past.status,
+      expiry_date: past.expiry_date,
+      production_date: past.production_date,
+      decided_by: past.decided_by,
+      decided_at: past.decided_at,
+      tested_by: past.tested_by,
+      tested_at: past.tested_at,
+    });
+  }
+  const retestLine =
+    roundNo > 1 ? `Retest, round ${roundNo}${reason ? ` (${RETEST_REASON_LABELS[reason as RetestReason] ?? reason})` : ""}` : null;
 
   return {
     receiptId: row.receipt_id,
@@ -87,6 +127,7 @@ async function getCoaData(env: Env, batchId: number): Promise<CoaData | null> {
     testedBy: row.tested_by,
     testedAt: row.tested_at,
     results,
+    retestLine,
   };
 }
 
@@ -140,6 +181,7 @@ async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
   line(`Supplier Batch #: ${data.supplierBatchNo}`);
   line(`Supplier: ${data.supplierName}`);
   line(`Status: ${data.status}`);
+  if (data.retestLine) line(data.retestLine);
   if (data.productionDate) line(`Production Date: ${data.productionDate}`);
   if (data.expiryDate) line(`Expiry Date: ${data.expiryDate}`);
   line(`Quantity: ${quantityLine(data)}`);
@@ -194,6 +236,7 @@ function buildCoaXlsx(data: CoaData): Uint8Array {
     ["Supplier Batch #", data.supplierBatchNo],
     ["Supplier", data.supplierName],
     ["Status", data.status],
+    ...(data.retestLine ? [["Round", data.retestLine]] : []),
     ["Production Date", data.productionDate ?? ""],
     ["Expiry Date", data.expiryDate ?? ""],
     ["Quantity", quantityLine(data)],
@@ -212,12 +255,13 @@ function buildCoaXlsx(data: CoaData): Uint8Array {
   return XLSX.write(wb, { type: "array", bookType: "xlsx" }) as Uint8Array;
 }
 
-export async function downloadCoa(env: Env, batchId: number, format: string): Promise<Response> {
-  const data = await getCoaData(env, batchId);
+export async function downloadCoa(env: Env, batchId: number, format: string, round?: number): Promise<Response> {
+  const data = await getCoaData(env, batchId, round);
   if (!data) return error("Batch not found, or its line has no material code associated", 404);
   if (data.status === "pending") return error("This batch hasn't been decided yet — nothing to export", 400);
 
-  const filename = `COA-${data.internalBatchNo ?? data.supplierBatchNo}`;
+  const roundSuffix = round ? `-round${round}` : "";
+  const filename = `COA-${data.internalBatchNo ?? data.supplierBatchNo}${roundSuffix}`;
 
   if (format === "xlsx") {
     const bytes = buildCoaXlsx(data);

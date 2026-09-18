@@ -60,7 +60,7 @@ export interface TestResultWithParameter extends BatchTestResult {
   remarks: string | null;
 }
 
-const RESULT_PARAMETER_COLUMNS =
+export const RESULT_PARAMETER_COLUMNS =
   "sp.test_code, sp.parameter_name, sp.unit, sp.param_type, sp.method, sp.conditions, sp.min_value, sp.max_value, sp.expected_text, sp.target_value, sp.tolerance, sp.remarks";
 
 /** Samples are tested against the sample spec (falling back to the supply
@@ -92,7 +92,7 @@ export async function getBatchTestResults(env: Env, batchId: number): Promise<Te
     `SELECT btr.*, ${RESULT_PARAMETER_COLUMNS}
      FROM batch_test_results btr
      JOIN spec_parameters sp ON sp.id = btr.spec_parameter_id
-     WHERE btr.batch_id = ?
+     WHERE btr.batch_id = ? AND btr.round_no IS NULL
      ORDER BY sp.sort_order`
   )
     .bind(batchId)
@@ -473,7 +473,7 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
       `SELECT btr.*, ${RESULT_PARAMETER_COLUMNS}
        FROM batch_test_results btr
        JOIN spec_parameters sp ON sp.id = btr.spec_parameter_id
-       WHERE btr.batch_id IN (${ph})
+       WHERE btr.batch_id IN (${ph}) AND btr.round_no IS NULL
        ORDER BY sp.sort_order`,
     batchIds
   );
@@ -627,8 +627,11 @@ export async function decideBatch(
       .run();
   }
 
-  const internalBatchNo =
-    status === "rejected"
+  // A retest is the same physical batch: it keeps its internal number.
+  const isRetest = (batch.current_round ?? 1) > 1;
+  const internalBatchNo = isRetest
+    ? (manualBatchNo ?? batch.internal_batch_no)
+    : status === "rejected"
       ? null
       : (manualBatchNo ?? (await generateInternalBatchNo(env, supplier, batch.material_code, new Date())));
 
@@ -641,7 +644,7 @@ export async function decideBatch(
     `UPDATE receipt_batches
      SET status = ?, qty_accepted = ?, qty_rejected = ?, internal_batch_no = ?,
          expiry_date = ?, production_date = ?, coa_remarks = ?, decided_by = ?, decided_at = CURRENT_TIMESTAMP,
-         concession = ?, concession_reason = ?, concession_approved_by = ?
+         concession = ?, concession_reason = ?, concession_approved_by = ?, on_hold = 0
      WHERE id = ? AND status = 'pending'`
   )
     .bind(
@@ -673,12 +676,14 @@ export async function decideBatch(
     .bind(batch.receipt_id, batch.receipt_id)
     .run();
 
+  const retestPrefix = isRetest ? `Retest (round ${batch.current_round}): ` : "";
   const summary =
-    status === "rejected"
+    retestPrefix +
+    (status === "rejected"
       ? `Batch ${batch.supplier_batch_no} was rejected`
       : concession
         ? `Batch ${batch.supplier_batch_no} accepted with concession — internal batch # ${internalBatchNo}`
-        : `Batch ${batch.supplier_batch_no} ${status} — internal batch # ${internalBatchNo}`;
+        : `Batch ${batch.supplier_batch_no} ${status} — internal batch # ${internalBatchNo}`);
   await notify(env, "warehouse", "decision", summary, {
     receiptId: batch.receipt_id,
     batchId,
@@ -848,7 +853,7 @@ export async function recordTestResults(
   }
 
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM batch_test_results WHERE batch_id = ?").bind(batchId),
+    env.DB.prepare("DELETE FROM batch_test_results WHERE batch_id = ? AND round_no IS NULL").bind(batchId),
     ...rows.map((r) =>
       env.DB.prepare(
         `INSERT INTO batch_test_results (batch_id, spec_parameter_id, measured_value, result, auto_result, override_reason)
@@ -1378,7 +1383,10 @@ function redactBatchForRole(
   role: Role,
   receiptType: string
 ): Partial<ReceiptBatch> {
-  if (role === "quality" || receiptType !== "sample") return batch;
+  if (role === "quality") return batch;
+  // Warehouse learns that a batch is being retested (and whether it's on
+  // hold), never why.
+  if (receiptType !== "sample") return { ...batch, retest_reason: null, retest_note: null, retest_started_by: null };
   return {
     id: batch.id,
     receipt_line_id: batch.receipt_line_id,

@@ -2005,7 +2005,41 @@ first (Access batches with no decision date last), 80 per page
 - The old card-list screen (`viewReceiptBucket` and its helpers) is gone;
   `/api/receipts/detailed` stays for API use.
 
-## 34. Next Step
+## 34. Retesting a decided batch (rounds)
+
+Step 4 of the overhaul (migration 0030, `src/routes/retest.ts`). Quality
+can retest any decided batch from its card (History or the side panel):
+same batch, new round. The older "retest of" link — a new delivery that
+replaces a rejected batch — is unchanged.
+
+- **Rounds.** `receipt_batches` always holds the round in progress or the
+  latest decided one (`current_round`, plus the retest's reason, note,
+  who/when, and `on_hold`). Starting a retest archives the finished round
+  into `batch_rounds` (decision, quantities, dates, who/when) and tags its
+  results with `batch_test_results.round_no`; results with no round are
+  the current round's. The unique index on results now includes the
+  round. The batch goes back to pending (receipt too) and keeps its
+  internal batch number, dates and any weighed quantity.
+- **Deciding a retest** is the normal decision: the internal batch number
+  is kept, the hold is lifted, Warehouse is notified as "Retest (round
+  N)". The Decide dialog now prefills the batch's expiry and production
+  dates and COA remarks (for every decision, not just retests — it used to
+  start blank and wipe the received expiry); changing the expiry on a
+  retest is how a shelf life is extended, the old date staying on the
+  earlier round.
+- **Where it shows.** Quality's queue: a *Retest* chip (across stages),
+  "Retest · round N · reason" on the row; a retest counts as new work even
+  on an Access record. History (Quality): the batch stays listed as
+  "Retest under way". Warehouse: "Retest · on hold" (or "Retest") in *With
+  Quality*, never the reason; an approved-but-unweighed batch leaves "To
+  weigh" while it's retested.
+- **Rounds list and COA per round.** `GET /api/batches/:id/rounds` lists
+  every round with its reason, decision, expiry and the spec version its
+  results used; the side panels show it once a batch has two rounds.
+  `GET /api/batches/:id/coa?round=N` prints an earlier round as decided;
+  from round 2 the COA carries a "Retest, round N (reason)" line.
+
+## 35. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Things

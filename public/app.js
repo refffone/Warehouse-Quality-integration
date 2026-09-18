@@ -1048,9 +1048,9 @@ function wireExportBar(id, reportPathOrFn, { withPeriod, getParams, filenamePref
 
 /** Downloads a batch's COA via fetch (so the session cookie goes along),
  *  then triggers a normal browser save via a throwaway object-URL link. */
-async function downloadCoa(batchId, format) {
+async function downloadCoa(batchId, format, round) {
   try {
-    const res = await fetch(`/api/batches/${batchId}/coa?format=${format}`, {
+    const res = await fetch(`/api/batches/${batchId}/coa?format=${format}${round ? `&round=${round}` : ""}`, {
       credentials: "same-origin",
     });
     if (!res.ok) {
@@ -1230,6 +1230,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
       if (decided && role === "quality") {
         actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="pdf">${esc(t("line.coaPdf"))}</button>`);
         actions.push(`<button class="btn sm ghost" data-coa="${b.id}" data-format="xlsx">${esc(t("line.coaExcel"))}</button>`);
+        actions.push(`<button class="btn sm ghost" data-retest="${b.id}">${esc(t("retest.button"))}</button>`);
       }
       // Numbers/units/codes are always Latin — bdi keeps each one a single
       // isolated left-to-right token so it can't get bidi-reordered against
@@ -1260,6 +1261,7 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
           <div class="hstack">
             ${b.expiry_date ? `<span class="small muted">${esc(t("line.exp", { date: fmtDate(b.expiry_date) }))}</span>` : ""}
             ${b.retest_of_batch_id != null ? `<span class="small muted" data-retest-of="${b.retest_of_batch_id}">${esc(t("line.retestOfFallback", { id: b.retest_of_batch_id }))}</span>` : ""}
+            ${retestBadgesHtml(b, role)}
             ${batchStatusInline(b)}
             ${resultsBadge ? `<button class="btn sm ghost" data-view-results="${b.id}">${resultsBadge}</button>` : ""}
             ${actions.join("")}
@@ -1583,11 +1585,17 @@ function buildReceiptCard(receipt, { role, type }) {
       )
     )
   );
+  const batchesById = {};
+  for (const line of receipt.lines) for (const b of line.batches) batchesById[b.id] = b;
   // decide
   card.querySelectorAll("[data-decide]").forEach((btn) =>
     btn.addEventListener("click", () =>
-      openDecideModal(btn.dataset.decide, resultsByBatch[btn.dataset.decide], () => refreshCurrentView())
+      openDecideModal(btn.dataset.decide, resultsByBatch[btn.dataset.decide], () => refreshCurrentView(), batchesById[btn.dataset.decide])
     )
+  );
+  // retest a decided batch
+  card.querySelectorAll("[data-retest]").forEach((btn) =>
+    btn.addEventListener("click", () => openRetestModal(batchesById[btn.dataset.retest], () => refreshCurrentView()))
   );
   // finalize
   card.querySelectorAll("[data-finalize]").forEach((btn) =>
@@ -1837,12 +1845,16 @@ async function openTestResultsModal(batchId, spec, existingResults, onDone) {
 }
 
 
-async function openDecideModal(batchId, results, onDone) {
+async function openDecideModal(batchId, results, onDone, batch = null) {
   const resultsHtml = testResultsRecap(results);
+  const retestNote = batch?.current_round > 1
+    ? `<div class="small muted">${esc(t("retest.decideNote", { round: batch.current_round }))}</div>`
+    : "";
 
   openModal(
     esc(t("decide.title")),
     `<form class="form-grid" id="decide-form">
+      ${retestNote}
       <div class="field">
         <label>${esc(t("decide.decision"))}</label>
         <select name="decision" id="decide-decision">
@@ -1862,14 +1874,14 @@ async function openDecideModal(batchId, results, onDone) {
       </div>
       ${resultsHtml}
       <div class="field-row" id="decide-approve-fields">
-        <div class="field"><label>${esc(t("decide.expiryDate"))}</label><input type="date" name="expiry_date" /></div>
-        <div class="field"><label>${esc(t("decide.productionDate"))}</label><input type="date" name="production_date" /></div>
+        <div class="field"><label>${esc(t("decide.expiryDate"))}</label><input type="date" name="expiry_date" value="${esc((batch?.expiry_date || "").slice(0, 10))}" /></div>
+        <div class="field"><label>${esc(t("decide.productionDate"))}</label><input type="date" name="production_date" value="${esc((batch?.production_date || "").slice(0, 10))}" /></div>
       </div>
       <div class="field-row" id="decide-approve-fields2">
         <div class="field"><label>${esc(t("decide.internalBatchNo"))}</label><input type="text" name="internal_batch_no" /></div>
         <div class="field"><label>${esc(t("decide.importCodeOverride"))}</label><input type="text" name="import_code" /></div>
       </div>
-      <div class="field"><label>${esc(t("decide.remarks"))}</label><textarea name="coa_remarks"></textarea></div>
+      <div class="field"><label>${esc(t("decide.remarks"))}</label><textarea name="coa_remarks">${esc(batch?.coa_remarks || "")}</textarea></div>
       <div class="field"><label>${esc(t("decide.decidedBy"))}</label><input type="text" name="decided_by" value="${esc(getRememberedName())}" required /></div>
       <button type="submit" class="btn primary">${esc(t("decide.submit"))}</button>
     </form>`
@@ -2121,6 +2133,97 @@ async function openAssociateModal(line, receiptType, onDone) {
   });
 }
 
+// ---------------------------------------------------------------- retesting (rounds)
+
+const RETEST_REASONS = ["shelf_life", "complaint", "doubt", "other"];
+
+/** "Retest · round 2" (with the reason, for Quality) and "On hold". */
+function retestBadgesHtml(b, role) {
+  if (!b || !(b.current_round > 1)) return "";
+  const reason = role === "quality" && b.retest_reason ? ` · ${t(`retest.reason.${b.retest_reason}`)}` : "";
+  return `<span class="badge neutral retest-badge">${esc(t("retest.round", { round: b.current_round }))}${esc(reason)}</span>${
+    b.on_hold && b.status === "pending" ? `<span class="badge flag">${esc(t("retest.onHold"))}</span>` : ""
+  }`;
+}
+
+function openRetestModal(batch, onDone) {
+  openModal(
+    esc(t("retest.title", { batch: batch.supplier_batch_no })),
+    `<form class="form-grid" id="retest-form">
+      <p class="small muted">${esc(t("retest.explain"))}</p>
+      <div class="field"><label for="retest-reason">${esc(t("retest.reasonLabel"))}</label>
+        <select id="retest-reason" name="reason">${RETEST_REASONS.map((r) => `<option value="${r}">${esc(t(`retest.reason.${r}`))}</option>`).join("")}</select></div>
+      <div class="field"><label for="retest-note">${esc(t("retest.note"))}</label><textarea id="retest-note" name="note" rows="2" dir="auto"></textarea></div>
+      <label class="radio-row"><input type="checkbox" id="retest-hold" name="on_hold" checked />
+        <span><b>${esc(t("retest.hold"))}</b><span class="small muted">${esc(t("retest.holdHint"))}</span></span></label>
+      <div class="field"><label for="retest-by">${esc(t("receive.yourName"))}</label><input id="retest-by" name="started_by" value="${esc(getRememberedName())}" required /></div>
+      <button type="submit" class="btn primary">${esc(t("retest.start"))}</button>
+    </form>`
+  );
+  document.getElementById("retest-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target.elements;
+    const by = f.started_by.value.trim();
+    rememberName(by);
+    try {
+      await api.post(`/api/batches/${batch.id}/retest`, {
+        reason: f.reason.value,
+        note: f.note.value.trim() || null,
+        on_hold: f.on_hold.checked,
+        started_by: by,
+      });
+      toast(t("retest.started"));
+      closeModal();
+      onDone();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+}
+
+/** The batch's rounds, each with its decision and COA, under the card in
+ *  a side panel. Only shown once a batch has been retested. */
+async function appendRoundsBlock(container, batchId) {
+  let rounds;
+  try {
+    rounds = await api.get(`/api/batches/${batchId}/rounds`);
+  } catch {
+    return;
+  }
+  if (!container.isConnected || rounds.length < 2) return;
+  const decision = (r) =>
+    r.status === "pending"
+      ? `<span class="pill info">${esc(t("retest.underWay"))}</span>`
+      : statusPill(r.concession ? "concession" : r.status);
+  const block = document.createElement("div");
+  block.className = "rounds-block";
+  block.innerHTML = `
+    <h3>${esc(t("retest.rounds"))}</h3>
+    <table class="rounds-table">
+      <thead><tr><th>${esc(t("retest.col.round"))}</th><th>${esc(t("retest.col.why"))}</th><th>${esc(t("wh.col.decision"))}</th><th>${esc(t("hist.col.coa"))}</th></tr></thead>
+      <tbody>${rounds
+        .map(
+          (r) => `
+        <tr>
+          <td class="mono">${esc(r.round_no)}</td>
+          <td>${esc(r.round_no === 1 ? t("retest.received") : t(`retest.reason.${r.reason || "other"}`))}${r.note ? `<div class="small muted">${bdi(r.note)}</div>` : ""}
+            ${r.spec ? `<div class="small muted">${esc(r.spec.one_time ? t("retest.specOneTime") : t("retest.specVersion", { version: r.spec.version }))}</div>` : ""}</td>
+          <td>${decision(r)}${r.decided_at ? `<div class="small muted">${esc(fmtDate(r.decided_at))}${r.expiry_date ? ` · ${esc(t("line.exp", { date: fmtDate(r.expiry_date) }))}` : ""}</div>` : ""}</td>
+          <td class="q-coa">${r.status === "pending" ? "" : `<button type="button" class="btn sm ghost" data-round-coa="${r.round_no}" data-format="pdf">${esc(t("reports.pdf"))}</button>`}</td>
+        </tr>`
+        )
+        .join("")}</tbody>
+    </table>`;
+  const latest = rounds[rounds.length - 1];
+  block.querySelectorAll("[data-round-coa]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const round = Number(btn.dataset.roundCoa);
+      downloadCoa(batchId, btn.dataset.format, round === latest.round_no ? undefined : round);
+    })
+  );
+  container.appendChild(block);
+}
+
 // ---------------------------------------------------------------- view: Quality's To Do (work queue)
 
 const QUEUE_STAGES = ["needs_code", "needs_spec", "to_test", "ready"];
@@ -2162,6 +2265,7 @@ function queueRowHtml(row) {
       <td class="q-material">
         <b>${bdi(row.material_name || row.material_name_text)}</b>
         <span class="small muted">${codeHtml} · ${bdi(row.supplier_name)} · ${receiptNoHtml(row)}</span>
+        ${retestBadgesHtml(row, "quality")}
       </td>
       <td class="q-batch"><bdi class="mono">${esc(row.supplier_batch_no || "—")}</bdi>${row.expiry_date ? `<span class="small muted">${esc(t("line.exp", { date: fmtDate(row.expiry_date) }))}</span>` : ""}</td>
       <td class="q-qty num"><bdi>${esc(row.qty_as_received)} ${esc(row.unit)}</bdi></td>
@@ -2186,7 +2290,7 @@ async function runQueueNextStep(row) {
     if (row.stage === "needs_code") openAssociateModal(line, receipt.type, done);
     else if (row.stage === "needs_spec") openAddLineSpecModal(line, receipt.type, done);
     else if (row.stage === "to_test") openTestResultsModal(batch.id, line.spec, batch.test_results, done);
-    else openDecideModal(batch.id, batch.test_results, done);
+    else openDecideModal(batch.id, batch.test_results, done, batch);
   } catch (err) {
     toast(err.message, true);
   }
@@ -2222,6 +2326,7 @@ async function renderQueuePanel(panel, row) {
   const card = buildReceiptCard(receipt, { role: "quality", type: receipt.type });
   card.querySelector(`.line-block[data-line-id="${line.id}"]`)?.classList.add("focused");
   panel.querySelector("[data-panel-card]").appendChild(card);
+  appendRoundsBlock(panel.querySelector("[data-panel-card]"), row.batch_id);
   enrichRetestLabels(card);
   wireDossierImportEntries(panel.querySelector(".queue-panel-files"), () => refreshCurrentView());
   panel.querySelector("[data-close-panel]").addEventListener("click", () => {
@@ -2260,7 +2365,7 @@ async function viewQualityQueue() {
 
   const stageChip = (stage) => `
     <button type="button" class="stage-chip${s.stage === stage ? " active" : ""}" data-stage="${stage}">
-      ${stage === "all" ? "" : `<span class="stage-dot ${QUEUE_STAGE_TONE[stage]}"></span>`}${esc(t(`queue.stage.${stage}`))}
+      ${stage === "all" ? "" : `<span class="stage-dot ${QUEUE_STAGE_TONE[stage] || "retest"}"></span>`}${esc(t(`queue.stage.${stage}`))}
       <span class="stage-n">${data.counts[stage]}</span>
     </button>`;
   const first = s.page * RECEIPT_PAGE_SIZE + 1;
@@ -2285,7 +2390,7 @@ async function viewQualityQueue() {
             <button type="button" data-scope="backlog" class="${s.scope === "backlog" ? "on" : ""}">${esc(t("queue.scopeBacklog"))} <span class="stage-n">${data.scopes.backlog}</span></button>
           </span>
         </div>
-        <div class="stage-chips">${[...QUEUE_STAGES, "all"].map(stageChip).join("")}</div>
+        <div class="stage-chips">${[...QUEUE_STAGES, "retest", "all"].map(stageChip).join("")}</div>
         <div class="queue-filters">
           <span class="seg">
             <button type="button" data-t="" class="${!s.type ? "on" : ""}">${esc(t("queue.typeAll"))}</button>
@@ -2389,7 +2494,7 @@ async function viewQualityQueue() {
 
 // ---------------------------------------------------------------- view: Warehouse's To Do
 
-const WH_STAGE_TONE = { needs_code: "warn", needs_spec: "warn", to_test: "info", ready: "info", sample: "info" };
+const WH_STAGE_TONE = { needs_code: "warn", needs_spec: "warn", to_test: "info", ready: "info", sample: "info", retest: "info", retest_hold: "bad" };
 const whState = { q: "", includeAccess: false, page: 0, open: false, selected: null, selectedRow: null };
 
 /** Material code as Warehouse sees it: a real one, or nothing. */
@@ -2633,6 +2738,7 @@ function historyParams() {
 
 function historyDecisionHtml(row) {
   if (!row.status) return `<span class="muted">—</span>`;
+  if (row.status === "pending") return `<span class="pill info">${esc(t("retest.inProgress", { round: row.current_round }))}</span>`;
   return statusPill(row.concession ? "concession" : row.status);
 }
 
@@ -2652,7 +2758,7 @@ function historyRowHtml(row, role) {
         <td class="q-batch">${batch}</td>
         <td class="q-qty num">${qty(accepted)}</td>
         <td class="q-status">${historyDecisionHtml(row)}</td>
-        <td class="q-coa"><button type="button" class="btn sm ghost" data-coa="${row.batch_id}" data-format="pdf">${esc(t("reports.pdf"))}</button><button type="button" class="btn sm ghost" data-coa="${row.batch_id}" data-format="xlsx">${esc(t("reports.excel"))}</button></td>
+        <td class="q-coa">${row.status === "pending" ? "" : `<button type="button" class="btn sm ghost" data-coa="${row.batch_id}" data-format="pdf">${esc(t("reports.pdf"))}</button><button type="button" class="btn sm ghost" data-coa="${row.batch_id}" data-format="xlsx">${esc(t("reports.excel"))}</button>`}</td>
       </tr>`;
   }
   const diff = row.qty_actual_weighed == null || !Number(row.qty_as_received)
@@ -2699,6 +2805,7 @@ async function renderHistoryPanel(panel, row, role) {
   const card = buildReceiptCard(receipt, { role, type: receipt.type });
   card.querySelector(`.line-block[data-line-id="${row.line_id}"]`)?.classList.add("focused");
   panel.querySelector("[data-panel-card]").appendChild(card);
+  if (role === "quality") appendRoundsBlock(panel.querySelector("[data-panel-card]"), row.batch_id);
   enrichRetestLabels(card);
   if (attachments) wireDossierImportEntries(panel.querySelector(".queue-panel-files"), () => refreshCurrentView());
   panel.querySelector("[data-close-panel]").addEventListener("click", () => {
