@@ -490,6 +490,27 @@ textarea:focus-visible {
   box-shadow: var(--input-shadow), var(--focus-ring), var(--input-glow);
 }
 .field textarea { resize: vertical; min-height: 60px; }
+/* File pickers get the same box as the other inputs, with the browser's
+   "Choose File" button restyled to sit inside it. */
+input[type="file"] {
+  width: 100%; min-width: 0; cursor: pointer;
+  background: var(--surface-2); border: 1px solid var(--rule-strong); border-radius: var(--radius);
+  padding-block: 4px; padding-inline: 4px 12px; font-size: 0.84rem; color: var(--ink-muted);
+  box-shadow: var(--input-shadow); transition: border-color 0.15s;
+}
+input[type="file"]:hover { border-color: var(--rule-hover); }
+input[type="file"]:focus-visible { outline: none; border-color: var(--accent); box-shadow: var(--input-shadow), var(--focus-ring); }
+input[type="file"]::file-selector-button {
+  margin-inline-end: 12px; padding: 6px 12px; cursor: pointer;
+  border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  background: var(--surface-solid); color: var(--ink); font: inherit; font-size: 0.8rem; font-weight: 600;
+}
+input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
+/* The attach row: kind, file and button share one height and baseline. */
+.attach-row { align-items: flex-end; margin-top: 8px; }
+.attach-row .field.field-kind { flex: 0 0 150px; min-width: 0; }
+.attach-row .field.field-file { flex: 1 1 260px; }
+.attach-row select, .attach-row input[type="file"], .attach-row .btn { height: 40px; box-sizing: border-box; }
 .field-row { display: flex; gap: 12px; flex-wrap: wrap; }
 .field-row .field { flex: 1; min-width: 140px; }
 

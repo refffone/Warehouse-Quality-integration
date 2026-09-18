@@ -3331,12 +3331,12 @@ function dossierImportEntryHtml(entry) {
       <div style="margin-top:8px">
         <div class="small muted" style="margin-bottom:4px">${esc(t("masterdata.attachments"))}</div>
         ${attachmentRows || `<div class="small muted">${esc(t("masterdata.attachmentsNone"))}</div>`}
-        <form class="field-row" data-attachment-form style="margin-top:8px; align-items:flex-end;">
-          <div class="field" style="max-width:120px"><label>${esc(t("masterdata.kind"))}</label>
+        <form class="field-row attach-row" data-attachment-form>
+          <div class="field field-kind"><label>${esc(t("masterdata.kind"))}</label>
             <select data-f="kind"><option value="photo">${esc(t("masterdata.kindPhoto"))}</option><option value="tds">${esc(t("masterdata.kindTds"))}</option><option value="msds">${esc(t("masterdata.kindMsds"))}</option></select>
           </div>
-          <div class="field" style="flex:2"><label>${esc(t("masterdata.file"))}</label><input type="file" data-f="file" required /></div>
-          <button type="submit" class="btn sm ghost">${esc(t("masterdata.attach"))}</button>
+          <div class="field field-file"><label>${esc(t("masterdata.file"))}</label><input type="file" data-f="file" required /></div>
+          <button type="submit" class="btn ghost">${esc(t("masterdata.attach"))}</button>
         </form>
       </div>
     </div>`;
