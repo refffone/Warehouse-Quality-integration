@@ -79,7 +79,7 @@ export async function exportReceivedLog(request: Request, env: Env): Promise<Res
   if (!range) return error("from and to are required");
 
   const rows = await env.DB.prepare(
-    `SELECT r.id as receipt_id, r.type, r.received_at, s.name as supplier,
+    `SELECT COALESCE(r.receipt_no, '—') as receipt_id, r.type, r.received_at, s.name as supplier,
             COALESCE(m.name, rl.material_name_text) as material, rl.material_code,
             rb.supplier_batch_no as batch_no, rb.qty_as_received as qty, rl.unit
      FROM receipts r
@@ -87,7 +87,8 @@ export async function exportReceivedLog(request: Request, env: Env): Promise<Res
      JOIN receipt_batches rb ON rb.receipt_line_id = rl.id
      JOIN suppliers s ON s.id = r.supplier_id
      LEFT JOIN materials m ON m.code = rl.material_code
-     WHERE datetime(r.received_at) >= datetime(?) AND datetime(r.received_at) <= datetime(?)
+     WHERE r.received_by = 'warehouse'
+       AND datetime(r.received_at) >= datetime(?) AND datetime(r.received_at) <= datetime(?)
      ORDER BY r.received_at DESC`
   )
     .bind(range.from, range.to)
@@ -129,7 +130,7 @@ export async function exportTodos(request: Request, env: Env): Promise<Response>
   if (!format) return error("format must be 'pdf' or 'xlsx'");
 
   const rows = await env.DB.prepare(
-    `SELECT r.id as receipt_id, r.type, r.received_at, s.name as supplier,
+    `SELECT COALESCE(r.receipt_no, '—') as receipt_id, r.type, r.received_at, s.name as supplier,
             COALESCE(m.name, rl.material_name_text) as material, rl.material_code,
             rb.supplier_batch_no as batch_no,
             (SELECT COUNT(*) FROM batch_test_results WHERE batch_id = rb.id) as test_count
@@ -174,7 +175,7 @@ export async function exportHistory(request: Request, env: Env): Promise<Respons
   if (!range) return error("from and to are required");
 
   const rows = await env.DB.prepare(
-    `SELECT r.id as receipt_id, r.type, COALESCE(m.name, rl.material_name_text) as material, rl.material_code,
+    `SELECT COALESCE(r.receipt_no, '—') as receipt_id, r.type, COALESCE(m.name, rl.material_name_text) as material, rl.material_code,
             rb.supplier_batch_no as batch_no,
             CASE WHEN rb.concession = 1 THEN 'approved (concession)' ELSE rb.status END as status,
             rb.internal_batch_no, rl.import_code, rb.decided_at

@@ -172,10 +172,17 @@ export interface Receipt {
   created_at: string;
   /** Who physically sent the sample. Only meaningful when type is "sample". */
   sample_sent_by: string | null;
-  /** The Access record this receipt was migrated from, if any. */
+  /** The Access record this receipt was migrated from, if any (the first
+   *  one, when several Access records were one delivery). */
   legacy_ref: string | null;
   /** 1 when Access had no date: received_at then holds a placeholder. */
   received_at_unknown: 0 | 1;
+  /** The receipt number people use: the warehouse addition-note serial, or
+   *  QS-#### for a sample Quality received directly. Null for migrated
+   *  records Access never numbered. */
+  receipt_no: string | null;
+  /** Who registered it. Quality-received samples are hidden from Warehouse. */
+  received_by: Role;
 }
 
 export type ImportScenario = "new_material" | "new_supplier" | "new_name_variant" | "repeat";
@@ -213,6 +220,9 @@ export interface ReceiptLine {
   product_description: string | null;
   manufacturer: string | null;
   origin: string | null;
+  /** The Access record this line was migrated from ("access:RM Master
+   *  Data:<ID>"), if any. */
+  legacy_ref: string | null;
 }
 
 export interface LineProductInfoInput {

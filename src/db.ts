@@ -280,6 +280,29 @@ export async function drawPoolCode(env: Env, pool: CodePool): Promise<string> {
   throw new Error(`Couldn't find a free ${pool} code — check the ${pool} counter under Numbering Schemes`);
 }
 
+export type ReceiptNumberSeries = "warehouse" | "quality_sample";
+
+/** The next receipt number: the warehouse's addition-note serial (2303,
+ *  2304, ...) or Quality's own sample series (QS-0001, ...). Numbers
+ *  already on a receipt — including ones the Access history used — are
+ *  skipped, so a number is never issued twice. */
+export async function nextReceiptNo(env: Env, series: ReceiptNumberSeries): Promise<string> {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const row = await env.DB.prepare(
+      `UPDATE receipt_number_series SET current_sequence = current_sequence + 1
+       WHERE series = ?
+       RETURNING current_sequence, prefix, width`
+    )
+      .bind(series)
+      .first<{ current_sequence: number; prefix: string; width: number }>();
+    if (!row) throw new Error(`Receipt number series ${series} isn't configured`);
+    const receiptNo = `${row.prefix}${String(row.current_sequence).padStart(row.width, "0")}`;
+    const taken = await env.DB.prepare("SELECT 1 FROM receipts WHERE receipt_no = ? LIMIT 1").bind(receiptNo).first();
+    if (!taken) return receiptNo;
+  }
+  throw new Error(`Couldn't find a free ${series} receipt number`);
+}
+
 export async function isImportCodeTaken(env: Env, code: string, exceptLineId?: number): Promise<boolean> {
   const row = await env.DB.prepare("SELECT 1 FROM receipt_lines WHERE import_code = ? AND id != ? LIMIT 1")
     .bind(code, exceptLineId ?? -1)

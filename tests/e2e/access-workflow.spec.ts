@@ -1,5 +1,14 @@
 import { expect, test } from "./fixtures";
-import { decideBatch, login, openReceiptCard, receiveMaterial, seedMaterial, seedSpec, seedSupplier } from "./helpers";
+import {
+  decideBatch,
+  login,
+  openReceiptCard,
+  receiveMaterial,
+  receiveMaterialWithNumber,
+  seedMaterial,
+  seedSpec,
+  seedSupplier,
+} from "./helpers";
 
 // The Access-log alignment: sample / first supply / regular supply, each
 // with its own code pool (RMS / RMF / RMP); Access-format internal batch
@@ -194,5 +203,54 @@ test.describe("Access workflow alignment", () => {
     expect(line.product_description).toBeNull();
     const denied = await page.request.patch(`/api/receipt-lines/${line.id}/product-info`, { data: { manufacturer: "X" } });
     expect(denied.status()).toBe(403);
+  });
+
+  test("Quality receives a sample directly: its own QS number, never shown to Warehouse", async ({ page }) => {
+    await login(page, "quality");
+    await seedMaterial(page, { code: "AW6-MAT", name: "Direct Sample Material", unit: "KG" });
+    await seedSupplier(page, "AW6-SUP", "Direct Sample Supplier");
+
+    // Warehouse deliveries are numbered on the warehouse serial...
+    await login(page, "warehouse");
+    const delivery = await receiveMaterialWithNumber(page, { supplierCode: "AW6-SUP", createdBy: "E2E Warehouse" }, [
+      { code: "AW6-MAT", name: "Direct Sample Material", unit: "KG", batches: [{ batchNo: "AW6-B1", qty: 50 }] },
+    ]);
+    expect(delivery.receiptNo).toMatch(/^\d+$/);
+
+    // ...while a sample Quality received itself gets a QS- number.
+    await login(page, "quality");
+    const direct = await receiveMaterialWithNumber(
+      page,
+      { byQuality: true, supplierCode: "AW6-SUP", createdBy: "E2E Quality", sampleSentBy: "Supplier rep" },
+      [{ code: "AW6-MAT", name: "Direct Sample Material", unit: "KG", batches: [{ batchNo: "AW6-S1", qty: 1 }] }]
+    );
+    expect(direct.receiptNo).toMatch(/^QS-\d{4}$/);
+
+    const card = await openReceiptCard(page, "todo", direct.id, "sample");
+    await expect(card.locator(".receipt-title")).toContainText(direct.receiptNo);
+    await expect(card).toContainText("Received by Quality");
+    await expect(card.locator(".line-head .badge", { hasText: /RMS\d{4}/ })).toContainText("Sample");
+
+    // Quality can't use the button to register a supply.
+    const supply = await page.request.post("/api/receipts", {
+      data: {
+        type: "import",
+        received_at: new Date().toISOString(),
+        supplier_code: "AW6-SUP",
+        created_by: "E2E Quality",
+        lines: [{ material_code: "AW6-MAT", material_name_text: "Direct Sample Material", unit: "KG", batches: [{ supplier_batch_no: "X", qty_as_received: 1 }] }],
+      },
+    });
+    expect(supply.status()).toBe(403);
+
+    // Warehouse doesn't see it anywhere: not by id, not in its lists, not in search.
+    await login(page, "warehouse");
+    expect((await page.request.get(`/api/receipts/${direct.id}`)).status()).toBe(404);
+    const samples = await (await page.request.get("/api/receipts/detailed?type=sample&limit=200")).json();
+    expect(samples.items.some((r: { id: number }) => r.id === direct.id)).toBe(false);
+    const search = await (await page.request.get(`/api/receipts/detailed?q=${encodeURIComponent(direct.receiptNo)}`)).json();
+    expect(search.total).toBe(0);
+    const own = await (await page.request.get(`/api/receipts/detailed?q=${encodeURIComponent(delivery.receiptNo)}&type=import`)).json();
+    expect(own.items.some((r: { id: number }) => r.id === delivery.id)).toBe(true);
   });
 });

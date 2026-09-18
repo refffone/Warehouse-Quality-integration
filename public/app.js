@@ -167,6 +167,9 @@ const ROUTES = {
   ],
   quality: [
     { id: "todo", labelKey: "nav.todo" },
+    // Samples Quality receives directly — opened from the To Do button,
+    // so it has no tab of its own.
+    { id: "receive", labelKey: "nav.receiveSample", hidden: true },
     { id: "history", labelKey: "nav.history" },
     { id: "codes", labelKey: "nav.codes" },
     { id: "suppliers", labelKey: "nav.suppliers" },
@@ -228,6 +231,7 @@ function renderTopbar() {
   const tabsEl = document.getElementById("tabs");
   const active = currentRoute();
   tabsEl.innerHTML = ROUTES[role]
+    .filter((r) => !r.hidden)
     .map(
       (r) =>
         `<button class="tab-btn${r.id === active ? " active" : ""}" data-tab="${r.id}" style="--tab-color:${ROUTE_COLOR[r.id]}">${navIcon(r.id)}<span class="tab-label">${t(r.labelKey)}</span>${
@@ -427,29 +431,49 @@ function wizardStepsHtml(current) {
     </div>`;
 }
 
+/** "Receipt #2303" / "Receipt #QS-0001"; migrated records Access never
+ *  numbered say so instead of showing an internal id. */
+function receiptNoHtml(receipt) {
+  return receipt.receipt_no
+    ? esc(t("receipt.receiptNumber", { id: receipt.receipt_no }))
+    : `${esc(t("receipt.noNumber"))}`;
+}
+
 async function viewReceive() {
   const generation = beginView();
   const suppliers = await getSuppliers();
   if (isStaleView(generation)) return;
+  if (getRole() === "quality") receiveWizard.type = "sample";
   if (!receiveWizard.supplier_code && suppliers.length) receiveWizard.supplier_code = suppliers[0].code;
   if (receiveWizard.step === 2) await renderReceiveStep2(generation);
   else renderReceiveStep1(suppliers);
 }
 
+/** Warehouse registers any delivery; Quality only the samples it receives
+ *  directly (numbered QS-####, never shown to Warehouse). */
+function receiveHeadHtml() {
+  const qualitySample = getRole() === "quality";
+  const title = qualitySample ? t("receive.sampleTitle") : t("receive.title");
+  const subtitle = qualitySample ? t("receive.sampleSubtitle") : t("receive.subtitle");
+  return `<div class="view-head"><div><h1>${esc(title)}</h1><p>${esc(subtitle)}</p></div></div>`;
+}
+
 function renderReceiveStep1(suppliers) {
   const view = document.getElementById("view");
   const w = receiveWizard;
+  const qualitySample = getRole() === "quality";
   view.innerHTML = `
-    <div class="view-head"><div><h1>${esc(t("receive.title"))}</h1><p>${esc(t("receive.subtitle"))}</p></div></div>
+    ${receiveHeadHtml()}
     ${wizardStepsHtml(1)}
     <form class="card form-grid" id="receive-step1-form">
       <div class="field-row">
         <div class="field">
           <label>${esc(t("receive.type"))}</label>
-          <select name="type" id="rf-type">
+          <select name="type" id="rf-type" ${qualitySample ? "disabled" : ""}>
             <option value="import" ${w.type === "import" ? "selected" : ""}>${esc(t("receive.typeImport"))}</option>
             <option value="sample" ${w.type === "sample" ? "selected" : ""}>${esc(t("receive.typeSample"))}</option>
           </select>
+          ${qualitySample ? `<input type="hidden" name="type" value="sample" />` : ""}
         </div>
         <div class="field">
           <label>${esc(t("receive.receivedAt"))}</label>
@@ -534,7 +558,7 @@ async function renderReceiveStep2(generation) {
     .join("");
 
   view.innerHTML = `
-    <div class="view-head"><div><h1>${esc(t("receive.title"))}</h1><p>${esc(t("receive.subtitle"))}</p></div></div>
+    ${receiveHeadHtml()}
     ${wizardStepsHtml(2)}
     <div class="card small muted" style="display:flex; justify-content:space-between; align-items:center;">
       <span>${w.type === "sample" ? esc(t("receive.typeSample")) : esc(t("receive.typeImport"))} · <bdi class="mono">${esc(w.supplier_code)}</bdi> · ${fmtDateTime(new Date(w.received_at).toISOString())} · ${bdi(w.created_by)}</span>
@@ -817,7 +841,7 @@ async function renderReceiveStep2(generation) {
 
     try {
       const result = await api.post("/api/receipts", body);
-      toast(t("receive.receiptRegistered", { id: result.id }));
+      toast(t("receive.receiptRegistered", { id: result.receipt_no ?? result.id }));
       receiveWizard = freshReceiveWizard();
       goTo("todo");
     } catch (err) {
@@ -1228,7 +1252,6 @@ function renderLineDetail(line, { role, receiptType, canFinalize, canDecide }) {
           <div class="hstack">
             ${b.expiry_date ? `<span class="small muted">${esc(t("line.exp", { date: fmtDate(b.expiry_date) }))}</span>` : ""}
             ${b.retest_of_batch_id != null ? `<span class="small muted" data-retest-of="${b.retest_of_batch_id}">${esc(t("line.retestOfFallback", { id: b.retest_of_batch_id }))}</span>` : ""}
-            ${b.addition_no ? `<span class="small muted">${esc(t("line.additionNo", { no: "" }))}<bdi class="mono">${esc(b.addition_no)}</bdi></span>` : ""}
             ${batchStatusInline(b)}
             ${resultsBadge ? `<button class="btn sm ghost" data-view-results="${b.id}">${resultsBadge}</button>` : ""}
             ${actions.join("")}
@@ -1337,8 +1360,8 @@ function buildReceiptCard(receipt, { role, type }) {
   card.innerHTML = `
     <div class="receipt-card-top">
       <div>
-        <div class="receipt-title">${esc(t("receipt.receiptNumber", { id: receipt.id }))} · ${bdiHtml(supplierName(receipt.supplier_id))}</div>
-        <div class="receipt-meta">${esc(fmtReceived(receipt.received_at))} · ${esc(t("receipt.loggedBy"))} ${bdi(receipt.created_by)}${receipt.legacy_ref ? ` <span class="badge neutral">${esc(t("receipt.fromAccess"))}</span>` : ""}</div>
+        <div class="receipt-title">${receiptNoHtml(receipt)} · ${bdiHtml(supplierName(receipt.supplier_id))}</div>
+        <div class="receipt-meta">${esc(fmtReceived(receipt.received_at))} · ${esc(t("receipt.loggedBy"))} ${bdi(receipt.created_by)}${receipt.received_by === "quality" ? ` <span class="badge neutral">${esc(t("receipt.receivedByQuality"))}</span>` : ""}${receipt.legacy_ref ? ` <span class="badge neutral">${esc(t("receipt.fromAccess"))}</span>` : ""}</div>
       </div>
       <div class="hstack">
         ${role === "quality" || type !== "sample" ? statusPill(receipt.status) : ""}
@@ -1497,7 +1520,7 @@ async function enrichRetestLabels(container) {
     uniqueIds.map(async (id) => {
       try {
         const summary = await api.get(`/api/batches/${id}/summary`);
-        const label = t("line.retestOf", { batchNo: summary.supplier_batch_no, receiptId: summary.receipt_id });
+        const label = t("line.retestOf", { batchNo: summary.supplier_batch_no, receiptId: summary.receipt_no ?? "—" });
         spans.filter((el) => el.dataset.retestOf === id).forEach((el) => (el.textContent = label));
       } catch {
         // Leave the "batch #<id>" fallback in place — not worth surfacing
@@ -1792,7 +1815,6 @@ function openFinalizeModal(batchId, qtyBasis, onDone) {
     esc(isCount ? t("finalize.titleCount") : t("finalize.title")),
     `<form class="form-grid" id="finalize-form">
       <div class="field"><label>${esc(isCount ? t("finalize.actualCount") : t("finalize.actualQty"))}</label><input type="number" step="any" name="qty_actual_weighed" required /></div>
-      <div class="field"><label>${esc(t("finalize.additionNo"))}</label><input type="text" name="addition_no" /></div>
       <button type="submit" class="btn primary">${esc(t("finalize.save"))}</button>
     </form>`
   );
@@ -1802,7 +1824,6 @@ function openFinalizeModal(batchId, qtyBasis, onDone) {
     try {
       await api.post(`/api/batches/${batchId}/finalize-weight`, {
         qty_actual_weighed: Number(fd.get("qty_actual_weighed")),
-        addition_no: fd.get("addition_no") || null,
       });
       toast(t("finalize.recorded"));
       closeModal();
@@ -1929,8 +1950,12 @@ async function viewReceiptBucket({ role, bucket }) {
   const title = bucket === "history" ? t("bucket.historyTitle") : t("bucket.todoTitle");
   const exportInfo = bucketExport(role, bucket);
 
+  const receiveSampleBtn =
+    role === "quality" && bucket === "todo"
+      ? `<button type="button" class="btn primary" id="receive-sample-btn">${esc(t("receive.sampleButton"))}</button>`
+      : "";
   view.innerHTML = `
-    <div class="view-head"><div><h1>${esc(title)}</h1><p>${esc(t(BUCKET_COPY[bucket][role]))}</p></div></div>
+    <div class="view-head"><div><h1>${esc(title)}</h1><p>${esc(t(BUCKET_COPY[bucket][role]))}</p></div>${receiveSampleBtn}</div>
     <div class="list-controls">
       <div class="subtabs">
         <button class="subtab-btn${state.type === "import" ? " active" : ""}" data-t="import">${esc(t("bucket.imports"))}</button>
@@ -1957,6 +1982,10 @@ async function viewReceiptBucket({ role, bucket }) {
   if (exportInfo) {
     wireExportBar("bucket-export", exportInfo.path, { withPeriod: exportInfo.withPeriod, filenamePrefix: exportInfo.prefix });
   }
+  document.getElementById("receive-sample-btn")?.addEventListener("click", () => {
+    receiveWizard = freshReceiveWizard();
+    goTo("receive");
+  });
 
   let debounceTimer;
   document.getElementById("receipt-search").addEventListener("input", (e) => {
@@ -3452,7 +3481,7 @@ async function renderView() {
   const role = getRole();
   const tab = currentRoute();
   try {
-    if (role === "warehouse" && tab === "receive") {
+    if (tab === "receive") {
       lastRouteArgs = { fn: viewReceive, args: undefined };
       await viewReceive();
     } else if (tab === "todo") {

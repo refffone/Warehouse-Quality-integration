@@ -6,6 +6,7 @@ import {
   getSupplierByCode,
   isImportCodeTaken,
   isInternalBatchNoTaken,
+  nextReceiptNo,
   notify,
   POOL_FOR_KIND,
   resolveMaterialClassification,
@@ -91,9 +92,14 @@ export async function getBatchTestResults(env: Env, batchId: number): Promise<Te
   return rows.results ?? [];
 }
 
-export async function createReceipt(request: Request, env: Env): Promise<Response> {
+export async function createReceipt(request: Request, env: Env, role: Role): Promise<Response> {
   const input = await request.json<NewReceiptInput>();
 
+  // Quality only registers samples it received directly; everything else
+  // comes in through the warehouse.
+  if (role === "quality" && input.type !== "sample") {
+    return error("Quality can only register samples it received directly", 403);
+  }
   if (!input.lines?.length) {
     return error("A receipt needs at least one line");
   }
@@ -142,12 +148,15 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
   // relying on last_insert_rowid() across multiple lines (which would
   // break: by the second line, last_insert_rowid() would point at the
   // first line's last *batch* row, not the receipt).
+  // Warehouse deliveries continue the addition-note serial; a sample Quality
+  // received directly gets its own QS- number, so the two never collide.
+  const receiptNo = await nextReceiptNo(env, role === "quality" ? "quality_sample" : "warehouse");
   const receiptRow = await env.DB.prepare(
-    `INSERT INTO receipts (type, received_at, supplier_id, created_by, status, sample_sent_by)
-     VALUES (?, ?, ?, ?, 'pending', ?)
+    `INSERT INTO receipts (type, received_at, supplier_id, created_by, status, sample_sent_by, receipt_no, received_by)
+     VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
      RETURNING id`
   )
-    .bind(input.type, input.received_at, supplier.id, input.created_by, input.sample_sent_by ?? null)
+    .bind(input.type, input.received_at, supplier.id, input.created_by, input.sample_sent_by ?? null, receiptNo, role)
     .first<{ id: number }>();
   const receiptId = receiptRow!.id;
 
@@ -219,21 +228,22 @@ export async function createReceipt(request: Request, env: Env): Promise<Respons
     env,
     "quality",
     "new_receipt",
-    `New ${input.type} receipt #${receiptId} from ${supplier.name} awaiting review`,
+    `New ${input.type} receipt #${receiptNo} from ${supplier.name} awaiting review`,
     { receiptId }
   );
 
-  return json({ id: receiptId }, 201);
+  return json({ id: receiptId, receipt_no: receiptNo }, 201);
 }
 
 /** Rejected batches for one material code, for the Receive wizard's
  *  "Retest of" picker — only rejected batches make sense to retest. */
-export async function listRejectedBatchesForMaterial(env: Env, materialCode: string): Promise<Response> {
+export async function listRejectedBatchesForMaterial(env: Env, role: Role, materialCode: string): Promise<Response> {
   const rows = await env.DB.prepare(
     `SELECT rb.id, rb.supplier_batch_no, rb.internal_batch_no, rb.decided_at, rl.receipt_id
      FROM receipt_batches rb
      JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
-     WHERE rl.material_code = ? AND rb.status = 'rejected'
+     JOIN receipts r ON r.id = rl.receipt_id
+     WHERE rl.material_code = ? AND rb.status = 'rejected' AND ${visibleToSql(role)}
      ORDER BY rb.decided_at DESC
      LIMIT 50`
   )
@@ -245,12 +255,13 @@ export async function listRejectedBatchesForMaterial(env: Env, materialCode: str
 /** Resolves a batch id into just enough human-readable info to show on a
  *  "Retest of ..." label — called once per batch that actually has a
  *  retest link set (rare), rather than joined into every list load. */
-export async function getBatchSummary(env: Env, batchId: number): Promise<Response> {
+export async function getBatchSummary(env: Env, role: Role, batchId: number): Promise<Response> {
   const row = await env.DB.prepare(
-    `SELECT rb.id, rb.supplier_batch_no, rb.internal_batch_no, rl.receipt_id, rl.material_name_text
+    `SELECT rb.id, rb.supplier_batch_no, rb.internal_batch_no, rl.receipt_id, r.receipt_no, rl.material_name_text
      FROM receipt_batches rb
      JOIN receipt_lines rl ON rl.id = rb.receipt_line_id
-     WHERE rb.id = ?`
+     JOIN receipts r ON r.id = rl.receipt_id
+     WHERE rb.id = ? AND ${visibleToSql(role)}`
   )
     .bind(batchId)
     .first();
@@ -265,7 +276,7 @@ export async function listReceipts(request: Request, env: Env, role: Role): Prom
   const status = url.searchParams.get("status");
   const type = url.searchParams.get("type");
 
-  const conditions: string[] = [];
+  const conditions: string[] = [visibleToSql(role)];
   const params: string[] = [];
   if (status) {
     conditions.push("status = ?");
@@ -275,9 +286,9 @@ export async function listReceipts(request: Request, env: Env, role: Role): Prom
     conditions.push("type = ?");
     params.push(type);
   }
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const where = `WHERE ${conditions.join(" AND ")}`;
 
-  const rows = await env.DB.prepare(`SELECT * FROM receipts ${where} ORDER BY created_at DESC LIMIT 200`)
+  const rows = await env.DB.prepare(`SELECT * FROM receipts r ${where} ORDER BY created_at DESC LIMIT 200`)
     .bind(...params)
     .all();
 
@@ -293,10 +304,18 @@ export async function listReceipts(request: Request, env: Env, role: Role): Prom
  *  receipt that still has an approved/partial batch nobody has weighed in
  *  yet. */
 export async function getTodoCount(env: Env, role: Role): Promise<Response> {
-  const row = await env.DB.prepare(`SELECT COUNT(*) AS count FROM receipts r WHERE ${openReceiptSql(role)}`).first<{
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM receipts r WHERE ${visibleToSql(role)} AND ${openReceiptSql(role)}`
+  ).first<{
     count: number;
   }>();
   return json({ count: row?.count ?? 0 });
+}
+
+/** SQL condition (on alias `r`): the receipts this role may see at all.
+ *  Samples Quality received directly never reach Warehouse. */
+export function visibleToSql(role: Role): string {
+  return role === "warehouse" ? "r.received_by = 'warehouse'" : "1 = 1";
 }
 
 /** SQL condition (on alias `r`) for "still on this role's To Do": Quality's
@@ -318,7 +337,9 @@ function openReceiptSql(role: Role): string {
 }
 
 export async function getReceipt(env: Env, role: Role, id: number): Promise<Response> {
-  const receipt = await env.DB.prepare("SELECT * FROM receipts WHERE id = ?").bind(id).first();
+  const receipt = await env.DB.prepare(`SELECT * FROM receipts r WHERE r.id = ? AND ${visibleToSql(role)}`)
+    .bind(id)
+    .first();
   if (!receipt) return error("Receipt not found", 404);
 
   const lines = await env.DB.prepare("SELECT * FROM receipt_lines WHERE receipt_id = ?")
@@ -362,7 +383,7 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
   // Filtering, search and paging all happen here rather than in the
   // browser, so a list with thousands of receipts (the Access history)
   // stays complete and fast.
-  const conditions: string[] = [];
+  const conditions: string[] = [visibleToSql(role)];
   const params: Array<string | number> = [];
   if (type) {
     conditions.push("r.type = ?");
@@ -375,7 +396,7 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
     // Warehouse never learns a sample's status, so it can't search by it either.
     const statusVisible = role === "quality" ? "1" : "r.type != 'sample'";
     conditions.push(`(
-      CAST(r.id AS TEXT) LIKE ?
+      LOWER(COALESCE(r.receipt_no, '')) LIKE ?
       OR LOWER(s.name) LIKE ? OR LOWER(s.code) LIKE ?
       OR (${statusVisible} AND r.status LIKE ?)
       OR EXISTS (
@@ -393,7 +414,7 @@ export async function listReceiptsDetailed(request: Request, env: Env, role: Rol
     )`);
     params.push(like, like, like, like, like, like, like, like, like, like);
   }
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const where = `WHERE ${conditions.join(" AND ")}`;
   const from = "FROM receipts r JOIN suppliers s ON s.id = r.supplier_id";
 
   const [receiptRows, totalRow] = await Promise.all([
@@ -863,7 +884,7 @@ export async function setSampleSender(
   const input = await request.json<SetSampleSenderInput>();
   if (!input.sample_sent_by) return error("sample_sent_by is required");
 
-  const receipt = await env.DB.prepare("SELECT type, sample_sent_by FROM receipts WHERE id = ?")
+  const receipt = await env.DB.prepare(`SELECT type, sample_sent_by FROM receipts r WHERE r.id = ? AND ${visibleToSql(role)}`)
     .bind(receiptId)
     .first<{ type: string; sample_sent_by: string | null }>();
   if (!receipt) return error("Receipt not found", 404);
@@ -988,10 +1009,9 @@ function redactLineForRole(line: ReceiptLine, role: Role): ReceiptLine {
  *  old TDS/MSDS/photo belongs. */
 export async function findLineByLegacyRef(env: Env, ref: string): Promise<Response> {
   const row = await env.DB.prepare(
-    `SELECT rl.id AS line_id, rl.import_code, r.id AS receipt_id
-     FROM receipts r JOIN receipt_lines rl ON rl.receipt_id = r.id
-     WHERE r.legacy_ref = ?
-     ORDER BY rl.id LIMIT 1`
+    `SELECT rl.id AS line_id, rl.import_code, rl.receipt_id
+     FROM receipt_lines rl
+     WHERE rl.legacy_ref = ?`
   )
     .bind(ref)
     .first();
