@@ -280,6 +280,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding-bottom: 12px; border-bottom: 1px solid var(--rule);
 }
 .list-controls .subtabs { border-bottom: none; }
+/* Search + Refresh share a row; below ~320px of space they wrap under
+   the tabs as a unit instead of squeezing the search box. */
+.list-actions { display: flex; align-items: center; gap: 8px; flex: 1 1 320px; justify-content: flex-end; min-width: 0; }
+.list-actions .search-input { min-width: 140px; }
+.list-actions .btn { flex-shrink: 0; }
 .search-input {
   background: var(--surface-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239aa2c7' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-4.3-4.3'/%3E%3C/svg%3E") no-repeat 12px center / 14px 14px;
   border: 1px solid var(--rule-strong); border-radius: var(--radius-sm);

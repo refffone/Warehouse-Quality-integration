@@ -76,7 +76,27 @@ if (!login.ok) {
   process.exit(1);
 }
 const cookie = login.headers.get("set-cookie").split(";")[0];
-const api = (p, init = {}) => fetch(`${base}${p}`, { ...init, headers: { cookie, ...(init.headers ?? {}) } });
+/** One call, retried: uploading ~490 MB over a home connection, a request
+ *  occasionally times out or the Worker answers 5xx. Without this the whole
+ *  run dies on a single slow file. */
+async function api(p, { timeoutMs = 120_000, ...init } = {}, attempts = 4) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const res = await fetch(`${base}${p}`, {
+        ...init,
+        headers: { cookie, ...(init.headers ?? {}) },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.status < 500) return res;
+      lastError = `HTTP ${res.status}`;
+    } catch (err) {
+      lastError = err.cause?.code ?? err.message;
+    }
+    if (attempt < attempts) await new Promise((r) => setTimeout(r, 2000 * attempt));
+  }
+  throw new Error(`${p}: gave up after ${attempts} attempts (${lastError})`);
+}
 
 const entries = parseCsv(readFileSync(manifestPath, "utf8"));
 const byRecord = new Map();
@@ -85,18 +105,33 @@ for (const e of entries) {
   byRecord.get(e.legacy_ref).push(e);
 }
 
+/** Lookups shouldn't end the run either — report the record and move on. */
+async function apiOrNull(p, init = {}) {
+  try {
+    return await api(p, init);
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
+
 const tally = { uploaded: 0, skipped: 0, noRecord: 0, failed: 0 };
 const problems = [];
 
 async function handleRecord(ref, files) {
-  const found = await api(`/api/receipt-lines/by-legacy-ref?ref=${encodeURIComponent(ref)}`);
+  const found = await apiOrNull(`/api/receipt-lines/by-legacy-ref?ref=${encodeURIComponent(ref)}`);
   if (!found.ok) {
     tally.noRecord += files.length;
     problems.push(`${ref}: record not in the app (${found.status}) — ${files.length} file(s) not uploaded`);
     return;
   }
   const { line_id: lineId } = await found.json();
-  const existing = await (await api(`/api/receipt-lines/${lineId}/attachments`)).json();
+  const existingRes = await apiOrNull(`/api/receipt-lines/${lineId}/attachments`);
+  if (!existingRes.ok) {
+    tally.failed += files.length;
+    problems.push(`${ref}: couldn't list attachments (${existingRes.status}) — ${files.length} file(s) skipped this run`);
+    return;
+  }
+  const existing = await existingRes.json();
   const have = new Set(existing.map((a) => `${a.kind}|${a.filename}`));
 
   for (const f of files) {
@@ -107,11 +142,21 @@ async function handleRecord(ref, files) {
     form.append("file", new Blob([file.bytes], { type: file.type }), file.name);
     form.append("kind", f.kind);
     form.append("uploaded_by", "Access import");
-    const res = await api(`/api/receipt-lines/${lineId}/attachments`, { method: "POST", body: form });
-    if (res.ok) tally.uploaded++;
-    else {
+    try {
+      // Big scans (the largest here is ~26 MB) need far longer than a
+      // lookup on a normal office upload link.
+      const timeoutMs = Math.max(120_000, Math.ceil(file.bytes.length / 20_000) * 1000);
+      const res = await api(`/api/receipt-lines/${lineId}/attachments`, { method: "POST", body: form, timeoutMs });
+      if (res.ok) tally.uploaded++;
+      else {
+        tally.failed++;
+        problems.push(`${ref} ${f.kind} ${f.file_name}: ${res.status} ${(await res.text()).slice(0, 200)}`);
+      }
+    } catch (err) {
+      // Keep going: the run is resumable, so a file that never uploads is
+      // picked up by the next run rather than ending this one.
       tally.failed++;
-      problems.push(`${ref} ${f.kind} ${f.file_name}: ${res.status} ${(await res.text()).slice(0, 200)}`);
+      problems.push(`${ref} ${f.kind} ${f.file_name}: ${err.message}`);
     }
   }
 }
