@@ -422,8 +422,18 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 .attachment-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.8rem; padding-block: 4px; }
 
-.status-pill { position: relative; display: inline-flex; align-items: center; gap: 6px; font-size: 0.72rem; font-weight: 600; padding: 3px 10px 3px 9px; border-radius: 999px; }
-.status-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; flex-shrink: 0; }
+/* A decision is the one thing on a card everything else defers to, so it
+   gets a stronger treatment than a regular .pill: a visible ring in its own
+   color (not just a wash of background tint) and a bolder, wider-tracked
+   label — same shape and color language as every other pill, just turned up. */
+.status-pill {
+  position: relative; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.74rem; font-weight: 700; letter-spacing: 0.02em;
+  padding: 4px 12px 4px 10px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 40%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, currentColor 12%, transparent);
+}
+.status-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 7px currentColor; flex-shrink: 0; }
 .status-pill.pending { background: var(--warn-bg); color: var(--warn); }
 .status-pill.approved, .status-pill.decided { background: var(--good-bg); color: var(--good); }
 .status-pill.rejected { background: var(--bad-bg); color: var(--bad); }
