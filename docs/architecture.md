@@ -2039,7 +2039,27 @@ replaces a rejected batch — is unchanged.
   `GET /api/batches/:id/coa?round=N` prints an earlier round as decided;
   from round 2 the COA carries a "Retest, round N (reason)" line.
 
-## 35. Next Step
+## 35. Request rate limits
+
+Cloudflare's Workers rate-limiting binding (`wrangler.toml`,
+`src/rateLimit.ts`), in front of the per-account login lockout that was
+already there (`src/auth.ts`, 5 failures → 15 min):
+
+| Limiter | Applies to | Key | Limit |
+|---|---|---|---|
+| `AUTH_LIMITER` | `POST /api/auth/login`, `/admin*` (incl. backup) | IP | 20 / min |
+| `API_LIMITER` | every other `/api/*` request | user (IP if signed out) | 300 / min |
+| `HEAVY_LIMITER` | reports, COAs, Excel imports/templates, dossier | user (IP if signed out) | 30 / min |
+
+Over the limit the Worker answers `429` with `Retry-After: 60` and a
+plain message the login page and the app already show. Counters are per
+Cloudflare location and nothing is written to D1 per request. A missing
+or failing binding never blocks a request. The per-IP sign-in cap closes
+two gaps the username lockout left: guessing across many usernames from
+one address, and locking every account out on purpose; it also caps the
+PBKDF2 work an unauthenticated caller can cause.
+
+## 36. Next Step
 
 The app is deployed and in use (see `docs/deployment.md`); logins are now
 real accounts with case-insensitive usernames (migration 0014). Things

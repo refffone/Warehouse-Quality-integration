@@ -2,6 +2,7 @@ import { getSession } from "./auth";
 import { listHistory } from "./routes/history";
 import { listQualityQueue, listWarehouseQueue, qualityQueueCount, warehouseQueueCount } from "./routes/queue";
 import { error, json } from "./http";
+import { clientIp, isHeavyRequest, isRateLimited, tooManyRequests } from "./rateLimit";
 import {
   adminCreateUser,
   adminGetBranding,
@@ -113,6 +114,14 @@ async function route(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const { pathname } = url;
   const method = request.method;
+  const ip = clientIp(request);
+
+  // Sign-in and the admin/backup endpoints: a per-IP cap in front of the
+  // per-account lockout (src/auth.ts).
+  const isAuthAttempt = (pathname === "/api/auth/login" && method === "POST") || pathname.startsWith("/admin");
+  if (isAuthAttempt && (await isRateLimited(env.AUTH_LIMITER, `ip:${ip}`))) {
+    return tooManyRequests("Too many attempts from this network — wait a minute and try again");
+  }
 
   // Admin panel — a real credential (ADMIN_PASSWORD), not a session,
   // and the one thing that must keep working even while the service
@@ -158,6 +167,16 @@ async function route(request: Request, env: Env): Promise<Response> {
 
   const session = await getSession(request, env);
   const role = session?.role ?? null;
+
+  // Everything else in the API: per signed-in user (per IP when signed
+  // out), plus a tighter cap on exports, COAs and imports.
+  if (pathname.startsWith("/api/")) {
+    const who = session ? `user:${session.userId}` : `ip:${ip}`;
+    if (await isRateLimited(env.API_LIMITER, who)) return tooManyRequests();
+    if (isHeavyRequest(pathname, method) && (await isRateLimited(env.HEAVY_LIMITER, who))) {
+      return tooManyRequests("Too many exports in a row — wait a minute and try again");
+    }
+  }
 
   // Master data — Warehouse's only legitimate reasons to touch this
   // section are picking/adding a supplier while receiving, and now

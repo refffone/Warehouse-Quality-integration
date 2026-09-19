@@ -31,3 +31,28 @@ crons = ["0 3 * * *"]
 [vars]
 # Days before expiry to raise a warehouse alert. Comma-separated.
 EXPIRY_ALERT_LEAD_DAYS = "90,30"
+
+# Request rate limits (src/rateLimit.ts). Workers rate-limiting binding:
+# counted per key, per Cloudflare location, over `period` seconds (10 or
+# 60). namespace_id just has to be unique per limiter in this account.
+# Sign-in and admin/backup, per IP.
+[[unsafe.bindings]]
+name = "AUTH_LIMITER"
+type = "ratelimit"
+namespace_id = "3101"
+simple = { limit = 20, period = 60 }
+
+# The API, per signed-in user (per IP when signed out).
+[[unsafe.bindings]]
+name = "API_LIMITER"
+type = "ratelimit"
+namespace_id = "3102"
+simple = { limit = 300, period = 60 }
+
+# Exports, COAs and imports, per user.
+[[unsafe.bindings]]
+name = "HEAVY_LIMITER"
+type = "ratelimit"
+namespace_id = "3103"
+simple = { limit = 30, period = 60 }
+
