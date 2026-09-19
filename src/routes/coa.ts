@@ -2,7 +2,7 @@ import { formatLimit } from "../../public/specLimits.js";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import * as XLSX from "xlsx";
 import { error } from "../http";
-import { drawMixedText, embedArabicFont, pdfText, truncate } from "../reportBuilders";
+import { drawMixedText, embedArabicFont, pdfText, wrapText } from "../reportBuilders";
 import { RESULT_PARAMETER_COLUMNS, getBatchTestResults, type TestResultWithParameter } from "./receipts";
 import { RETEST_REASON_LABELS, type RetestReason } from "./retest";
 import type { Env } from "../types";
@@ -206,8 +206,13 @@ async function buildCoaPdf(data: CoaData, env: Env): Promise<Uint8Array> {
   // Widths between each column's start and the next's — a value wider than
   // this (e.g. a Spec like "0:25 – 0:30 (Cup#8 dil 100% SBS)") used to run
   // straight into the following column's text with nothing to stop it.
+  // Rather than truncating to fit, a cell that doesn't fit now wraps onto
+  // further lines within its own column, and the row grows to fit its
+  // tallest cell — nothing gets hidden.
   const cols = [left, left + 150, left + 260, left + 360, left + 450];
   const colWidths = [150, 110, 100, 90, pageSize[0] - left - (left + 450)];
+  const cellPadding = 6; // gap before the next column starts
+  const rowLineHeight = 11;
   const headerRow = () => {
     ["Parameter", "Method", "Spec", "Measured", "Result"].forEach((h, i) =>
       page.drawText(pdfText(h), { x: cols[i], y, size: 9, font: bold, color: rgb(0.42, 0.41, 0.5) })
@@ -217,24 +222,36 @@ async function buildCoaPdf(data: CoaData, env: Env): Promise<Uint8Array> {
   headerRow();
 
   for (const r of data.results) {
-    if (y < bottom) {
+    const resultColor =
+      r.result === "fail" ? rgb(0.71, 0.25, 0.42) : r.result === "pass" ? rgb(0.25, 0.48, 0.43) : rgb(0.45, 0.43, 0.5);
+    const cells = [r.parameter_name, r.method ?? "—", specText(r), r.measured_value ?? "—", resultText(r)];
+    // Wrap every cell up front so the row's height (and whether it needs a
+    // page break) is known before anything is drawn.
+    const wrapped = cells.map((cell, i) =>
+      i === 4 ? [pdfText(cell)] : wrapText(cell, colWidths[i] - cellPadding, { size: 9, font, arabicFont })
+    );
+    const rowLines = Math.max(...wrapped.map((lines) => lines.length));
+    const rowHeight = rowLines * rowLineHeight;
+
+    if (y - rowHeight < bottom) {
       page = doc.addPage(pageSize);
       y = top;
       headerRow();
     }
-    const resultColor =
-      r.result === "fail" ? rgb(0.71, 0.25, 0.42) : r.result === "pass" ? rgb(0.25, 0.48, 0.43) : rgb(0.45, 0.43, 0.5);
-    const cells = [r.parameter_name, r.method ?? "—", specText(r), r.measured_value ?? "—", resultText(r)];
-    cells.forEach((cell, i) => {
+
+    wrapped.forEach((lines, i) => {
       // Result (i === 4) is always a fixed English enum (PASS/FAIL/NOT
-      // JUDGED) — never Arabic, so it stays on the plain Helvetica path.
+      // JUDGED), one line — never Arabic, so it stays on the plain
+      // Helvetica path.
       if (i === 4) {
-        page.drawText(pdfText(truncate(cell, colWidths[i], 9)), { x: cols[i], y, size: 9, font: bold, color: resultColor });
+        page.drawText(lines[0], { x: cols[i], y, size: 9, font: bold, color: resultColor });
         return;
       }
-      drawMixedText(page, truncate(cell, colWidths[i], 9), { x: cols[i], y, size: 9, font, arabicFont });
+      lines.forEach((line, li) =>
+        drawMixedText(page, line, { x: cols[i], y: y - li * rowLineHeight, size: 9, font, arabicFont })
+      );
     });
-    y -= 14;
+    y -= rowHeight + 4;
   }
 
   if (data.results.length === 0) {

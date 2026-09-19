@@ -82,6 +82,26 @@ function splitArabicRuns(text: string): string[] {
   return runs;
 }
 
+interface MixedTextFonts {
+  size: number;
+  font: PDFFont;
+  arabicFont: PDFFont;
+}
+
+/** Width of `text` as drawMixedText() would draw it — each run measured
+ *  with whichever font would render it (Arabic runs count as unshaped
+ *  length here, which very slightly overstates a joined run's real width;
+ *  fine for wrapping decisions, which only need to stay on the safe side). */
+function widthOfMixedText(text: string, opts: MixedTextFonts): number {
+  let width = 0;
+  for (const run of splitArabicRuns(text)) {
+    const isArabic = ARABIC_RE.test(run);
+    const f = isArabic ? opts.arabicFont : opts.font;
+    width += f.widthOfTextAtSize(isArabic ? run : pdfText(run), opts.size);
+  }
+  return width;
+}
+
 /** Draws `text` left to right, routing each Arabic run to `arabicFont` (an
  *  embedded font with real Arabic glyph coverage, drawn as-is) and every
  *  other run to `font` (drawn through pdfText(), same as always — zero
@@ -89,7 +109,7 @@ function splitArabicRuns(text: string): string[] {
 export function drawMixedText(
   page: PDFPage,
   text: string,
-  opts: { x: number; y: number; size: number; font: PDFFont; arabicFont: PDFFont; color?: ReturnType<typeof rgb> }
+  opts: { x: number; y: number; color?: ReturnType<typeof rgb> } & MixedTextFonts
 ): void {
   let x = opts.x;
   for (const run of splitArabicRuns(text)) {
@@ -99,6 +119,48 @@ export function drawMixedText(
     page.drawText(drawn, { x, y: opts.y, size: opts.size, font: f, color: opts.color });
     x += f.widthOfTextAtSize(drawn, opts.size);
   }
+}
+
+/** Greedy word-wrap: breaks `text` on spaces into lines that each fit
+ *  `maxWidth`, measured the same way drawMixedText() draws (so Arabic runs
+ *  are accounted for correctly). A single word wider than the column on its
+ *  own (a long unbroken code with no spaces) gets hard-broken by character
+ *  instead of overflowing forever. */
+export function wrapText(text: string, maxWidth: number, opts: MixedTextFonts): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && widthOfMixedText(candidate, opts) > maxWidth) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = candidate;
+    }
+    // A lone word already wider than the column: break it by character so
+    // it doesn't just run past maxWidth forever on its own line.
+    while (widthOfMixedText(line, opts) > maxWidth && line.length > 1) {
+      let cut = line.length - 1;
+      while (cut > 1 && widthOfMixedText(line.slice(0, cut), opts) > maxWidth) cut--;
+      lines.push(line.slice(0, cut));
+      line = line.slice(cut);
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [""];
+}
+
+/** Wraps and draws `text` inside `maxWidth`, one line per `lineHeight`
+ *  starting at (x, y) and moving downward. Returns the number of lines
+ *  drawn, so the caller can advance past the tallest cell in a row. */
+export function drawWrappedMixedText(
+  page: PDFPage,
+  text: string,
+  opts: { x: number; y: number; maxWidth: number; lineHeight: number; color?: ReturnType<typeof rgb> } & MixedTextFonts
+): number {
+  const lines = wrapText(text, opts.maxWidth, opts);
+  lines.forEach((line, i) => drawMixedText(page, line, { ...opts, y: opts.y - i * opts.lineHeight }));
+  return lines.length;
 }
 
 function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; kind: "png" | "jpg" } | null {
