@@ -51,7 +51,7 @@ async function createAccount(username, password, role, displayName, attempts = 5
       headers: { "content-type": "application/json", authorization: authHeader },
       body: JSON.stringify({ username, password, role, display_name: displayName }),
     });
-    if (res.ok || res.status === 400) return;
+    if (res.ok || res.status === 400 || res.status === 409) return;
     if (res.status !== 401 || attempt === attempts) {
       throw new Error(`createAccount(${username}) failed: ${res.status} ${await res.text()}`);
     }
