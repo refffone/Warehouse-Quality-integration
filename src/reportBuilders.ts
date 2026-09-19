@@ -1,6 +1,8 @@
 import { PDFDocument, PDFFont, PDFImage, PDFPage, StandardFonts, rgb } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
 import * as XLSX from "xlsx";
 import type { Branding } from "./routes/admin";
+import type { Env } from "./types";
 
 /** Shared report layout for every PDF/Excel export (received log, history,
  *  code spec, master data, suppliers, codes list) — one place for the
@@ -32,6 +34,71 @@ export function pdfText(text: string): string {
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------- Arabic
+
+/** Embeds the Arabic-capable body face (Cairo — the same one used on the
+ *  web UI's RTL layout, for visual consistency) from the bundled static
+ *  asset. pdf-lib's standard fonts (Helvetica) only cover WinAnsi, so
+ *  Arabic text needs a real font with Arabic OpenType tables; fontkit
+ *  (registered here) then does correct shaping/joining automatically once
+ *  that font is embedded — see splitArabicRuns()/drawMixedText() below. */
+export async function embedArabicFont(doc: PDFDocument, env: Env): Promise<PDFFont> {
+  doc.registerFontkit(fontkit);
+  const res = await env.ASSETS.fetch(new Request("https://assets.internal/fonts/Cairo-Variable.ttf"));
+  const bytes = await res.arrayBuffer();
+  return doc.embedFont(bytes, { subset: true });
+}
+
+const ARABIC_RE = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/;
+
+/** Splits text into consecutive runs of Arabic-script vs. everything else,
+ *  each run keeping its original character order. This document's paragraph
+ *  direction is always English/LTR (every label is English; only a free-text
+ *  *value* — a person's name, a supplier, a rejection reason — might be
+ *  Arabic), so runs never need reordering relative to each other: only the
+ *  characters *within* an Arabic run need right-to-left, joined shaping,
+ *  which pdf-lib's fontkit-backed layout already does correctly on its own
+ *  once a font with real Arabic OpenType tables is embedded — it just
+ *  doesn't segment a *mixed* string by script first, which is all this
+ *  does. (Confirmed empirically: feeding fontkit a pure-Arabic run renders
+ *  it correctly shaped and ordered with zero extra work; feeding it a
+ *  mixed English+Arabic string in one call does not.) */
+function splitArabicRuns(text: string): string[] {
+  const runs: string[] = [];
+  let current = "";
+  let currentIsArabic: boolean | null = null;
+  for (const ch of text) {
+    const isArabic = ARABIC_RE.test(ch);
+    if (currentIsArabic !== null && isArabic !== currentIsArabic) {
+      runs.push(current);
+      current = "";
+    }
+    current += ch;
+    currentIsArabic = isArabic;
+  }
+  if (current) runs.push(current);
+  return runs;
+}
+
+/** Draws `text` left to right, routing each Arabic run to `arabicFont` (an
+ *  embedded font with real Arabic glyph coverage, drawn as-is) and every
+ *  other run to `font` (drawn through pdfText(), same as always — zero
+ *  behavior change for non-Arabic content). */
+export function drawMixedText(
+  page: PDFPage,
+  text: string,
+  opts: { x: number; y: number; size: number; font: PDFFont; arabicFont: PDFFont; color?: ReturnType<typeof rgb> }
+): void {
+  let x = opts.x;
+  for (const run of splitArabicRuns(text)) {
+    const isArabic = ARABIC_RE.test(run);
+    const f = isArabic ? opts.arabicFont : opts.font;
+    const drawn = isArabic ? run : pdfText(run);
+    page.drawText(drawn, { x, y: opts.y, size: opts.size, font: f, color: opts.color });
+    x += f.widthOfTextAtSize(drawn, opts.size);
+  }
 }
 
 function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; kind: "png" | "jpg" } | null {

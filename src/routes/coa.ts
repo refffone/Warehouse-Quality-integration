@@ -2,7 +2,7 @@ import { formatLimit } from "../../public/specLimits.js";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import * as XLSX from "xlsx";
 import { error } from "../http";
-import { pdfText, truncate } from "../reportBuilders";
+import { drawMixedText, embedArabicFont, pdfText, truncate } from "../reportBuilders";
 import { RESULT_PARAMETER_COLUMNS, getBatchTestResults, type TestResultWithParameter } from "./receipts";
 import { RETEST_REASON_LABELS, type RetestReason } from "./retest";
 import type { Env } from "../types";
@@ -152,11 +152,16 @@ function quantityLine(data: CoaData): string {
   return data.qtyActualWeighed != null ? `${base}, ${data.qtyActualWeighed} ${data.unit} actual` : base;
 }
 
-async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
+async function buildCoaPdf(data: CoaData, env: Env): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const pageSize: [number, number] = [595.28, 841.89]; // A4
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  // A COA's free-text values (a supplier, a person's name, a rejection
+  // reason) can be Arabic — Helvetica can't draw it at all (pdfText() used
+  // to fall back to "?????"). Bold text below is always a static English
+  // label/heading or a PASS/FAIL enum, so it never needs this font.
+  const arabicFont = await embedArabicFont(doc, env);
   const left = 50;
   const top = 800;
   const bottom = 60;
@@ -170,7 +175,14 @@ async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
       page = doc.addPage(pageSize);
       y = top;
     }
-    page.drawText(pdfText(text), { x: left, y, size, font: opts.f ?? font, color: opts.color ?? rgb(0.13, 0.12, 0.18) });
+    drawMixedText(page, text, {
+      x: left,
+      y,
+      size,
+      font: opts.f ?? font,
+      arabicFont,
+      color: opts.color ?? rgb(0.13, 0.12, 0.18),
+    });
     y -= size + 7;
   };
 
@@ -213,15 +225,15 @@ async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
     const resultColor =
       r.result === "fail" ? rgb(0.71, 0.25, 0.42) : r.result === "pass" ? rgb(0.25, 0.48, 0.43) : rgb(0.45, 0.43, 0.5);
     const cells = [r.parameter_name, r.method ?? "—", specText(r), r.measured_value ?? "—", resultText(r)];
-    cells.forEach((cell, i) =>
-      page.drawText(pdfText(truncate(cell, colWidths[i], 9)), {
-        x: cols[i],
-        y,
-        size: 9,
-        font: i === 4 ? bold : font,
-        color: i === 4 ? resultColor : undefined,
-      })
-    );
+    cells.forEach((cell, i) => {
+      // Result (i === 4) is always a fixed English enum (PASS/FAIL/NOT
+      // JUDGED) — never Arabic, so it stays on the plain Helvetica path.
+      if (i === 4) {
+        page.drawText(pdfText(truncate(cell, colWidths[i], 9)), { x: cols[i], y, size: 9, font: bold, color: resultColor });
+        return;
+      }
+      drawMixedText(page, truncate(cell, colWidths[i], 9), { x: cols[i], y, size: 9, font, arabicFont });
+    });
     y -= 14;
   }
 
@@ -282,7 +294,7 @@ export async function downloadCoa(env: Env, batchId: number, format: string, rou
     });
   }
   if (format === "pdf") {
-    const bytes = await buildCoaPdf(data);
+    const bytes = await buildCoaPdf(data, env);
     return new Response(bytes, {
       headers: {
         "content-type": "application/pdf",
