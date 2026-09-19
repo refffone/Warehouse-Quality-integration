@@ -37,13 +37,29 @@ async function waitForServer() {
   throw new Error(`Server never became ready at ${base}`);
 }
 
-async function createAccount(username, password, role, displayName) {
-  const res = await fetch(`${base}/admin/api/users`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: authHeader },
-    body: JSON.stringify({ username, password, role, display_name: displayName }),
-  });
-  if (!res.ok && res.status !== 400) throw new Error(`createAccount(${username}) failed: ${res.status} ${await res.text()}`);
+// `wrangler secret put` (just run before this script) triggers a new Worker
+// deployment; Cloudflare's edge takes a moment to roll it out everywhere, so
+// the first authenticated request can land on a stale edge PoP still serving
+// the previous (unset) ADMIN_PASSWORD and get a spurious 401. Retry a few
+// times with backoff before giving up — a real bad password still fails
+// after exhausting retries.
+async function createAccount(username, password, role, displayName, attempts = 5) {
+  let lastStatus, lastBody;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const res = await fetch(`${base}/admin/api/users`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: authHeader },
+      body: JSON.stringify({ username, password, role, display_name: displayName }),
+    });
+    if (res.ok || res.status === 400) return;
+    if (res.status !== 401 || attempt === attempts) {
+      throw new Error(`createAccount(${username}) failed: ${res.status} ${await res.text()}`);
+    }
+    lastStatus = res.status;
+    lastBody = await res.text();
+    await sleep(1500 * attempt);
+  }
+  throw new Error(`createAccount(${username}) failed: ${lastStatus} ${lastBody}`);
 }
 
 function session(username, password) {
