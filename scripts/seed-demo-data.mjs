@@ -62,7 +62,7 @@ async function createAccount(username, password, role, displayName, attempts = 5
   throw new Error(`createAccount(${username}) failed: ${lastStatus} ${lastBody}`);
 }
 
-function session(username, password) {
+function session(username, password, role) {
   let cookie = null;
   async function api(path, opts = {}) {
     const res = await fetch(`${base}${path}`, {
@@ -76,7 +76,7 @@ function session(username, password) {
       const res = await fetch(`${base}/api/auth/login`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, role }),
       });
       if (!res.ok) throw new Error(`login(${username}) failed: ${res.status} ${await res.text()}`);
       cookie = res.headers.get("set-cookie").split(";")[0];
@@ -109,8 +109,8 @@ await waitForServer();
 await createAccount("quality", "demo12345", "quality", "Demo Quality");
 await createAccount("warehouse", "demo12345", "warehouse", "Demo Warehouse");
 
-const qc = session("quality", "demo12345");
-const wh = session("warehouse", "demo12345");
+const qc = session("quality", "demo12345", "quality");
+const wh = session("warehouse", "demo12345", "warehouse");
 await qc.login();
 await wh.login();
 
