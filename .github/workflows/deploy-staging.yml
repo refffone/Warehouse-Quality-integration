@@ -41,11 +41,22 @@ jobs:
       # One-time-safe: sets the staging Worker's admin password every
       # deploy (cheap, idempotent) so a fresh staging environment always
       # has it, without a separate manual setup step.
+      #
+      # `wrangler secret put` succeeds even when piped an empty string —
+      # it just uploads an empty secret — so a missing STAGING_ADMIN_PASSWORD
+      # repo secret would otherwise silently blank out the admin password
+      # instead of failing loudly. Guarded here instead.
       - name: Set staging admin password
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: b7bd5f5cc893306ff1bcc06daed8dc74
-        run: echo "${{ secrets.STAGING_ADMIN_PASSWORD }}" | npx wrangler secret put ADMIN_PASSWORD --env staging
+          STAGING_ADMIN_PASSWORD: ${{ secrets.STAGING_ADMIN_PASSWORD }}
+        run: |
+          if [ -z "$STAGING_ADMIN_PASSWORD" ]; then
+            echo "::error::STAGING_ADMIN_PASSWORD repo secret is not set — see docs/deployment.md 'Staging / demo environment' for one-time setup."
+            exit 1
+          fi
+          echo "$STAGING_ADMIN_PASSWORD" | npx wrangler secret put ADMIN_PASSWORD --env staging
 
       - name: Seed demo data
         env:
