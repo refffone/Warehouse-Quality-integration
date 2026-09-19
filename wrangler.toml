@@ -56,3 +56,54 @@ type = "ratelimit"
 namespace_id = "3103"
 simple = { limit = 30, period = 60 }
 
+# ---------------------------------------------------------------- staging
+# A fully separate Worker + D1 + R2 for demos/presentations — its own
+# resources end to end, so nothing a demo does (receiving, deciding,
+# resetting data) can touch production data or eat into production's D1
+# daily quota. Deployed by .github/workflows/deploy-staging.yml on pushes
+# to the `staging` branch; see docs/deployment.md "Staging / demo
+# environment" for one-time setup (ADMIN_PASSWORD secret, seeding).
+[env.staging]
+name = "qualitycheck-demo"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "warehouse-quality-db-staging"
+database_id = "1c387ad1-f61c-4124-8f2e-06d811b17d81"
+
+[env.staging.assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+html_handling = "none"
+
+[[env.staging.r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "warehouse-quality-attachments-staging"
+
+[env.staging.triggers]
+crons = []
+
+[env.staging.vars]
+EXPIRY_ALERT_LEAD_DAYS = "90,30"
+
+# Separate namespace ids from production's (3101-3103) so a demo session's
+# traffic is never counted against — or throttled by — production's limits.
+[[env.staging.unsafe.bindings]]
+name = "AUTH_LIMITER"
+type = "ratelimit"
+namespace_id = "3201"
+simple = { limit = 20, period = 60 }
+
+[[env.staging.unsafe.bindings]]
+name = "API_LIMITER"
+type = "ratelimit"
+namespace_id = "3202"
+simple = { limit = 300, period = 60 }
+
+[[env.staging.unsafe.bindings]]
+name = "HEAVY_LIMITER"
+type = "ratelimit"
+namespace_id = "3203"
+simple = { limit = 30, period = 60 }
+

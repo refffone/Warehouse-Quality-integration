@@ -1,0 +1,57 @@
+name: Deploy staging (demo)
+
+# Separate Worker, D1 database and R2 bucket from production — see
+# wrangler.toml's [env.staging] block and docs/deployment.md "Staging /
+# demo environment". Pushing here can't touch production data or its D1
+# quota, so this is safe to deploy freely before a demo.
+on:
+  push:
+    branches:
+      - staging
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - name: Apply D1 migrations (remote, staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: b7bd5f5cc893306ff1bcc06daed8dc74
+          CI: "true"
+        run: npx wrangler d1 migrations apply warehouse-quality-db-staging --remote --env staging
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: b7bd5f5cc893306ff1bcc06daed8dc74
+          command: deploy --env staging
+
+      # One-time-safe: sets the staging Worker's admin password every
+      # deploy (cheap, idempotent) so a fresh staging environment always
+      # has it, without a separate manual setup step.
+      - name: Set staging admin password
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: b7bd5f5cc893306ff1bcc06daed8dc74
+        run: echo "${{ secrets.STAGING_ADMIN_PASSWORD }}" | npx wrangler secret put ADMIN_PASSWORD --env staging
+
+      - name: Seed demo data
+        env:
+          # Same workers.dev subdomain production deploys to (not a
+          # secret — it's the public URL component every deployed Worker
+          # shows up under).
+          APP_URL: https://qualitycheck-demo.4mcoatings.workers.dev
+          ADMIN_PASSWORD: ${{ secrets.STAGING_ADMIN_PASSWORD }}
+        run: node scripts/seed-demo-data.mjs

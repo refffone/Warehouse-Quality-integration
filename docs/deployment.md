@@ -329,6 +329,47 @@ step 7. To use your own domain:
 
 ---
 
+## 11. Staging / demo environment
+
+A fully separate Worker (`qualitycheck-demo`), D1 database
+(`warehouse-quality-db-staging`) and R2 bucket
+(`warehouse-quality-attachments-staging`) — see `wrangler.toml`'s
+`[env.staging]` block. Nothing done there (receiving, deciding, resetting
+data) can touch production data or eat into production's D1 daily quota.
+It deploys from its own `staging` branch via
+`.github/workflows/deploy-staging.yml`, and re-seeds a fixed, realistic
+demo dataset (a few suppliers/materials/specs and a receipt in every
+status: pending, approved, rejected, partial, and a Quality-received
+sample) on every deploy — `scripts/seed-demo-data.mjs` is idempotent, so
+this never duplicates data, it just makes sure the canonical set exists.
+
+**One-time setup:**
+
+1. Add a `STAGING_ADMIN_PASSWORD` repo secret (Settings → Secrets and
+   variables → Actions) — a password only for the demo environment's admin
+   panel, separate from production's.
+2. Create the `staging` branch from the deploy branch and push it:
+   ```bash
+   git checkout -b staging
+   git push -u origin staging
+   ```
+   That first push triggers the workflow, which applies migrations,
+   deploys, sets the admin password, and seeds the demo data.
+
+**Before a demo:** push (or merge) whatever you want to show into
+`staging`, or just re-run the workflow manually (Actions →
+"Deploy staging (demo)" → Run workflow) to reseed a clean canonical
+dataset without any code change.
+
+**Demo accounts:** `quality` / `demo12345` and `warehouse` / `demo12345`
+(seeded by `scripts/seed-demo-data.mjs`, not secrets — this is a demo
+environment with fictional data only).
+
+**URL:** `https://qualitycheck-demo.<your-subdomain>.workers.dev` (same
+subdomain as production, different Worker name).
+
+---
+
 ## Ongoing maintenance
 
 **Deploying a code change:**
