@@ -305,7 +305,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   display: block; width: 100%; text-align: start; padding: 8px 12px; font-size: 0.84rem;
   background: none; border: none; color: var(--ink); cursor: pointer;
 }
-.search-result-item:hover, .search-result-item:focus { background: var(--surface-2); }
+.search-result-item:hover, .search-result-item:focus, .search-result-item.active { background: var(--surface-2); }
 .search-result-empty { padding: 8px 12px; font-size: 0.82rem; color: var(--ink-muted); }
 
 /* generic wrapping horizontal row — used anywhere a set of chips/buttons

@@ -107,11 +107,15 @@ function openModal(titleHtml, bodyHtml) {
         <div class="modal-body">${bodyHtml}</div>
       </div>
     </div>`;
-  root.querySelectorAll("[data-close]").forEach((elm) =>
-    elm.addEventListener("click", (e) => {
-      if (e.target.hasAttribute("data-close")) closeModal();
-    })
-  );
+  // Backdrop: only close when the click lands on the backdrop itself, not
+  // when it bubbles up from something inside the modal card.
+  root.querySelector(".modal-backdrop").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeModal();
+  });
+  // Close button: close on any click inside it — its icon is an inline SVG,
+  // so e.target is usually the <path>, not the <button>, and checking for
+  // an exact-target match (as the backdrop does) would miss most clicks.
+  root.querySelector("button[data-close]").addEventListener("click", () => closeModal());
 }
 
 // ---------------------------------------------------------------- caches
@@ -445,7 +449,6 @@ async function viewReceive() {
   const suppliers = await getSuppliers();
   if (isStaleView(generation)) return;
   if (getRole() === "quality") receiveWizard.type = "sample";
-  if (!receiveWizard.supplier_code && suppliers.length) receiveWizard.supplier_code = suppliers[0].code;
   if (receiveWizard.step === 2) await renderReceiveStep2(generation);
   else renderReceiveStep1(suppliers);
 }
@@ -538,10 +541,15 @@ function renderReceiveStep1(suppliers) {
   document.getElementById("receive-step1-form").addEventListener("submit", (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
+    const supplierCode = fd.get("supplier_code");
+    if (!suppliers.some((s) => s.code === supplierCode)) {
+      toast(t("receive.supplierRequired"), true);
+      return;
+    }
     w.type = fd.get("type");
     w.received_at = fd.get("received_at");
     w.created_by = fd.get("created_by");
-    w.supplier_code = fd.get("supplier_code");
+    w.supplier_code = supplierCode;
     w.sample_sent_by = fd.get("sample_sent_by") || "";
     rememberName(w.created_by);
     w.step = 2;
@@ -2046,8 +2054,7 @@ async function openAssociateModal(line, receiptType, onDone) {
   );
 
   const modeSelect = document.getElementById("assoc-mode");
-  const assocMaterialInput = wireCodeSearch("assoc-material", materials, () => {});
-  if (materials.length) assocMaterialInput.value = materials[0].code;
+  wireCodeSearch("assoc-material", materials, () => {});
 
   // Sample picker (new code only): suggestions first; ticks survive searches.
   const picked = new Map();
@@ -2101,6 +2108,7 @@ async function openAssociateModal(line, receiptType, onDone) {
     let body;
     if (modeSelect.value === "existing") {
       const code = document.querySelector('#assoc-existing [name="material_code"]').value;
+      if (!materials.some((m) => m.code === code)) return toast(t("match.materialRequired"), true);
       body = { mode: "existing", material_code: code, created_by: by, manufacturer_spec: !!document.getElementById("assoc-mfr-spec")?.checked };
     } else {
       const get = (n) => document.querySelector(`#assoc-new [name="${n}"]`).value.trim();
@@ -3652,13 +3660,10 @@ async function viewSupplierAssessment() {
     `;
   }
 
-  const input = wireCodeSearch("weight-supplier-search", suppliers, loadAssessment);
-  if (suppliers.length) {
-    input.value = suppliers[0].code;
-    await loadAssessment(suppliers[0].code);
-  } else {
-    body.innerHTML = emptyState(icons.navSuppliers, t("suppliers.noSuppliersYet"));
-  }
+  wireCodeSearch("weight-supplier-search", suppliers, loadAssessment);
+  body.innerHTML = suppliers.length
+    ? emptyState(icons.navSuppliers, t("common.searchToSelect"))
+    : emptyState(icons.navSuppliers, t("suppliers.noSuppliersYet"));
 }
 
 let specsScope = "supply";
@@ -3795,7 +3800,7 @@ async function viewSpecs() {
         ? `<div class="small muted" style="margin-bottom:8px">${esc(t("specs.sampleFallbackNote"))}</div>`
         : "";
     historyEl.innerHTML = !code
-      ? ""
+      ? emptyState(icons.navSpecs, t("common.searchToSelect"))
       : inScope.length
         ? fallbackNote +
           inScope
@@ -3815,10 +3820,6 @@ async function viewSpecs() {
         : fallbackNote + emptyState(icons.navSpecs, t("specs.noSpecsYet"));
   }
   const specMaterialSelect = wireCodeSearch("spec-material", materials, loadHistory);
-  if (materials.length) {
-    specMaterialSelect.value = materials[0].code;
-    await loadHistory();
-  }
   view.querySelectorAll("[data-scope]").forEach((btn) =>
     btn.addEventListener("click", async () => {
       specsScope = btn.dataset.scope;
@@ -4091,6 +4092,7 @@ function wireCodeSearch(id, items, onSelect) {
   const input = document.getElementById(id);
   const results = document.getElementById(`${id}-results`);
   let debounceTimer;
+  let activeIndex = -1;
 
   function currentMatches() {
     const q = input.value.trim().toLowerCase();
@@ -4101,11 +4103,21 @@ function wireCodeSearch(id, items, onSelect) {
   function select(code) {
     input.value = code;
     results.hidden = true;
+    results.innerHTML = "";
+    activeIndex = -1;
     onSelect(code);
+  }
+
+  function setActive(index) {
+    const options = results.querySelectorAll("[data-code]");
+    activeIndex = options.length ? (index + options.length) % options.length : -1;
+    options.forEach((el, i) => el.classList.toggle("active", i === activeIndex));
+    options[activeIndex]?.scrollIntoView({ block: "nearest" });
   }
 
   function renderResults() {
     const matches = currentMatches();
+    activeIndex = -1;
     if (!input.value.trim()) {
       results.hidden = true;
       results.innerHTML = "";
@@ -4117,8 +4129,15 @@ function wireCodeSearch(id, items, onSelect) {
           .join("")
       : `<div class="search-result-empty">${esc(t("common.noMatches"))}</div>`;
     results.hidden = false;
+    // mousedown (not click): fires before the input's blur, so calling
+    // preventDefault() here stops the input from ever losing focus — the
+    // blur handler's hide-on-a-delay never gets a chance to race the
+    // selection, and the click registers reliably every time.
     results.querySelectorAll("[data-code]").forEach((btn) =>
-      btn.addEventListener("click", () => select(btn.dataset.code))
+      btn.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        select(btn.dataset.code);
+      })
     );
   }
 
@@ -4135,12 +4154,22 @@ function wireCodeSearch(id, items, onSelect) {
     }, 150);
   });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
+    const options = () => results.querySelectorAll("[data-code]");
+    if (e.key === "ArrowDown") {
       e.preventDefault();
-      const top = currentMatches()[0];
-      if (top) select(top.code);
+      if (results.hidden) renderResults();
+      if (options().length) setActive(activeIndex + 1);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (options().length) setActive(activeIndex - 1);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const opts = options();
+      const chosen = activeIndex >= 0 && opts[activeIndex] ? opts[activeIndex].dataset.code : currentMatches()[0]?.code;
+      if (chosen) select(chosen);
     } else if (e.key === "Escape") {
       results.hidden = true;
+      activeIndex = -1;
     }
   });
 
@@ -4327,17 +4356,14 @@ async function renderMaterialDossierSection(section) {
     }
   }
 
-  const input = wireCodeSearch("dossier-material", materials, (code) => {
+  wireCodeSearch("dossier-material", materials, (code) => {
     rmsExpanded = false;
     loadDossier(code);
   });
 
-  if (materials.length) {
-    input.value = materials[0].code;
-    await loadDossier(materials[0].code);
-  } else {
-    body.innerHTML = emptyState(icons.navMasterdata, t("common.noneYet"));
-  }
+  body.innerHTML = materials.length
+    ? emptyState(icons.navMasterdata, t("common.searchToSelect"))
+    : emptyState(icons.navMasterdata, t("common.noneYet"));
 }
 
 function ratingStarsHtml(rating) {
@@ -4422,14 +4448,11 @@ async function renderSupplierAssessmentSection(section) {
     `;
   }
 
-  const input = wireCodeSearch("supplier-search", suppliers, loadAssessment);
+  wireCodeSearch("supplier-search", suppliers, loadAssessment);
 
-  if (suppliers.length) {
-    input.value = suppliers[0].code;
-    await loadAssessment(suppliers[0].code);
-  } else {
-    body.innerHTML = emptyState(icons.warehouse, t("suppliers.noSuppliersYet"));
-  }
+  body.innerHTML = suppliers.length
+    ? emptyState(icons.warehouse, t("common.searchToSelect"))
+    : emptyState(icons.warehouse, t("suppliers.noSuppliersYet"));
 }
 
 // ---------------------------------------------------------------- router
