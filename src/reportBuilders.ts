@@ -215,8 +215,12 @@ export class ReportPdf {
   }
 }
 
-function truncate(text: string, colWidth: number): string {
-  const maxChars = Math.floor(colWidth / 4.6); // rough width-per-char at size 8.5 Helvetica
+/** Rough width-per-char in Helvetica scales close to linearly with size —
+ *  4.6pt/char was measured at size 8.5, so other call sites (the COA PDF's
+ *  own table, at size 9) pass their own size instead of inheriting a
+ *  slightly-too-generous estimate. */
+export function truncate(text: string, colWidth: number, size = 8.5): string {
+  const maxChars = Math.floor(colWidth / (4.6 * (size / 8.5)));
   return text.length > maxChars ? text.slice(0, Math.max(0, maxChars - 1)) + "…" : text;
 }
 

@@ -2,7 +2,7 @@ import { formatLimit } from "../../public/specLimits.js";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import * as XLSX from "xlsx";
 import { error } from "../http";
-import { pdfText } from "../reportBuilders";
+import { pdfText, truncate } from "../reportBuilders";
 import { RESULT_PARAMETER_COLUMNS, getBatchTestResults, type TestResultWithParameter } from "./receipts";
 import { RETEST_REASON_LABELS, type RetestReason } from "./retest";
 import type { Env } from "../types";
@@ -191,7 +191,11 @@ async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
   line("Test Results", { size: 14, f: bold });
   y -= 4;
 
+  // Widths between each column's start and the next's — a value wider than
+  // this (e.g. a Spec like "0:25 – 0:30 (Cup#8 dil 100% SBS)") used to run
+  // straight into the following column's text with nothing to stop it.
   const cols = [left, left + 150, left + 260, left + 360, left + 450];
+  const colWidths = [150, 110, 100, 90, pageSize[0] - left - (left + 450)];
   const headerRow = () => {
     ["Parameter", "Method", "Spec", "Measured", "Result"].forEach((h, i) =>
       page.drawText(pdfText(h), { x: cols[i], y, size: 9, font: bold, color: rgb(0.42, 0.41, 0.5) })
@@ -208,11 +212,16 @@ async function buildCoaPdf(data: CoaData): Promise<Uint8Array> {
     }
     const resultColor =
       r.result === "fail" ? rgb(0.71, 0.25, 0.42) : r.result === "pass" ? rgb(0.25, 0.48, 0.43) : rgb(0.45, 0.43, 0.5);
-    page.drawText(pdfText(r.parameter_name), { x: cols[0], y, size: 9, font });
-    page.drawText(pdfText(r.method ?? "—"), { x: cols[1], y, size: 9, font });
-    page.drawText(pdfText(specText(r)), { x: cols[2], y, size: 9, font });
-    page.drawText(pdfText(r.measured_value ?? "—"), { x: cols[3], y, size: 9, font });
-    page.drawText(pdfText(resultText(r)), { x: cols[4], y, size: 9, font: bold, color: resultColor });
+    const cells = [r.parameter_name, r.method ?? "—", specText(r), r.measured_value ?? "—", resultText(r)];
+    cells.forEach((cell, i) =>
+      page.drawText(pdfText(truncate(cell, colWidths[i], 9)), {
+        x: cols[i],
+        y,
+        size: 9,
+        font: i === 4 ? bold : font,
+        color: i === 4 ? resultColor : undefined,
+      })
+    );
     y -= 14;
   }
 
